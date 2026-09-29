@@ -66,11 +66,3 @@ Test crash sau effect trước ack, concurrent duplicate và replay sau dedup re
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **Duplicate business effect** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Identity and commit timeline**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

@@ -53,4 +53,4 @@ Quan sát wait/reject per dependency và chạy failure injection chỉ một do
 
 ## Thực hành có điều kiện kiểm chứng
 
-Giả định DB budget100 slots: checkout60, reports20, workers10, reserve10. Khi reports chậm, checkout không được dùng chung unbounded acquisition queue khiến isolation mất ý nghĩa. Static partition có thể lãng phí khi reports idle; adaptive borrowing cần reserve floor và overload tests. Budget còn phải nhân theo replicas hoặc dùng central authority tương ứng.
+Giả định DB budget 100 slots: checkout 60, reports 20, workers 10, reserve 10. Khi reports chậm, checkout không được dùng chung unbounded acquisition queue khiến isolation mất ý nghĩa. Static partition có thể lãng phí khi reports idle; adaptive borrowing cần reserve floor và overload tests. Budget còn phải nhân theo replicas hoặc dùng central authority tương ứng.

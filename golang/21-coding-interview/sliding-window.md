@@ -6,7 +6,7 @@ Tìm đoạn liên tiếp dài nhất không lặp byte trong chuỗi. Nếu th�
 
 ## Đi từng bước qua một tình huống
 
-Với abba, right0 nhận a, window a; right1 nhận b, window ab, best2. Right2 gặp b đã ở vị trí1 nên left lên2, window b. Right3 gặp a cũ ở0 nằm ngoài window, left không được lùi lại; window ba có length2. Điều kiện chỉ tăng left giữ invariant.
+Với abba, right0 nhận a, window a; right 1 nhận b, window ab, best 2. Right 2 gặp b đã ở vị trí 1 nên left lên 2, window b. Right 3 gặp a cũ ở0 nằm ngoài window, left không được lùi lại; window ba có length 2. Điều kiện chỉ tăng left giữ invariant.
 
 ## Code và giải thích từng bước
 

@@ -44,7 +44,7 @@ Production cần pg_stat_activity, lock waits và query plans bên cạnh DB.Sta
 
 ## Một transaction cụ thể và hai request tranh cùng hàng
 
-Giả sử stock(product_id, available) có10 sản phẩm, request A và B đều muốn mua7. Read available rồi kiểm tra trong Go không đủ: cả hai có thể đọc10 trước khi ai ghi. Một conditional update trong transaction với điều kiện available>=7 cho database quyết định theo concurrency semantics của nó; caller kiểm tra affected rows để biết reservation có thành công. Order record và reservation liên quan cần commit cùng boundary nếu invariant yêu cầu.
+Giả sử stock(product_id, available) có 10 sản phẩm, request A và B đều muốn mua 7. Read available rồi kiểm tra trong Go không đủ: cả hai có thể đọc 10 trước khi ai ghi. Một conditional update trong transaction với điều kiện available>=7 cho database quyết định theo concurrency semantics của nó; caller kiểm tra affected rows để biết reservation có thành công. Order record và reservation liên quan cần commit cùng boundary nếu invariant yêu cầu.
 
 Trong Go, BeginTx thành công trả Tx giữ một connection. Mọi statements của operation phải dùng Tx; defer rollback để đường lỗi cleanup, rồi Commit tại điểm đầy đủ điều kiện. Nếu ExecContext trả lỗi hoặc affected rows không đạt, không tiếp tục tạo order success. Nếu Commit trả lỗi mất kết nối, outcome có thể chưa rõ từ caller; query theo operation ID và constraint durable giúp xác định lại thay vì mặc định tạo order mới.
 

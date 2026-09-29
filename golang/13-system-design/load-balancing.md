@@ -53,4 +53,4 @@ L7 thêm hop/CPU và config complexity; L4 đơn giản nhưng ít visibility re
 
 ## Thực hành có điều kiện kiểm chứng
 
-Lab giữ10 long-lived HTTP/2 connections tới2 pods rồi scale lên4. Nếu LB chỉ route lúc connect, new pods có thể ít traffic cho tới reconnect. Đo request distribution và active streams theo pod; không kết luận HPA hỏng chỉ vì CPU skew. Graceful drain cần connection/stream termination policy để redistribute mà giữ client resume/retry safety.
+Lab giữ 10 long-lived HTTP/2 connections tới 2 pods rồi scale lên 4. Nếu LB chỉ route lúc connect, new pods có thể ít traffic cho tới reconnect. Đo request distribution và active streams theo pod; không kết luận HPA hỏng chỉ vì CPU skew. Graceful drain cần connection/stream termination policy để redistribute mà giữ client resume/retry safety.

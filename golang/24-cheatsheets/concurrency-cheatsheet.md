@@ -1,6 +1,12 @@
 # Concurrency Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Caller timeout khi worker còn tính rồi worker send vào channel không còn receiver sẽ leak. Cancel phát tín hiệu; send phải select với tín hiệu đó hoặc có protocol receiver khác, và owner còn cần join nếu phải biết cleanup xong. WaitGroup không gửi cancel, channel buffer không tự là durable queue và atomic pointer không làm nested map bất biến. Các dòng bảng chỉ đúng khi ownership và invariant đã được xác định.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | WaitGroup | Add trước go, Done guaranteed, Wait là join; không truyền error. |
 | Pool | Bound workers, queue count/bytes và downstream; overload có reject/drop/durable policy. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../04-concurrency/README.md) · [Review ngày cuối](last-day-review.md)

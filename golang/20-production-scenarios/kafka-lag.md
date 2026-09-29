@@ -6,7 +6,7 @@
 
 ## Đi từng bước qua một tình huống
 
-Đo arrival và completed rate per partition, oldest record age, processing latency và rebalance rate. Giả sử DB call trong handler từ10ms lên100ms khiến mỗi worker chậm10 lần. Consumer CPU thấp là điều dễ hiểu vì chờ DB. Nếu chỉ một partition lag, xem hot key hoặc poison record làm retry blocking.
+Đo arrival và completed rate per partition, oldest record age, processing latency và rebalance rate. Giả sử DB call trong handler từ 10 ms lên 100 ms khiến mỗi worker chậm 10 lần. Consumer CPU thấp là điều dễ hiểu vì chờ DB. Nếu chỉ một partition lag, xem hot key hoặc poison record làm retry blocking.
 
 Kiểm tra actual assignment và số partitions so với members; thêm member vượt parallelism group không tạo thêm partition work.
 
@@ -66,11 +66,3 @@ Test slow dependency và rebalance khi còn in-flight, kiểm tra contiguous che
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **Kafka consumer lag tăng** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Partition lag and sink rate**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

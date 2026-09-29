@@ -1,8 +1,12 @@
-# Coding Interview
+# Học thuật toán qua invariant và walkthrough
 
-Code đúng, giải thích complexity và edge cases.
+Mỗi bài nêu input/output, chạy từng bước trên một ví dụ rồi giải thích vì sao thuật toán đúng và kết thúc. Code runnable/tests nằm trong examples, với giới hạn byte/Unicode, overflow và cycle ghi rõ. Tên folder được giữ để links cũ hoạt động; phần này dạy cơ chế trước khi dùng để luyện tốc độ.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [go-coding-patterns](go-coding-patterns.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -18,10 +22,4 @@ Code đúng, giải thích complexity và edge cases.
 | [Tree traversal và depth](tree.md) | P1 |
 | [Two pointers trên sorted data](two-pointers.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

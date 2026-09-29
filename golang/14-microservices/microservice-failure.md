@@ -53,4 +53,4 @@ Theo dõi completion rate và oldest pending operations trong recovery. Lấy pr
 
 ## Thực hành có điều kiện kiểm chứng
 
-Fault injection làm inventory delay2s trong khi order budget200ms. Order phải fail/degrade trong budget, không giữ goroutines tăng vô hạn và không retry tầng tầng. Observe breaker/semaphore state, DB pool và remaining capacity của payment path. Sau dependency hồi phục, bounded half-open probes và jitter tránh recovery herd; verify queued work đã reconcile.
+Fault injection làm inventory delay2s trong khi order budget200 ms. Order phải fail/degrade trong budget, không giữ goroutines tăng vô hạn và không retry tầng tầng. Observe breaker/semaphore state, DB pool và remaining capacity của payment path. Sau dependency hồi phục, bounded half-open probes và jitter tránh recovery herd; verify queued work đã reconcile.

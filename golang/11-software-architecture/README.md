@@ -1,8 +1,12 @@
-# Software Architecture
+# Tổ chức code theo trách nhiệm và dependency
 
-Packages nhỏ, interfaces tại consumer, dependency direction rõ.
+Bắt đầu một use case thật: handler nhận dữ liệu, service giữ rule, repository thực hiện I/O. Các mô hình kiến trúc giúp giữ những phần thay đổi khác nhau ở boundary rõ; chúng không yêu cầu tạo interface/layer cho mọi struct. So sánh modular monolith và microservices sau khi thấy transaction/failure boundary.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [go-project-structure](go-project-structure.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -17,10 +21,4 @@ Packages nhỏ, interfaces tại consumer, dependency direction rõ.
 | [Repository theo use case](repository-pattern.md) | P1 |
 | [Service giữ business orchestration](service-pattern.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

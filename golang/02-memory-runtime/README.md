@@ -1,8 +1,12 @@
-# Memory Runtime
+# Bộ nhớ và runtime từ lifetime của object
 
-Liên hệ lifetime, allocation và GC với production memory.
+Trước khi học GC internals, cần phân biệt biến local, object còn sống và tài nguyên cần Close. Module đi từ stack/heap và escape tới reachability, allocation rate, GC rồi profiles. Khi memory tăng, mô hình này giúp chọn bằng chứng cho retention hoặc churn thay vì chỉ giảm GOGC.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [stack-vs-heap](stack-vs-heap.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -17,10 +21,4 @@ Liên hệ lifetime, allocation và GC với production memory.
 | [Stack versus heap: lifetime thay vì cú pháp](stack-vs-heap.md) | P0 |
 | [Write barrier và concurrent marking](write-barrier.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

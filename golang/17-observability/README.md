@@ -1,8 +1,12 @@
-# Observability
+# Từ tín hiệu tới lời giải thích sự cố
 
-Đo user impact và tìm evidence xuyên boundaries.
+Metrics cho trend/distribution, traces nối các bước của request, logs ghi sự kiện có context. Module bắt đầu user-visible outcomes rồi chọn labels/spans và SLO, tránh thu rất nhiều dữ liệu mà vẫn không biết operation đã commit chưa. Telemetry giúp điều tra nhưng không thay durable state nghiệp vụ.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [metrics](metrics.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -15,10 +19,4 @@
 | [SLI, SLO, SLA và error budget](sli-slo-sla.md) | P1 |
 | [Tracing và critical path](tracing.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

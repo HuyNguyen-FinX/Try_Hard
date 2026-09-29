@@ -1,6 +1,8 @@
 # System design Mock
 
-Câu hỏi English, answer cues Vietnamese. Tự trả lời60–90 giây rồi mở đáp án; câu trả lời senior cần thêm trade-off và failure evidence.
+Đây là phụ lục luyện tập sau giáo trình. Đọc bài lý thuyết liên quan trước, dùng đáp án để đối chiếu reasoning rồi quay lại ví dụ nếu chưa giải thích được cơ chế. Câu hỏi ở đây được giữ riêng, không là cấu trúc của các bài học.
+
+Câu hỏi English, answer cues Vietnamese. Tự trả lời 60–90 giây rồi mở đáp án; câu trả lời senior cần thêm trade-off và failure evidence.
 
 ## Architecture
 

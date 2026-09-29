@@ -6,7 +6,7 @@
 
 ## Đi từng bước qua một tình huống
 
-Lấy operation IDs và transaction timestamps để dựng A đọc remaining1, B đọc remaining1, A tạo order, B tạo order. Kiểm tra constraints và isolation thật; mutex local trong một replica không khóa replica khác. Nếu symptom là corrupted map/counter trong process, chạy race detector trên đường đó là nhánh điều tra khác.
+Lấy operation IDs và transaction timestamps để dựng A đọc remaining 1, B đọc remaining 1, A tạo order, B tạo order. Kiểm tra constraints và isolation thật; mutex local trong một replica không khóa replica khác. Nếu symptom là corrupted map/counter trong process, chạy race detector trên đường đó là nhánh điều tra khác.
 
 Hai loại lỗi cần phân biệt để chọn đúng tool: data race theo access memory và race condition theo ordering nghiệp vụ.
 
@@ -66,11 +66,3 @@ Integration test dùng hai connections và barrier cho cả hai đến điểm t
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **Production race/data corruption** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Memory or business invariant**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

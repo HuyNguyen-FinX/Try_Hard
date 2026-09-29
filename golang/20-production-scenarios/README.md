@@ -1,8 +1,12 @@
-# Production Scenarios
+# Điều tra sự cố bằng timeline và giả thuyết
 
-Tập incident response với giả thuyết có thể bác bỏ.
+Mỗi bài là tình huống mô phỏng có symptom, bằng chứng cần thu, mitigation và kiểm tra recovery. Con số được dùng để làm rõ reasoning, không là incident thật của repository. Đọc diễn tiến trước khi nhìn sơ đồ rút gọn và thử nêu một quan sát có thể bác bỏ chẩn đoán.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [high-cpu](high-cpu.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -19,10 +23,4 @@ Tập incident response với giả thuyết có thể bác bỏ.
 | [Service outage: first15 minutes](service-outage.md) | P1 |
 | [Traffic spike và load shedding](traffic-spike.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

@@ -22,7 +22,7 @@ RPS×mean latency(s)=mean in-flight trong steady state; events/s×bytes/event×r
 
 ## Áp dụng vào hệ thống thật
 
-20k RPS×50ms=1000 concurrent; cache90% reads và95% hit cho900 misses/s.
+20k RPS×50 ms=1000 concurrent; cache 90% reads và 95% hit cho900 misses/s.
 
 ## Những đường lỗi cần hiểu
 
@@ -38,7 +38,7 @@ Rough estimate hữu ích hơn precision giả; sensitivity analysis hit ratio/l
 
 ## Thực hành, debugging và kết luận
 
-Đối chiếu estimates với load test và production metrics rồi sửa model. Ghi rõ decimal/binary units và mean/P99. Khi một assumption đổi như cache hit từ95% xuống0%, tính lại miss load để biết dependency nào cần protection.
+Đối chiếu estimates với load test và production metrics rồi sửa model. Ghi rõ decimal/binary units và mean/P99. Khi một assumption đổi như cache hit từ 95% xuống0%, tính lại miss load để biết dependency nào cần protection.
 
 
 ## Đọc tiếp

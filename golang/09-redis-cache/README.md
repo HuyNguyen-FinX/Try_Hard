@@ -1,8 +1,12 @@
-# Redis Cache
+# Cache, freshness và tải khi cache lỗi
 
-Cache là hệ consistency/failure có source capacity budget.
+Cache tạo thêm bản sao dữ liệu và một dependency. Từ cache-aside đơn giản, lần theo race giữa fill/update, hot-key expiry và Redis outage để hiểu tại sao hit ratio cao chưa đủ. Mọi cache cần giới hạn memory, freshness policy và budget cho nguồn dữ liệu khi miss.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [redis-basics](redis-basics.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -15,10 +19,4 @@ Cache là hệ consistency/failure có source capacity budget.
 | [Redis: data structures và bounded memory](redis-basics.md) | P1 |
 | [Redis Cluster: slots và hot keys](redis-cluster.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

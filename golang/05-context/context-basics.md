@@ -8,7 +8,7 @@ Ta cần truyền một thông điệp xuyên suốt chuỗi gọi: “công vi�
 
 ## Bắt đầu bằng Background, WithCancel, Done và Err
 
-`context.Background()` tạo context gốc không có thời hạn và không tự bị hủy. Đây là điểm xuất phát phù hợp ở `main` khi chương trình chưa có parent lifetime. `context.TODO()` cũng không tự bị hủy; tên của nó diễn đạt rằng người viết chưa xác định context đúng để truyền vào. Trong handler đã có `r.Context()`, thay nó bằng TODO sẽ làm mất thông tin của request.
+`context.Background()` tạo context gốc không có thời hạn và không tự bị hủy. Đây là điểm xuất phát phù hợp ở `main` khi chương trình chưa có parent lifetime. `context.TODO()` cũng không tự bị hủy; tên của nó diễn đạt rằng người viết chưa xác định context đúng để truyền vào. Trong handler đã có `r.Context()`, thay nó bằng TODO sẽ làm mất thông tin của request. Với cả Background và TODO, Done trả nil, Err trả nil và Deadline không có giá trị thời hạn. Receive trực tiếp trên Done nil sẽ chờ mãi; trong select, nhánh đó bị vô hiệu hóa. Chỉ tạo root khi công việc thực sự chưa có parent lifetime, không dùng nó để vô tình cắt cancellation của request.
 
 `context.WithCancel(parent)` tạo một context con cùng hàm `cancel`. Người tạo child giữ quyền gọi cancel; người thực hiện công việc nhận child. `ctx.Done()` trả về channel dùng để báo hủy. Với context có khả năng hủy, channel này được đóng khi việc hủy có hiệu lực. Đóng channel cho phép nhiều goroutine cùng nhận được một tín hiệu mà không cần gửi từng message. `ctx.Err()` trả về nil trước khi hủy, rồi trả về lỗi mô tả nhóm nguyên nhân hủy.
 

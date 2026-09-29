@@ -16,7 +16,7 @@ Phiên bản 3 thêm outbox/events cho ledger, notifications và reconciliation 
 
 Webhook có thể duplicate, đến trước response synchronous hoặc out of order. Verify nguồn theo provider contract, dedup event và dùng state transition/version hợp lệ. Một callback “success” không nên bị overwrite bởi timeout của attempt cũ đến sau. Reconciliation định kỳ query provider theo reference để giải quyết state treo.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,11 +24,11 @@ Tạo payment, xem status, refund và nhận provider webhook. Invariant: một 
 
 ## Non-functional Requirements
 
-Giả định 500 create RPS peak, 2k status RPS; accepted response P99<300ms khi async; final outcome có thể pending. Durability/audit quan trọng hơn chấp nhận mutation khi authority không hoạt động.
+Giả định 500 create RPS peak, 2k status RPS; accepted response P99<300 ms khi async; final outcome có thể pending. Durability/audit quan trọng hơn chấp nhận mutation khi authority không hoạt động.
 
 ## Capacity Estimation
 
-500 operations/s × 86400 =43.2M/ngày ở sustained peak, không được dùng peak làm average nếu business thấp hơn. Giả định average50/s →4.32M/ngày; record+index 2KiB ≈8.2GiB/ngày trước replication. Provider cap200 concurrent và mean400ms cho planning ceiling500/s.
+500 operations/s × 86400 =43.2M/ngày ở sustained peak, không được dùng peak làm average nếu business thấp hơn. Giả định average 50/s →4.32M/ngày; record+index 2KiB ≈8.2GiB/ngày trước replication. Provider cap200 concurrent và mean400 ms cho planning ceiling500/s.
 
 ## API
 

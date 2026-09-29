@@ -52,4 +52,4 @@ Test zero, negative, overflow, Unicode và payload lớn theo use case. Error n�
 
 ## Thực hành có điều kiện kiểm chứng
 
-Endpoint nhận limit parse int rồi check1..100 trước allocate slice. JSON body bị MaxBytesReader bound trước decode, còn decompressed stream cần limit ở đúng tầng giải nén. Patch API phân biệt missing/null/zero theo contract; pointer DTO đơn thuần có thể chưa đủ cả ba trạng thái. Fuzz malformed UTF-8, nested inputs và numeric extremes theo accepted schema.
+Endpoint nhận limit parse int rồi check 1..100 trước allocate slice. JSON body bị MaxBytesReader bound trước decode, còn decompressed stream cần limit ở đúng tầng giải nén. Patch API phân biệt missing/null/zero theo contract; pointer DTO đơn thuần có thể chưa đủ cả ba trạng thái. Fuzz malformed UTF-8, nested inputs và numeric extremes theo accepted schema.

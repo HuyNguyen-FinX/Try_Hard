@@ -1,6 +1,8 @@
 # 30-day plan
 
-Mỗi ngày2–3 giờ:45 phút đọc,45 phút code/diagram,30 phút trả lời English,15 phút ghi gaps. Ngày mock dành trọn115 phút rồi feedback.
+Dành khoảng 2–3 giờ mỗi buổi: đọc diễn giải, dự đoán/chạy ví dụ rồi ghi lại mechanism bằng lời của mình. Dùng thời gian cuối để thay một điều kiện và kiểm chứng failure path. Lịch là khung tham khảo; nếu chưa phân biệt cancellation với join hoặc slice với backing array, dành thêm buổi cho nền tảng trước khi chuyển tiếp.
+
+Bảng dưới ghi đầu ra thực hành để tổ chức thời gian. Nó không thay các bài được link: hãy đọc phần giải thích đầy đủ rồi mới dùng dòng tóm tắt để nhớ lại. Buổi mock cuối là tùy chọn sau giáo trình, có thể thay bằng một bài tổng hợp HTTP→DB→shutdown.
 
 | Day | Focus | Deliverable |
 |---|---|---|
@@ -21,7 +23,7 @@ Mỗi ngày2–3 giờ:45 phút đọc,45 phút code/diagram,30 phút trả lờ
 | 15 | [Shutdown](../06-http-backend/graceful-shutdown.md) | Build server, SIGTERM smoke test, vẽ dependency close order. |
 | 16 | [SQL/pools](../08-database/database-sql-pool.md) | Giải500/20 và tổng pool ở max pods+surge. |
 | 17 | [Transactions/query plans](../08-database/transactions.md) | Vẽ crash/rollback paths; review isolation và N+1. |
-| 18 | [Redis/cache](../09-redis-cache/cache-stampede.md) | Model hit95%→0%, thiết kế bounded fallback. |
+| 18 | [Redis/cache](../09-redis-cache/cache-stampede.md) | Model hit 95%→0%, thiết kế bounded fallback. |
 | 19 | [Kafka/order/dedup](../10-messaging/kafka.md) | Vẽ DB commit→crash→offset replay và contiguous prefix. |
 | 20 | [Distributed systems](../12-distributed-systems/fundamentals.md) | Giải timeout ambiguity, outbox và stale lease owner. |
 | 21 | [Architecture/gRPC](../11-software-architecture/go-project-structure.md) | Vẽ import/dependency direction và RPC deadline propagation. |
@@ -31,8 +33,8 @@ Mỗi ngày2–3 giờ:45 phút đọc,45 phút code/diagram,30 phút trả lờ
 | 25 | [High-throughput design](../13-system-design/design-high-throughput-api.md) | 30 phút whiteboard20k RPS và cache outage arithmetic. |
 | 26 | [Migration design](../13-system-design/design-migration-platform.md) | Chứng minh snapshot+CDC không gap; verification/cutover. |
 | 27 | [Payment + one design](../13-system-design/design-payment-system.md) | Unknown charge outcome và replay invariant; chọn chat/job/file. |
-| 28 | [Production game day](../20-production-scenarios/README.md) | Ba incidents: high CPU,20k G,DB pool; nói first10 minutes. |
+| 28 | [Production game day](../20-production-scenarios/README.md) | Ba incidents: high CPU,20k G,DB pool; nói first 10 minutes. |
 | 29 | [Coding + behavioral](../21-coding-interview/README.md) | Hai coding exercises và hai STAR stories thật có trade-off. |
-| 30 | [Full mock + review](../23-mock-interview/full-mock-interview.md) | 115 phút scored mock, fix3 gaps và review cheatsheets. |
+| 30 | [Full mock + review](../23-mock-interview/full-mock-interview.md) | 115 phút scored mock, fix 3 gaps và review cheatsheets. |
 
 Nếu chưa giải thích được failure/debugging, dành buổi kế tiếp sửa gap trước chuyển P1. Giữ notes/lab artifacts trong `golang/` để không ảnh hưởng bộ ngôn ngữ khác.

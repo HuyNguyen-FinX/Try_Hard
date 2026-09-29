@@ -1,8 +1,12 @@
-# System Design
+# Xây hệ thống qua từng phiên bản có lý do
 
-Whiteboard requirements→capacity→commit→failure→evolution.
+Các bài bắt đầu từ một API/database hoặc control/worker flow đơn giản, chỉ thêm replica/cache/queue khi requirement hoặc bottleneck đã rõ. Mỗi sơ đồ có phần đọc nodes, arrows và failure boundaries. Capacity là ước lượng với assumptions; các mục tiêu RPS hoặc số rows chưa phải kết quả benchmark production.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [system-design-framework](system-design-framework.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -24,10 +28,4 @@ Whiteboard requirements→capacity→commit→failure→evolution.
 | [Sharding và partition ownership](sharding.md) | P1 |
 | [System design framework cho Senior Go](system-design-framework.md) | P0 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

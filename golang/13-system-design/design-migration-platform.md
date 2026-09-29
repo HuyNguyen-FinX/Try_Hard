@@ -16,11 +16,11 @@ Phiên bản 3 phối hợp snapshot với CDC — change data capture, luồng 
 
 Ví dụ 5 tỷ rows × 1 KB khoảng 5 TB payload thô theo đơn vị thập phân, chưa indexes/replicas/protocol. 50000 rows/s cần tối thiểu khoảng 100000 giây, hơn 27 giờ, nếu rate giữ ổn định và chưa tính catch-up/verification. Source log retention phải che tổng thời gian cùng failure margin; nếu tụt ra ngoài retention, cần chiến lược resnapshot chứ không tiếp tục như không có gap.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
-Migrate4–5 tỷ records từ Source DB sang Target DB với snapshot song song CDC, transformation versioned, checkpoints, retry/DLQ và verification. Source vẫn nhận writes trong migration; cutover có rollback plan và ownership rõ.
+Migrate 4–5 tỷ records từ Source DB sang Target DB với snapshot song song CDC, transformation versioned, checkpoints, retry/DLQ và verification. Source vẫn nhận writes trong migration; cutover có rollback plan và ownership rõ.
 
 ## Non-functional Requirements
 
@@ -199,7 +199,7 @@ Cutover chỉ khi lag và verification đạt ngưỡng, writers/readers chuyể
 
 - Kill worker sau target commit nhưng trước offset commit: restart không tạo duplicate business effect.
 - Delay snapshot chunk trong khi CDC update/delete cùng key: final target không bị overwrite/resurrect.
-- Giảm target throughput xuống5k/s trong10 phút: source readers backpressure, CDC retention headroom vẫn còn, memory không tăng vô hạn.
+- Giảm target throughput xuống5k/s trong 10 phút: source readers backpressure, CDC retention headroom vẫn còn, memory không tăng vô hạn.
 - Add nullable column rồi đổi incompatible type: compatible rollout pass, incompatible stream bị quarantine có alert và resumable checkpoint.
 - Fail over source và replay boundary: epoch/source position không bị so sánh sai; verification phát hiện gaps.
 

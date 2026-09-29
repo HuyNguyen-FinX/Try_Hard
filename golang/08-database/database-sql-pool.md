@@ -20,7 +20,7 @@ flowchart LR
 
 ### Cách đọc diagram
 
-R là một operation muốn dùng DB. Q biểu diễn bước acquire, không khẳng định có một FIFO queue như API guarantee. Conn1 và conn2 đang bận nên chưa cho operation khác mượn; conn3 có thể được chọn khi idle. Mũi tên về P biểu diễn tài nguyên được trả sau khi operation, Rows hoặc transaction kết thúc theo lifetime. Nếu cả ba bận và trần open là 3, request tiếp theo phải chờ hoặc hết context.
+R là một operation muốn dùng DB. Q biểu diễn bước acquire, không khẳng định có một FIFO queue như API guarantee. Conn 1 và conn 2 đang bận nên chưa cho operation khác mượn; conn 3 có thể được chọn khi idle. Mũi tên về P biểu diễn tài nguyên được trả sau khi operation, Rows hoặc transaction kết thúc theo lifetime. Nếu cả ba bận và trần open là 3, request tiếp theo phải chờ hoặc hết context.
 
 Giả sử ba query đều giữ connection 100 ms. Query thứ tư đến lúc t=10 ms chưa chạy SQL cho tới khi có slot, có thể gần t=100 ms. Nếu deadline còn 50 ms, nó có thể timeout trước khi tới database. Tăng statement timeout ở PostgreSQL không giúp phần chờ này.
 
@@ -47,13 +47,13 @@ flowchart LR
 
 ### Cách đọc diagram
 
-500 requests là nhu cầu đồng thời, còn trần20 là budget connection ví dụ. Acquire wait nằm trước DB CPU/IO/locks nên request có thể timeout khi chưa chạy SQL. Rows đóng hoặc transaction kết thúc mới trả tài nguyên để operation khác tiến triển, thể hiện bằng mũi tên quay về acquire. Các số này minh họa sự khác biệt request concurrency và pool size, không là cấu hình khuyến nghị chung.
+500 requests là nhu cầu đồng thời, còn trần 20 là budget connection ví dụ. Acquire wait nằm trước DB CPU/IO/locks nên request có thể timeout khi chưa chạy SQL. Rows đóng hoặc transaction kết thúc mới trả tài nguyên để operation khác tiến triển, thể hiện bằng mũi tên quay về acquire. Các số này minh họa sự khác biệt request concurrency và pool size, không là cấu hình khuyến nghị chung.
 
 ## Cơ chế bên trong
 
 SetMaxOpenConns cap open connections; nonpositive là unlimited theo API. SetMaxIdleConns cap idle reuse, không cap active work độc lập. SetConnMaxLifetime giới hạn thời gian reuse connection từ lúc tạo; SetConnMaxIdleTime giới hạn idle duration. Connections đang dùng không đơn giản bị kill ngay khi chạm lifetime; expire/reuse cleanup theo pool contract. Idle cap không nên vượt open cap.
 
-Với 500 requests đồng thời cùng cần một connection và MaxOpenConns=20, tối đa khoảng 20 giữ connection; còn lại chờ acquire, timeout/cancel hoặc chưa tới DB stage. Không có bảo đảm chính xác 480 waiter nếu workload khác nhau. Nếu mean connection hold time 50ms và server chịu được, upper planning estimate 20/0.05=400 operations/s; queue wait có thể vượt deadline rất nhanh. Không dùng estimate này như benchmark result.
+Với 500 requests đồng thời cùng cần một connection và MaxOpenConns=20, tối đa khoảng 20 giữ connection; còn lại chờ acquire, timeout/cancel hoặc chưa tới DB stage. Không có bảo đảm chính xác 480 waiter nếu workload khác nhau. Nếu mean connection hold time 50 ms và server chịu được, upper planning estimate 20/0.05=400 operations/s; queue wait có thể vượt deadline rất nhanh. Không dùng estimate này như benchmark result.
 
 ## Ví dụ code
 
@@ -68,7 +68,7 @@ func ConfigurePool(db *sql.DB) {
 
 ### Giải thích code và kết quả
 
-ConfigurePool đặt trần20 open và giữ tối đa10 idle cho một sql.DB. Lifetime30phút và idle5phút điều chỉnh tái sử dụng/loại connection theo pool, không là query timeout. Cấu hình trước khi phục vụ và kiểm tra budget số replicas; giá trị chỉ minh họa field. DB phải được caller tạo/Close theo lifecycle, function không mở kết nối hay chứng minh DB chịu được20 queries song song.
+ConfigurePool đặt trần 20 open và giữ tối đa 10 idle cho một sql.DB. Lifetime 30 phút và idle 5 phút điều chỉnh tái sử dụng/loại connection theo pool, không là query timeout. Cấu hình trước khi phục vụ và kiểm tra budget số replicas; giá trị chỉ minh họa field. DB phải được caller tạo/Close theo lifecycle, function không mở kết nối hay chứng minh DB chịu được 20 queries song song.
 
 Snippet cần imports database/sql và time. Chọn con số từ measurements; cộng mọi API/worker/admin pools trên tất cả pods trước so với DB budget.
 

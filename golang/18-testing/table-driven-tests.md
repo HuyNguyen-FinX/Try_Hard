@@ -6,7 +6,7 @@ Một parser cần xử lý nhiều input edge cases cùng cách assert. Table-d
 
 ## Đi từng bước qua một tình huống
 
-Đặt tên như empty_input, missing_field, boundary_limit thay vì case1. Mỗi subtest có fixture độc lập nếu mutate state. Nếu chạy parallel, tránh dùng chung mutable map/server state; closure capture semantics còn phụ thuộc phiên bản ngôn ngữ và cách khai báo biến.
+Đặt tên như empty_input, missing_field, boundary_limit thay vì case 1. Mỗi subtest có fixture độc lập nếu mutate state. Nếu chạy parallel, tránh dùng chung mutable map/server state; closure capture semantics còn phụ thuộc phiên bản ngôn ngữ và cách khai báo biến.
 
 ## Hiểu cơ chế từ kết quả quan sát
 
@@ -52,4 +52,4 @@ Kiểm tra failure output chỉ rõ case và giá trị khác nhau. Thêm case t
 
 ## Thực hành có điều kiện kiểm chứng
 
-Đặt cases LowerBound gồm nil, target trước first, equal duplicate, giữa values và sau last. Assert first matching index và partition invariant, không chỉ result ở typical input. Nếu t.Parallel, mỗi case phải có fixture riêng hoặc immutable; schema shared cần unique namespace. Module language version1.22+ thay loop variable capture semantics, nhưng data referenced bên trong case vẫn có thể shared.
+Đặt cases LowerBound gồm nil, target trước first, equal duplicate, giữa values và sau last. Assert first matching index và partition invariant, không chỉ result ở typical input. Nếu t.Parallel, mỗi case phải có fixture riêng hoặc immutable; schema shared cần unique namespace. Module language version 1.22+ thay loop variable capture semantics, nhưng data referenced bên trong case vẫn có thể shared.

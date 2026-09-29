@@ -1,6 +1,8 @@
-# Study first: ưu tiên theo leverage trong phỏng vấn
+# Học trước: nối kiến thức theo quan hệ phụ thuộc
 
-## Top20 Golang topics to study first
+Các nhóm dưới là bản đồ chọn bài. Đọc từ ví dụ nhỏ tới cơ chế rồi mới chuyển sang production; nếu chưa hiểu một thuật ngữ, quay lại lời giải thích trong bài thay vì chỉ ghi nó vào checklist. Ví dụ slice ownership giúp hiểu channel payload, còn channel/select giúp hiểu cancellation và worker pool.
+
+## Top 20 Golang topics to study first
 
 1. [Slices: aliasing, append, retention](../01-go-core/arrays-slices.md)
 2. [Maps: semantics và concurrency](../01-go-core/maps.md)
@@ -23,7 +25,7 @@
 19. [database/sql pool / transactions](../08-database/database-sql-pool.md)
 20. [pprof và execution trace](../16-performance/pprof.md)
 
-## Top10 production topics
+## Top 10 production topics
 
 1. [API high latency](../20-production-scenarios/api-high-latency.md): queue versus execution time.
 2. [High CPU](../20-production-scenarios/high-cpu.md): hot code, GC assists, throttling.
@@ -36,12 +38,12 @@
 9. [Duplicate messages](../20-production-scenarios/duplicate-message.md): durable idempotency.
 10. [Graceful shutdown/deployment](../06-http-backend/graceful-shutdown.md): drain, join, replay.
 
-## Top10 system design topics
+## Top 10 system design topics
 
 1. [Capacity và framework](../13-system-design/system-design-framework.md)
 2. [High-throughput API20k RPS](../13-system-design/design-high-throughput-api.md)
 3. [Payment system](../13-system-design/design-payment-system.md)
-4. [Migration4–5B records](../13-system-design/design-migration-platform.md)
+4. [Migration 4–5B records](../13-system-design/design-migration-platform.md)
 5. [Job processing](../13-system-design/design-job-processing-system.md)
 6. [Notification system](../13-system-design/design-notification-system.md)
 7. [Chat system](../13-system-design/design-chat-system.md)

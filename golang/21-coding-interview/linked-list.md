@@ -6,7 +6,7 @@
 
 ## Đi từng bước qua một tình huống
 
-Bắt đầu prev=nil, head=1. Lưu next=2 trước, đặt1.Next=nil, rồi prev=1,head=2. Vòng sau lưu3, đặt2.Next=1, dịch prev/head. Cuối cùng head=nil và prev=3 là đầu mới3→2→1. Nếu đổi Next trước khi lưu next, phần đuôi có thể mất khỏi traversal.
+Bắt đầu prev=nil, head=1. Lưu next=2 trước, đặt 1.Next=nil, rồi prev=1,head=2. Vòng sau lưu 3, đặt 2.Next=1, dịch prev/head. Cuối cùng head=nil và prev=3 là đầu mới 3→2→1. Nếu đổi Next trước khi lưu next, phần đuôi có thể mất khỏi traversal.
 
 ## Hiểu cơ chế từ kết quả quan sát
 

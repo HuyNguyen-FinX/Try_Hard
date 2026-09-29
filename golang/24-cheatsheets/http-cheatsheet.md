@@ -1,6 +1,12 @@
 # HTTP Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Client.Do trả response chưa có nghĩa body đã đọc xong. Caller cần size policy, đọc/Close đúng để trả tài nguyên và giúp HTTP/1 reuse khi đủ điều kiện. Pool ở Transport, nên khởi tạo một custom Transport cho mỗi request có thể mất reuse. Timeout dial chỉ bảo vệ kết nối ban đầu, không giới hạn toàn thời gian đọc body; context/client policy cần phù hợp request hữu hạn hoặc stream.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | Middleware | Ordering rõ, preserve streaming/hijack interfaces, không write sau handler return. |
 | Shutdown | Fresh deadline context, stop intake, drain/join, close DB cuối; WebSockets quản lý riêng. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../06-http-backend/README.md) · [Review ngày cuối](last-day-review.md)

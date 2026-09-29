@@ -78,7 +78,7 @@ db.SetConnMaxIdleTime(5 * time.Minute)
 
 ### Giải thích code và kết quả
 
-DB đã được startup owner tạo; bốn dòng cấu hình open, idle, tuổi connection và thời gian idle trên handle chung. Chúng không chạy query và không thay Context API cho cancellation.20/10/30phút/5phút là số để phân biệt các loại trần, không là default deployment. Snippets harness cấp biến db và imports để compile ví dụ trong isolation.
+DB đã được startup owner tạo; bốn dòng cấu hình open, idle, tuổi connection và thời gian idle trên handle chung. Chúng không chạy query và không thay Context API cho cancellation.20/10/30 phút/5 phút là số để phân biệt các loại trần, không là default deployment. Snippets harness cấp biến db và imports để compile ví dụ trong isolation.
 
 ## Từ runtime đến production
 

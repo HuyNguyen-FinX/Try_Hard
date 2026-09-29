@@ -1,8 +1,12 @@
-# Goroutines Scheduler
+# Từ goroutine tới cách runtime chia CPU
 
-Theo dấu G/M/P qua CPU, syscall và network waits.
+Học goroutine bằng một hàm chạy đồng thời có điểm chờ hoàn tất, rồi đọc G–M–P để hiểu nhiều công việc chia sẻ ít thread/core. Runnable là sẵn sàng nhưng đợi lượt, waiting là chưa thể tiến triển; phân biệt đó là nền tảng của trace và debugging latency. Các bài work stealing, netpoller, syscall và preemption mở từng đường đi cụ thể.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [goroutine](goroutine.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -17,10 +21,4 @@ Theo dấu G/M/P qua CPU, syscall và network waits.
 | [Blocking syscalls](syscalls.md) | P1 |
 | [Work stealing và locality](work-stealing.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

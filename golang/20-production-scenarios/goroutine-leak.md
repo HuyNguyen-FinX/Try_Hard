@@ -6,7 +6,7 @@
 
 ## Đi từng bước qua một tình huống
 
-Lấy profile trong burst và sau drain, nhóm stacks theo blocking site và nơi tạo. Giả sử phần lớn đứng ở results <- response trong helper fetch. Dựng timeline handler timeout ở100ms, helper nhận remote response ở500ms rồi send vào channel không còn receiver. Group stack không tiến triển qua nhiều snapshots hỗ trợ giả thuyết này.
+Lấy profile trong burst và sau drain, nhóm stacks theo blocking site và nơi tạo. Giả sử phần lớn đứng ở results <- response trong helper fetch. Dựng timeline handler timeout ở 100 ms, helper nhận remote response ở500 ms rồi send vào channel không còn receiver. Group stack không tiến triển qua nhiều snapshots hỗ trợ giả thuyết này.
 
 Kiểm tra input/output và context: helper có thể đã dùng ctx cho HTTP nhưng caller return trước worker send; hoặc worker dùng Background. Count connections giúp loại trừ trường hợp nhiều long-lived sessions hợp lệ.
 
@@ -66,11 +66,3 @@ Test tạo worker, chờ started signal, làm caller bỏ cuộc, cancel và đ�
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **20,000 goroutines trong production** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Goroutine stacks**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

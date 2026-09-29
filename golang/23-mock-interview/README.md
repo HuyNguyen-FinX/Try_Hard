@@ -1,8 +1,12 @@
-# Mock Interview
+# Phụ lục luyện phỏng vấn sau khi học lý thuyết
 
-Phỏng vấn có timebox, đáp án và rubric.
+Ngân hàng câu hỏi được giữ riêng ở module này để người đã học có thể luyện trình bày và tự tìm lỗ hổng. Nó không nằm trong các bài lý thuyết và không thay phần giải thích mechanism. Khi chưa giải thích được một đáp án bằng ví dụ, quay lại lesson liên quan thay vì học thuộc câu ngắn.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [full-mock-interview](full-mock-interview.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -17,10 +21,4 @@ Phỏng vấn có timebox, đáp án và rubric.
 | [Top 100 Golang Questions](top-100-golang-questions.md) | Practice |
 | [Top 50 Senior Backend Questions](top-50-senior-backend-questions.md) | Practice |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

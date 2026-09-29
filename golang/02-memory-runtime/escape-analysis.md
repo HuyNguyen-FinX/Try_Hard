@@ -52,7 +52,7 @@ func main() { _ = local(); sink = shared() }
 
 ### Giải thích code và kết quả
 
-Local tạo n và chỉ trả giá trị7, pointer tạm không cần sống ngoài call. Shared trả pointer và main lưu vào global sink nên object phải sống đủ lâu sau call theo semantics. Inlining có thể đổi nơi cấp phát nhưng không được làm sink trỏ tới vùng không hợp lệ. Compiler output của đúng build mới cho placement thực; ví dụ không có output hay blocking.
+Local tạo n và chỉ trả giá trị 7, pointer tạm không cần sống ngoài call. Shared trả pointer và main lưu vào global sink nên object phải sống đủ lâu sau call theo semantics. Inlining có thể đổi nơi cấp phát nhưng không được làm sink trỏ tới vùng không hợp lệ. Compiler output của đúng build mới cho placement thực; ví dụ không có output hay blocking.
 
 ```bash
 go build -gcflags="-m" escape.go

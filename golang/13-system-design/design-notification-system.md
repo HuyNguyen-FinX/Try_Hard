@@ -16,7 +16,7 @@ Phiên bản 3 dùng event bus khi nhiều nguồn sự kiện/consumer và repl
 
 Batching giảm API overhead nhưng có thể làm một recipient lỗi ảnh hưởng cả batch hoặc tăng latency chờ. Channel fallback email→SMS cần policy chi phí/consent, không thử mọi kênh vô hạn. DLQ giữ job không xử lý được cùng owner sửa/replay và retention.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Gửi email/SMS/push từ events, preferences và templates; support scheduling,
 
 ## Non-functional Requirements
 
-Giả định 10M notifications/ngày, peak2k/s; accepted durable P99<200ms, priority transactional nhanh hơn bulk. Duplicate tolerance khác nhau theo channel.
+Giả định 10M notifications/ngày, peak2k/s; accepted durable P99<200 ms, priority transactional nhanh hơn bulk. Duplicate tolerance khác nhau theo channel.
 
 ## Capacity Estimation
 

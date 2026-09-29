@@ -71,4 +71,4 @@ Client qua gateway tới order service. Nhánh synchronous gRPC tới inventory 
 
 ## Thực hành có điều kiện kiểm chứng
 
-Với A→B→C, parent còn150ms thì B không nên tạo timeout200ms độc lập. Pass ctx và child deadline theo remaining budget, reserve cleanup/response time. Async command khác: persist accepted work rồi worker có own attempt deadline/retry age policy. Dùng cùng trace metadata không có nghĩa phải giữ cùng cancellation lifetime xuyên durable boundary.
+Với A→B→C, parent còn150 ms thì B không nên tạo timeout200 ms độc lập. Pass ctx và child deadline theo remaining budget, reserve cleanup/response time. Async command khác: persist accepted work rồi worker có own attempt deadline/retry age policy. Dùng cùng trace metadata không có nghĩa phải giữ cùng cancellation lifetime xuyên durable boundary.

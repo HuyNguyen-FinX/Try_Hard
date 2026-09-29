@@ -41,7 +41,7 @@ Bắt đầu requirements/invariants rồi xác định workload và SLO để c
 
 ## Cơ chế bên trong
 
-Trong45 phút:5 phút clarify scope;5 phút estimates;10 phút API/data/architecture;10 phút deep dive bottleneck;10 phút failures/recovery/security;5 phút evolution và validation. Với30 phút giảm breadth, vẫn giữ commit boundary và unknown outcomes. Nêu assumptions bằng số, units và scope. Peak khác average; storage gồm indexes/replicas; concurrency dùng mean time với Little's Law trong trạng thái ổn định.
+Trong45 phút:5 phút clarify scope;5 phút estimates;10 phút API/data/architecture;10 phút deep dive bottleneck;10 phút failures/recovery/security;5 phút evolution và validation. Với 30 phút giảm breadth, vẫn giữ commit boundary và unknown outcomes. Nêu assumptions bằng số, units và scope. Peak khác average; storage gồm indexes/replicas; concurrency dùng mean time với Little's Law trong trạng thái ổn định.
 
 Runtime Go là một tầng của system: G park khi I/O nhưng giữ memory; GOMAXPROCS bound Go CPU execution, không bound requests. Worker count, queue bytes, client pools và DB capacity phải gắn vào model. Kafka partitions bound ordering/parallelism; context deadlines đi qua dependencies; graceful shutdown cần replay-safe state.
 
@@ -59,7 +59,7 @@ print(rps * read_fraction * (1 - hit_ratio))  # ~900 read misses/s
 
 ### Giải thích code và kết quả
 
-Rps nhân mean_seconds cho mean in-flight1000 trong steady state và cùng boundary đo. Nhánh read_fraction×miss_fraction ước khoảng900 read misses/s, chưa tính multiple queries/request hoặc cache-down. Calculator chỉ kiểm tra units/assumptions, không đo throughput thật. Đổi hit_ratio về0 để thấy DB read demand tăng lên18000/s và lý do cần fallback bound.
+Rps nhân mean_seconds cho mean in-flight 1000 trong steady state và cùng boundary đo. Nhánh read_fraction×miss_fraction ước khoảng900 read misses/s, chưa tính multiple queries/request hoặc cache-down. Calculator chỉ kiểm tra units/assumptions, không đo throughput thật. Đổi hit_ratio về0 để thấy DB read demand tăng lên18000/s và lý do cần fallback bound.
 
 Đây là calculator, không benchmark. Go implementation patterns chạy được nằm ở [examples](../examples/README.md).
 

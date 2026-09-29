@@ -6,7 +6,7 @@ API kiểm tra cache, miss thì đọc DB và ghi cache. Cách này dễ thêm v
 
 ## Đi từng bước qua một tình huống
 
-A đọc DB value v1 sau miss; B cập nhật DB lên v2 rồi invalidate cache; A sau đó ghi v1 vào cache. Cache vẫn stale dù B đã delete đúng một lần. Timeline này cho thấy delete-after-write không tạo consistency mạnh khi read-fill đua với update.
+A đọc DB value v 1 sau miss; B cập nhật DB lên v 2 rồi invalidate cache; A sau đó ghi v 1 vào cache. Cache vẫn stale dù B đã delete đúng một lần. Timeline này cho thấy delete-after-write không tạo consistency mạnh khi read-fill đua với update.
 
 ## Hiểu cơ chế từ kết quả quan sát
 

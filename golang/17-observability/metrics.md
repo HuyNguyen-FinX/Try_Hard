@@ -52,7 +52,7 @@ Validate metric lúc lỗi/retry/reject, không chỉ success. Offered, accepted
 
 ## Thực hành có điều kiện kiểm chứng
 
-Giả sử một pod có100 requests và P99=1s, pod khác có10k requests P99=50ms: average525ms không là fleet P99. Aggregate histogram buckets/counts theo time window rồi tính quantile/fraction. Include timeout/reject events theo eligible definition; nếu chỉ observe successful requests, latency dashboard có thể xanh ngay khi phần lớn users fail.
+Giả sử một pod có 100 requests và P99=1s, pod khác có10k requests P99=50 ms: average525 ms không là fleet P99. Aggregate histogram buckets/counts theo time window rồi tính quantile/fraction. Include timeout/reject events theo eligible definition; nếu chỉ observe successful requests, latency dashboard có thể xanh ngay khi phần lớn users fail.
 
 ## Runtime metrics example
 

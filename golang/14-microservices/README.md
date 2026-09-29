@@ -1,8 +1,12 @@
-# Microservices
+# Vận hành các boundary qua mạng
 
-Vận hành network boundaries với version/deadline contracts.
+Khi tách process, local call thành network operation có deadline, retry và unknown outcome. Module ghép communication/discovery với config, secrets, observability và resilience. Đọc để biết chi phí phải nhận khi cần deploy/scale độc lập, không để mặc định mọi domain phải tách thành service.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [service-communication](service-communication.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -16,10 +20,4 @@ Vận hành network boundaries với version/deadline contracts.
 | [Service communication contract](service-communication.md) | P1 |
 | [Service discovery và connection lifetime](service-discovery.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

@@ -1,8 +1,12 @@
-# Distributed Systems
+# Suy luận khi chỉ một phần hệ thống thất bại
 
-Reason về safety/liveness/unknown outcomes và recovery.
+Tình huống trung tâm là remote commit nhưng response mất. Từ đó học timeout, retry, idempotency và outbox, rồi consistency, saga và authority/lease. Mỗi kỹ thuật giải quyết một failure boundary; ghép đúng cần biết invariant nào nằm trong một transaction và state nào phải được đối soát.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [fundamentals](fundamentals.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -21,10 +25,4 @@ Reason về safety/liveness/unknown outcomes và recovery.
 | [Saga và compensating actions](saga.md) | P1 |
 | [Timeout và failure detection](timeout.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

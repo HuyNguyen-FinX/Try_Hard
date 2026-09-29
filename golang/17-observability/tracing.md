@@ -52,4 +52,4 @@ Test propagation qua middleware, goroutine và message metadata. Khi timeout, đ
 
 ## Thực hành có điều kiện kiểm chứng
 
-Request fan-out3 calls chạy song song mỗi call100ms có tổng span duration300ms nhưng critical path khoảng100ms cộng overhead. Nếu API duration500ms, tìm queue/admission/uninstrumented gaps hoặc sequential stages. Tail sampling có thể giữ error traces nhưng collector vẫn cần bounded state. Không dùng trace sampling ratio để suy exact error rate; metrics trả lời rate.
+Request fan-out 3 calls chạy song song mỗi call 100 ms có tổng span duration300 ms nhưng critical path khoảng 100 ms cộng overhead. Nếu API duration500 ms, tìm queue/admission/uninstrumented gaps hoặc sequential stages. Tail sampling có thể giữ error traces nhưng collector vẫn cần bounded state. Không dùng trace sampling ratio để suy exact error rate; metrics trả lời rate.

@@ -1,58 +1,39 @@
-# Repository audit
+# Báo cáo biên tập và kiểm tra giáo trình Go
 
-Kiểm tra ngày2026-09-29 trên **Go1.26.4 darwin/arm64**. Phạm vi thay đổi của task: `golang/`. [Structured evidence](../tools/verification.json) và [verification tools](../tools/README.md).
+Lượt sửa này rà toàn bộ296 Markdown files trong `golang/`, gồm242 bài học, hướng dẫn module/lộ trình và các phụ lục. Mục tiêu là chuyển từ notes phỏng vấn sang diễn giải: bài toán, ví dụ đầu tiên, walkthrough, cơ chế, tình huống production, failure/debugging và trade-off. Chỉ ghi files dưới `golang/`; snapshot hash của `python/` lúc bắt đầu và kết thúc lượt này khớp nhau.
 
-## Delivery inventory
+## Những thay đổi trong cách dạy
 
-| Hạng mục | Kết quả |
-|---|---:|
-| Files created (không gồm cache/generated profiles) | 316 |
-| Markdown documents | 296 |
-| Files expanded có sẵn trước task | 0 — Golang ban đầu trống |
-| Required paths | 276/276 |
-| Canonical P0 deep dives | 27 |
-| Mermaid diagrams added | 90 |
-| System designs created | 9 |
-| Production scenarios added | 12 |
-| Question prompts toàn tài liệu | 1270 |
-| Distinct question text theo structural parser | 1151 |
+Các bài nền tảng về context, goroutine/scheduler, concurrency, kiểu dữ liệu/bộ nhớ, HTTP/SQL và profiling được mở rộng trước. Context bắt đầu từ request bị bỏ dở, phân biệt cancellation với join và remote commit; scheduler đi từ công việc đang chờ tới G–M–P; slice/interface có output cụ thể trước representation. Các chuyên đề mở rộng có tình huống riêng, không chỉ dẫn người mới sang một file khác để tìm định nghĩa chính.
 
-27 P0×30=810 câu hỏi theo đúng10 basic/mid,10 senior,5 production scenarios,5 follow-ups. Hai banks riêng có100 Go và50 Backend với consecutive numbering/expandable answers; một số prompts xuất hiện lại trong mocks để luyện retrieval. “Distinct text” không khẳng định mọi câu hỏi khác nhau về semantic concept.
+Mọi95 Mermaid blocks có mục `### Cách đọc diagram` ngay sau, giải thích nodes, arrows, trình tự và giới hạn của mô hình. Mọi61 code/command/schema blocks có walkthrough theo loại nội dung. Code Go hoàn chỉnh được phân biệt với snippet có harness và SQL/Protobuf schema chưa được chạy integration.
 
-## Content and structure checks
+Chín system designs giải thích phiên bản đầu và lý do thêm replica/cache/queue sau đó; Kafka xuất hiện theo requirement, không mặc định là thành phần khởi đầu. Mười hai production scenarios dùng timeline mô phỏng, nêu bằng chứng để phân biệt giả thuyết, mitigation và điều kiện xác minh recovery. Các con số là assumptions phục vụ học, không là kết quả production đo tại workspace.
 
-- Tất cả276 paths yêu cầu tồn tại; thêm module READMEs, references, runnable examples và tools.
-- Local Markdown links/anchors không broken; code fences cân bằng; không unresolved task markers.
-- P0 đủ concept/mental model/why/how/internals/diagram/code/use case/failures/trade-offs/misconceptions/when-not/debugging/questions/takeaways. Mỗi bài đạt structural depth gate; có review tập trung semantics runtime/concurrency/pools.
--9 designs đều có14 mục yêu cầu, Go implementation và ít nhất5 diagrams. Migration/20k RPS có capacity arithmetic, failure injection và acceptance gates riêng.
--54 bài bổ trợ được bổ sung applied drill sau depth review. Không còn bài bị structural audit gắn cờ quá ngắn.
-- Không có full documents trùng nội dung; không paragraph dài trùng nguyên văn Python hiện tại. Standard section labels/rubrics có chủ đích lặp, cross-links nối các chủ đề liên quan.
+Các section câu hỏi bị bỏ khỏi bài lý thuyết. Ngân hàng câu hỏi độc lập ở `23-mock-interview` được giữ như phụ lục sau khi học; cheatsheets có ví dụ để đọc bảng đúng điều kiện. README và lịch học đã đổi sang hoạt động đọc, dự đoán, chạy và giải thích thay vì yêu cầu học thuộc30 câu mỗi bài.
 
-## Executed validation
+## Kết quả kiểm tra
 
-| Check | Observed result |
+| Phép kiểm tra | Kết quả và phạm vi |
 |---|---|
-| `go test -race ./...` trong examples | Pass; pool, HTTP reuse/cancel/body bound, algorithms và core examples |
-| `go vet ./...` | Pass |
-|20 Go Markdown blocks | Compile pass; snippets được cấp imports/argument harness như mô tả |
-| FuzzLowerBound,5s | Pass,62611 executions trong run được quan sát |
-| FuzzDecimalRoundTrip,5s | Pass,207875 executions trong run được quan sát |
-| Negative race demo, build tag racedemo | Expected failure, DATA RACE; default suite không include test này |
-| BenchmarkFormat và CPU/heap capture | Commands chạy thành công; profiles đọc được bằng pprof |
-| Execution trace capture | Pass |
-| HTTP server/SIGTERM smoke |200 health response, process exit0 sau SIGTERM |
-| Mermaid12.0.0 |90 diagrams parse pass,0 syntax errors |
+| Required paths, local links/anchors, fences |276 paths đủ; không lỗi |
+| Lesson structure | Không có question-bank section trong theory; code/diagram có giải thích trực tiếp |
+| Mermaid12.0.0 |95/95 parse thành công |
+| Go Markdown compilation |45/45 blocks compile trong harness độc lập |
+| Complete programs |24 chương trình chạy thành công; output được đối chiếu với lời giải thích |
+| HTTP Markdown server | Compile; không chạy go run vô hạn như một test |
+| Go labs với race detector |`go test -race ./...` pass; Go tái dùng cache cho lab code/tests không đổi |
+| Static checks |`go vet ./...` pass |
+| Python scope | Hash snapshot đầu/cuối lượt sửa khớp; không có thao tác ghi/restore Python |
 
-HTTP tests và Chromium parser cần quyền chạy loopback/browser process ngoài sandbox mặc định; lượt đầu bị môi trường chặn và lượt chạy với quyền phù hợp đã pass. Không thay đổi tests để bỏ qua hành vi cần kiểm.
+Chi tiết evidence và giới hạn được ghi trong [verification.json](../tools/verification.json). [Audit tool](../tools/README.md) tạo inventory từng bài, diagram và reports ở `golang/.cache/`; có thể chạy lại để kiểm tra thay đổi tiếp theo. Baseline Python lịch sử của lượt xây repository trước vẫn được giữ; so với baseline lịch sử có thể báo drift khác với snapshot của lượt sửa này.
 
-## Python boundary
+## Cách diễn giải kết quả
 
-Snapshot ban đầu gồm275 Python files. Trong khi task đang chạy, Python xuất hiện thay đổi/xóa/thêm so với snapshot dù toàn bộ lệnh ghi của task này chỉ nhắm vào Golang. Vì vậy **không tuyên bố toàn thư mục Python bất biến**. Không restore, sửa hoặc di chuyển bất kỳ Python file nào để tránh can thiệp công việc ngoài phạm vi. Audit giữ baseline và báo drift như warning riêng; trạng thái này có thể tiếp tục đổi nếu có tác vụ khác hoạt động.
+Compile thành công chứng minh syntax/type của các Go examples theo harness, không chứng minh mọi đường concurrent đều đúng hoặc query chạy đúng trên PostgreSQL thật. Chương trình cố ý race/leak được giải thích rõ và không chạy như positive example. Behavior tests kiểm worker lifecycle, HTTP reuse/cancellation và các thuật toán trong phạm vi input contract của lab.
 
-## Verification limits
+Lượt này không dựng live PostgreSQL/Redis/Kafka/Kubernetes/gRPC integration, không chạy20k RPS load test hoặc migration5 tỷ records. Kết quả fuzz, negative race, profile/trace capture và shutdown smoke của lượt trước được giữ dưới mục historical evidence, không trình bày như vừa chạy lại. Mermaid được kiểm syntax; chưa có cam kết hình render giống nhau trên mọi Markdown viewer.
 
-SQL helpers compile nhưng chưa chạy với PostgreSQL driver/server thật. Không có live Redis/Kafka/Kubernetes integration,20k RPS benchmark hoặc migration5B records được thực thi. Các design ghi rõ assumptions và cần validation trên hạ tầng/dữ liệu đại diện. Benchmark local chỉ là smoke cho harness/profile workflow, không làm sizing recommendation. Mermaid được kiểm syntax bằng parser; rendering giữa Markdown hosts có thể khác.
+Word count và heading giúp phát hiện bài quá mỏng hoặc thiếu explanation, nhưng không tự đo chất lượng giảng giải. Review nội dung tập trung vào thứ tự từ ví dụ tới mechanism, ownership của tài nguyên, thuật ngữ theo ngữ cảnh và crash/cancellation timeline. Khi áp dụng vào service thật, đối chiếu [nguồn theo version](../references.md), chạy integration với driver/protocol đang dùng và kiểm chứng assumptions dưới workload đại diện.
 
-## Recommended next study step
-
-[Top20 Go, Top10 production, Top10 system design và learning order](study-first.md). Bắt đầu theo [30-day plan](30-day-plan.md) hoặc [14-day crash plan](14-day-crash-plan.md), rồi [full mock115 phút](../23-mock-interview/full-mock-interview.md).
+[Giáo trình](../README.md) · [Lộ trình học](study-first.md) · [Labs](../examples/README.md)

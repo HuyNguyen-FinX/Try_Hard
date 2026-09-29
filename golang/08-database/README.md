@@ -1,8 +1,12 @@
-# Database
+# SQL từ pool connection tới invariant durable
 
-Giữ durable invariants và quản connection lifecycle.
+Đọc database/sql và pool trước transaction/driver. Pool wait có thể chiếm hết deadline trước khi SQL tới DB; Rows/Tx lifecycle quyết định lúc trả connection. Sau đó dùng PostgreSQL isolation/constraints và query plans để nối correctness với performance dưới concurrent requests.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [database-sql](database-sql.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -19,10 +23,4 @@ Giữ durable invariants và quản connection lifecycle.
 | [sqlc: SQL làm contract](sqlc.md) | P1 |
 | [Transactions và short critical sections](transactions.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

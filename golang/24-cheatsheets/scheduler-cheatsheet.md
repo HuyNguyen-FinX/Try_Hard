@@ -1,6 +1,12 @@
 # Go Scheduler Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Một goroutine chờ network chưa có dữ liệu là waiting; khi socket ready nó trở thành runnable, rồi phải được chọn mới running. Work stealing chỉ giúp phân runnable work, không làm dữ liệu mạng tới nhanh hoặc mở một mutex đang bị giữ. P cấp tài nguyên chạy Go code cho M, còn OS lập lịch M trên CPU. Vì vậy thread count, goroutine count và GOMAXPROCS là ba con số khác nhau.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | Network | Nonblocking FD + netpoll park G, readiness wake G; disk/cgo không mặc nhiên giống. |
 | Preemption | Giúp progress, không hard real-time guarantee. Implementation details đổi theo version. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../03-goroutines-scheduler/scheduler-gmp.md) · [Review ngày cuối](last-day-review.md)

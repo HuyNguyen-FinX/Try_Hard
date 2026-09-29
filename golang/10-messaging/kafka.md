@@ -54,7 +54,7 @@ Go client cụ thể có contract poll, goroutine safety, rebalance callback và
 
 ## Theo một record qua restart và checkpoint
 
-Giả sử partition P có offsets100,101,102. Consumer đọc cả ba rồi giao ba workers. Offset102 hoàn tất trước,100 tiếp theo,101 đang chờ DB. Nếu commit progress vượt102 lúc này, crash rồi restart có thể bỏ qua101 theo semantics vị trí đã commit. Coordinator cần biết đoạn liên tục nào đã hoàn tất: sau100 chỉ có thể tiến qua100; khi101 xong mới gộp tới102. Giá trị offset API ghi thường biểu diễn vị trí đọc tiếp theo, nên kiểm tra convention client thay vì nhầm “last processed” và “next to read”.
+Giả sử partition P có offsets 100,101,102. Consumer đọc cả ba rồi giao ba workers. Offset102 hoàn tất trước,100 tiếp theo,101 đang chờ DB. Nếu commit progress vượt102 lúc này, crash rồi restart có thể bỏ qua101 theo semantics vị trí đã commit. Coordinator cần biết đoạn liên tục nào đã hoàn tất: sau 100 chỉ có thể tiến qua 100; khi101 xong mới gộp tới102. Giá trị offset API ghi thường biểu diễn vị trí đọc tiếp theo, nên kiểm tra convention client thay vì nhầm “last processed” và “next to read”.
 
 Nếu101 lỗi transient, giữ ordering/budget theo partition hoặc key tùy contract. Đưa101 vào retry topic rồi tiến checkpoint có thể phù hợp event độc lập, nhưng làm102 effect xảy ra trước101; đó là thay đổi semantics phải được chấp nhận. Một payment state machine có version checks khác một analytics counter có thể cộng giao hoán. Broker không biết các quan hệ nghiệp vụ này để tự chọn đúng.
 

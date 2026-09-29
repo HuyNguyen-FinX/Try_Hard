@@ -2,7 +2,7 @@
 
 ## Bài toán và ví dụ đầu tiên
 
-**Tình huống mô phỏng.** Một query từ20ms lên800ms sau khi dữ liệu tenant lớn hơn nhiều. DB CPU/IO tăng còn API goroutines chờ. Cần phân biệt execution plan, lock contention và pool wait trước chọn index hoặc thêm replicas.
+**Tình huống mô phỏng.** Một query từ 20 ms lên800 ms sau khi dữ liệu tenant lớn hơn nhiều. DB CPU/IO tăng còn API goroutines chờ. Cần phân biệt execution plan, lock contention và pool wait trước chọn index hoặc thêm replicas.
 
 ## Đi từng bước qua một tình huống
 
@@ -66,11 +66,3 @@ Verify plan và latency trên parameter distribution đại diện, gồm tenant
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **Database query slowdown** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Query waits and plans**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

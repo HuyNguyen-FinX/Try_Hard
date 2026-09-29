@@ -1,8 +1,12 @@
-# Messaging
+# Message từ publish tới effect và replay
 
-Delivery, ordering, replay và backpressure trong Go consumers.
+Một message có thể được xử lý rồi được gửi lại vì ack bị mất. Học partition/offset/group bằng timeline đó, sau đó nối consumer idempotency, ordering, retry và backpressure. Queue không tạo capacity vô hạn; success cần được định nghĩa ở durable effect, không chỉ broker đã nhận bytes.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [kafka](kafka.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -18,10 +22,4 @@ Delivery, ordering, replay và backpressure trong Go consumers.
 | [RabbitMQ acknowledgments và routing](rabbitmq.md) | P1 |
 | [Message retries và poison data](retry.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

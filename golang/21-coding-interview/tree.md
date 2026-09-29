@@ -6,7 +6,7 @@ Inorder traversal đi trái, node, phải. Recursion ngắn nhưng cây rất s�
 
 ## Đi từng bước qua một tình huống
 
-Với root2 có left1,right3, đẩy2 rồi1 vào stack khi đi trái. Không còn left thì pop1 và ghi result, chuyển right của1 là nil; pop2, ghi2 rồi chuyển sang3; đẩy/pop3 và ghi3. Kết quả1,2,3; thứ tự tăng chỉ được bảo đảm nếu input là BST đúng invariant.
+Với root 2 có left 1,right 3, đẩy 2 rồi 1 vào stack khi đi trái. Không còn left thì pop 1 và ghi result, chuyển right của 1 là nil; pop 2, ghi 2 rồi chuyển sang 3; đẩy/pop 3 và ghi 3. Kết quả 1,2,3; thứ tự tăng chỉ được bảo đảm nếu input là BST đúng invariant.
 
 ## Hiểu cơ chế từ kết quả quan sát
 

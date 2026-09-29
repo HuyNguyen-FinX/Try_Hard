@@ -10,7 +10,7 @@ Import example.com/project/store trỏ tới package theo module path và thư m
 
 ## Hiểu cơ chế từ kết quả quan sát
 
-Minimal Version Selection chọn các version cần để thỏa yêu cầu trong graph theo quy tắc Go. Khi có thay đổi dependency, xem go list -m all và go mod graph để hiểu vì sao một version được chọn. Major version v2 trở lên thường đi cùng suffix trong module/import path theo quy tắc module versioning.
+Minimal Version Selection chọn các version cần để thỏa yêu cầu trong graph theo quy tắc Go. Khi có thay đổi dependency, xem go list -m all và go mod graph để hiểu vì sao một version được chọn. Major version v 2 trở lên thường đi cùng suffix trong module/import path theo quy tắc module versioning.
 
 ## Khái niệm và mô hình làm việc
 
@@ -18,7 +18,7 @@ Package là đơn vị encapsulation/import; module là tập package được v
 
 ## Cơ chế và những ranh giới cần giữ
 
-go.mod ghi module path và Go version; go.sum chứa checksum, không phải lockfile chọn version. Minimal Version Selection chọn version cao nhất được yêu cầu trong graph. Major v2+ thường có suffix /v2.
+go.mod ghi module path và Go version; go.sum chứa checksum, không phải lockfile chọn version. Minimal Version Selection chọn version cao nhất được yêu cầu trong graph. Major v 2+ thường có suffix /v 2.
 
 ## Áp dụng vào hệ thống thật
 

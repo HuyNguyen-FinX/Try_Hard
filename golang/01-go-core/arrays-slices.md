@@ -89,7 +89,7 @@ func main() {
 
 ### Giải thích code và kết quả
 
-B sửa phần tử đầu trên array chung nên a[0] thành9. Full slice a[:1:1] chỉ có cap1, nên append7 tạo storage mới cho c; detached copy phần tử đầu lúc nó còn9 sang storage riêng. Sau a[0]=0, detached vẫn9, a[1] vẫn2, c[1] là7, a[0] là0. Output9 2 7 0 tách rõ alias, cap limit và copy; đây là code tuần tự nên không có blocking/concurrent access.
+B sửa phần tử đầu trên array chung nên a[0] thành9. Full slice a[:1:1] chỉ có cap 1, nên append 7 tạo storage mới cho c; detached copy phần tử đầu lúc nó còn9 sang storage riêng. Sau a[0]=0, detached vẫn9, a[1] vẫn 2, c[1] là 7, a[0] là0. Output9 2 7 0 tách rõ alias, cap limit và copy; đây là code tuần tự nên không có blocking/concurrent access.
 
 ## Áp dụng vào hệ thống thật
 

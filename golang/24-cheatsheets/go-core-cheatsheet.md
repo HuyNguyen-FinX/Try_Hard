@@ -1,6 +1,12 @@
 # Go Core Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Một slice b=a[:2] chia sẻ array với a, nên b[0]=100 đổi dữ liệu a. Append vào b chỉ tách storage khi cần capacity mới; gán slice header không clone phần tử. Bảng dưới dùng các từ alias/copy để nhắc tình huống này, không có nghĩa mọi copy struct đều độc lập sâu. Với interface, giữ cặp dynamic type/value trong đầu để thấy vì sao nil pointer trong error vẫn làm err khác nil.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | Panic | Unwind cùng goroutine; recover trong deferred function; expected failures dùng error. |
 | Generics | Type set cho thuật toán; interface cho behavior/runtime substitution; không abstract mọi thứ. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../01-go-core/README.md) · [Review ngày cuối](last-day-review.md)

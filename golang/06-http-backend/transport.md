@@ -67,7 +67,7 @@ func NewClient() *http.Client {
 
 Clone tạo một Transport độc lập dựa cấu hình mặc định, rồi các field được chỉnh trước khi requests dùng concurrent. Type assertion giả định chương trình chưa thay biến http.DefaultTransport bằng một RoundTripper khác; trong code có thể thay global, cần kiểm tra assertion hoặc giữ dependency explicit. Những con số là ví dụ, không cấu hình chung cho mọi partner.
 
-MaxIdleConns100 và per-host20 nói về connections đang rảnh giữ lại. MaxConnsPerHost40 là trần connection theo host, khác request concurrency trong HTTP/2. Header timeout2giây giới hạn chờ headers theo contract; Client.Timeout5giây áp budget tổng operation của client. Caller vẫn tạo request với context có thể ngắn hơn, và phải đọc/Close body đúng.
+MaxIdleConns 100 và per-host 20 nói về connections đang rảnh giữ lại. MaxConnsPerHost 40 là trần connection theo host, khác request concurrency trong HTTP/2. Header timeout 2 giây giới hạn chờ headers theo contract; Client.Timeout 5 giây áp budget tổng operation của client. Caller vẫn tạo request với context có thể ngắn hơn, và phải đọc/Close body đúng.
 
 Gọi NewClient một lần trong startup owner, inject pointer vào services rồi reuse. Nếu gọi trong mỗi handler, mỗi instance giữ pool riêng và reuse giữa requests mất đi. CloseIdleConnections khi shutdown/đổi topology theo policy chỉ tác động idle connections; active work cần deadline/cancel/drain riêng.
 

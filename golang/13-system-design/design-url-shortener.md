@@ -16,7 +16,7 @@ Phiên bản 3 thêm pipeline click events khi analytics không được phép k
 
 Capacity tách read QPS, create QPS và click event bytes. Giả sử 10000 redirects/s, cache hit 95% thì còn khoảng 500 read misses/s trước traffic mã ngẫu nhiên; abuse có thể làm hit ratio thấp hơn nhiều. Một hot code cần cache strategy nhưng không cần shard tất cả writes chỉ vì read peak cao.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Create short URL, redirect, expiration, abuse takedown và optional click analyt
 
 ## Non-functional Requirements
 
-Giả định100M stored links,20k redirect RPS peak,200 create RPS; redirect P99<50ms khi cache hit; link ownership/durability và abuse response quan trọng.
+Giả định100M stored links,20k redirect RPS peak,200 create RPS; redirect P99<50 ms khi cache hit; link ownership/durability và abuse response quan trọng.
 
 ## Capacity Estimation
 

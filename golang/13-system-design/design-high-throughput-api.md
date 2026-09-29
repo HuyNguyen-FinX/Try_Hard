@@ -16,23 +16,23 @@ Phiên bản 3 tách công việc không cần hoàn tất trước response nh�
 
 Với 20000 RPS và mean service time 50 ms trong hệ ổn định, mean in-flight khoảng 1000. Nếu downstream chậm làm mean thành 500 ms mà input giữ nguyên, nhu cầu in-flight có thể tăng tới khoảng 10000 trước giới hạn hệ thống. Queue/concurrency caps và shedding giữ resource bounded; buffer lớn chỉ trì hoãn overload.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
-Phục vụ API read/write với PostgreSQL làm authority, Redis cache derived reads, Kafka cho side effects async và Kubernetes cho stateless Go replicas. Mục tiêu20k RPS, P99<200ms; phân biệt accepted writes với side effects hoàn tất.
+Phục vụ API read/write với PostgreSQL làm authority, Redis cache derived reads, Kafka cho side effects async và Kubernetes cho stateless Go replicas. Mục tiêu20k RPS, P99<200 ms; phân biệt accepted writes với side effects hoàn tất.
 
 ## Non-functional Requirements
 
-Giả định90% reads,10% writes; read cache hit95%, mean request50ms; availability99.95% trong region. Durable write ack sau DB commit; cache có stale bound30s cho fields được phép. Không cache quyết định authorization/balance nếu cần authoritative.
+Giả định 90% reads,10% writes; read cache hit 95%, mean request 50 ms; availability99.95% trong region. Durable write ack sau DB commit; cache có stale bound30s cho fields được phép. Không cache quyết định authorization/balance nếu cần authoritative.
 
 ## Capacity Estimation
 
-20k×0.05=1000 mean in-flight requests toàn fleet theo Little's Law. 18k reads/s×5% misses=900 DB read ops/s, cộng2k writes/s →2900 logical DB ops/s nếu mỗi operation một query/Tx. Query count/Tx hold time thực tế có thể lớn hơn. Mean connection hold10ms →29 concurrent DB connections lý tưởng; burst, locks và distribution cần measured headroom. Response2KiB →~39MiB/s outbound trước TLS/headers. Event1KiB×2k/s≈1.95MiB/s, ~165GiB/day raw Kafka payload ở sustained rate, trước replication/index/retention.
+20k×0.05=1000 mean in-flight requests toàn fleet theo Little's Law. 18k reads/s×5% misses=900 DB read ops/s, cộng2k writes/s →2900 logical DB ops/s nếu mỗi operation một query/Tx. Query count/Tx hold time thực tế có thể lớn hơn. Mean connection hold 10 ms →29 concurrent DB connections lý tưởng; burst, locks và distribution cần measured headroom. Response2KiB →~39MiB/s outbound trước TLS/headers. Event1KiB×2k/s≈1.95MiB/s, ~165GiB/day raw Kafka payload ở sustained rate, trước replication/index/retention.
 
 ## API
 
-GET /v1/items/{id} với ETag/version; POST /v1/orders với Idempotency-Key; GET /v1/orders/{id} cho async status. Request body cap64KiB giả định; page cap100. Trả429 tenant quota,503 admission overload, deadline errors theo contract; không silently accept khi không durable.
+GET /v 1/items/{id} với ETag/version; POST /v 1/orders với Idempotency-Key; GET /v 1/orders/{id} cho async status. Request body cap64KiB giả định; page cap 100. Trả429 tenant quota,503 admission overload, deadline errors theo contract; không silently accept khi không durable.
 
 ## Data Model
 
@@ -58,7 +58,7 @@ Clients qua edge limits/load balancer tới Go Pods có admission. API đọc ca
 
 ## Request Flow
 
-Request budget giả định 200ms: admission≤10ms, cache≤10ms, DB or dependency≤120ms, serialization/write≤30ms và30ms headroom; các budgets không phải mọi phase luôn thực thi. Child context không vượt parent. Chọn hit/miss/write paths riêng để latency histogram không che miss tail. Write trả sau transaction commit, side effects trả pending status nếu async.
+Request budget giả định 200 ms: admission≤10 ms, cache≤10 ms, DB or dependency≤120 ms, serialization/write≤30 ms và 30 ms headroom; các budgets không phải mọi phase luôn thực thi. Child context không vượt parent. Chọn hit/miss/write paths riêng để latency histogram không che miss tail. Write trả sau transaction commit, side effects trả pending status nếu async.
 
 ```mermaid
 sequenceDiagram
@@ -103,11 +103,11 @@ Write intent commit domain row và outbox cùng Tx. Một nhánh cập nhật/in
 
 ## Go Service Implementation
 
-net/http handlers vốn concurrent; thêm semaphore trước expensive work, không spawn unlimited children. CPU-bound tasks theo effective GOMAXPROCS/quota; IO calls theo downstream budgets. Shared sql.DB, Redis client, http.Transport/grpc ClientConn; deadlines cho acquire và execute. Pool10/pod không tự đủ nếu Tx giữ100ms: capacity planning phải dùng hold time thật. Kafka consumers dùng bounded batches/per-key ordering, idempotent transaction và contiguous commit. SIGTERM readiness/drain, join workers rồi close pools. pprof private và trace propagation xuyên calls/events.
+net/http handlers vốn concurrent; thêm semaphore trước expensive work, không spawn unlimited children. CPU-bound tasks theo effective GOMAXPROCS/quota; IO calls theo downstream budgets. Shared sql.DB, Redis client, http.Transport/grpc ClientConn; deadlines cho acquire và execute. Pool 10/pod không tự đủ nếu Tx giữ 100 ms: capacity planning phải dùng hold time thật. Kafka consumers dùng bounded batches/per-key ordering, idempotent transaction và contiguous commit. SIGTERM readiness/drain, join workers rồi close pools. pprof private và trace propagation xuyên calls/events.
 
 ## Scaling
 
-Planning example: nếu load test chứng minh1k RPS/pod ở latency target và acceptable saturation, cần20 pods steady plus failure/burst headroom; không lấy số này làm default. Giả định min24/max32 pods, pool10/pod →240..320 app DB connections, còn reserve workers/admin trong total server budget400 giả định. Rollout surge4 pods làm tổng360 trước workers; phải giảm caps hoặc tăng verified budget nếu không đủ. Redis và HTTP/gRPC pools có aggregate budget tương tự. HPA theo CPU cùng in-flight/queue indicators; DB wait cao CPU thấp cần admission, không scale mù.
+Planning example: nếu load test chứng minh1k RPS/pod ở latency target và acceptable saturation, cần 20 pods steady plus failure/burst headroom; không lấy số này làm default. Giả định min24/max32 pods, pool 10/pod →240..320 app DB connections, còn reserve workers/admin trong total server budget400 giả định. Rollout surge 4 pods làm tổng360 trước workers; phải giảm caps hoặc tăng verified budget nếu không đủ. Redis và HTTP/gRPC pools có aggregate budget tương tự. HPA theo CPU cùng in-flight/queue indicators; DB wait cao CPU thấp cần admission, không scale mù.
 
 ```mermaid
 flowchart TD
@@ -194,5 +194,5 @@ Tối ưu Go từ profile: serialization CPU, allocation churn, goroutine/pool w
 - Generator phát offered load theo lịch độc lập khi cần để thấy queue growth; báo cả requests timeout/reject, không loại khỏi latency accounting tùy tiện.
 - Warm cache, cold cache, 95% hit và Redis unavailable là bốn experiments riêng. Thêm skew một hot tenant/key, realistic auth/JSON payloads.
 - Ramp1k→5k→10k→20k, giữ đủ lâu qua nhiều GC/HPA cycles; sau overload hạ tải và yêu cầu queue age/live heap/G count về plateau.
-- Kill một pod, rollout với surge, làm DB query chậm10×, block Kafka publish; kiểm tra idempotent writes và outbox catch-up.
-- Chỉ công nhận target khi P99<200ms, error/reject policy thỏa SLO, no lost durable writes và downstream không vượt budget. Không có benchmark20k RPS được chạy trong repository này; đây là thiết kế thí nghiệm.
+- Kill một pod, rollout với surge, làm DB query chậm 10×, block Kafka publish; kiểm tra idempotent writes và outbox catch-up.
+- Chỉ công nhận target khi P99<200 ms, error/reject policy thỏa SLO, no lost durable writes và downstream không vượt budget. Không có benchmark20k RPS được chạy trong repository này; đây là thiết kế thí nghiệm.

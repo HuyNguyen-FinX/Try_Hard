@@ -1,6 +1,12 @@
 # Database Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Ba connections đều đang bận làm query thứ tư chờ acquire; nó có thể hết deadline trước khi SQL tới server. Rows hoặc Tx giữ slot tới khi lifecycle kết thúc. Tăng pool có thể chuyển queue xuống DB và làm locks/CPU tệ hơn; trước hết xem hold time và tổng budget replicas. Transaction cùng DB bảo vệ invariant local, không atomic với một HTTP provider ngoài.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | SQL | Parameterized values, allowlisted identifiers, tenant predicates và constraints. |
 | Consistency | Isolation theo invariant; serializable retry whole Tx; replica lag ảnh hưởng reads. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../08-database/README.md) · [Review ngày cuối](last-day-review.md)

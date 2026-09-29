@@ -16,7 +16,7 @@ Phiên bản 3 thêm broker khi polling DB hoặc fanout/replay requirements tr�
 
 Backpressure gồm cap jobs nhận mới, bytes input, in-flight worker và queue age. Job priority/fairness theo tenant tránh một khách chiếm hết capacity. Cancellation của user là state transition durable; worker kiểm tra ở chunk boundary, nhưng không được tuyên bố side effect đã undo chỉ vì cờ canceled.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Submit delayed/immediate jobs, retry, cancel, inspect progress và schedule recu
 
 ## Non-functional Requirements
 
-Giả định5k submit/s peak, processing seconds-minutes; API P99<150ms, queue age SLO theo job class; tenant fairness và bounded resources.
+Giả định5k submit/s peak, processing seconds-minutes; API P99<150 ms, queue age SLO theo job class; tenant fairness và bounded resources.
 
 ## Capacity Estimation
 

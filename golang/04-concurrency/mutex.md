@@ -88,7 +88,7 @@ func main() { i := &Inventory{available: 1}; fmt.Println(i.Reserve(1), i.Reserve
 
 ### Giải thích code và kết quả
 
-Reserve Lock trước cả kiểm tra available và trừ số lượng, nên hai bước là một critical section. N<=0 hoặc thiếu hàng trả false nhưng defer vẫn Unlock. Hai lần gọi với available1 cho true rồi false. Pointer receiver giữ cùng mutex/state; mutex local này bảo vệ trong một process, không thay constraint DB khi nhiều replicas cùng reserve cùng kho.
+Reserve Lock trước cả kiểm tra available và trừ số lượng, nên hai bước là một critical section. N<=0 hoặc thiếu hàng trả false nhưng defer vẫn Unlock. Hai lần gọi với available 1 cho true rồi false. Pointer receiver giữ cùng mutex/state; mutex local này bảo vệ trong một process, không thay constraint DB khi nhiều replicas cùng reserve cùng kho.
 
 Read-check-write cùng critical section tránh oversell trong process. Nhiều instances vẫn cần DB atomic update/transaction; mutex chỉ có phạm vi một process.
 

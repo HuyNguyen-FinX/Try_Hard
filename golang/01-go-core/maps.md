@@ -95,7 +95,7 @@ func main() { var c Counts; c.Inc("ok"); fmt.Println(c.Get("ok")) }
 
 ### Giải thích code và kết quả
 
-Inc lấy exclusive lock rồi mới khởi tạo map nếu nil và tăng counter; defer nhả trên mọi đường return. Get dùng RLock và đọc nil map hợp lệ nếu chưa có Inc. Cả read lẫn write tuân cùng mutex trong Counts. Main dùng zero value, tăng ok rồi đọc1. Pointer receivers tránh copy lock, nhưng caller cũng phải tránh sao chép Counts sau first use.
+Inc lấy exclusive lock rồi mới khởi tạo map nếu nil và tăng counter; defer nhả trên mọi đường return. Get dùng RLock và đọc nil map hợp lệ nếu chưa có Inc. Cả read lẫn write tuân cùng mutex trong Counts. Main dùng zero value, tăng ok rồi đọc 1. Pointer receivers tránh copy lock, nhưng caller cũng phải tránh sao chép Counts sau first use.
 
 ## Áp dụng vào hệ thống thật
 

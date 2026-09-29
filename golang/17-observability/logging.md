@@ -52,4 +52,4 @@ Test redaction và field consistency trên success/error/cancel. Khi incident, q
 
 ## Thực hành có điều kiện kiểm chứng
 
-Một request retry3 lần có operation_id cố định và attempt index khác nhau. Log error cuối tại owning boundary; intermediate retries ở sampled debug/info theo policy để tránh noise. Slog fields dùng route template và dependency name, không dump headers/context. Khi log sink chậm, bounded async queue/drop policy phải bảo vệ request path và expose dropped count.
+Một request retry 3 lần có operation_id cố định và attempt index khác nhau. Log error cuối tại owning boundary; intermediate retries ở sampled debug/info theo policy để tránh noise. Slog fields dùng route template và dependency name, không dump headers/context. Khi log sink chậm, bounded async queue/drop policy phải bảo vệ request path và expose dropped count.

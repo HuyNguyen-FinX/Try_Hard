@@ -6,7 +6,7 @@ Cần tìm vị trí đầu tiên có giá trị ít nhất bằng target trong 
 
 ## Đi từng bước qua một tình huống
 
-Với [1,3,3,7] và target3, left=0,right=4. Mid2 có value3 nên right=2; mid1 vẫn3 nên right=1; mid0 có1 nên left=1. Hai biên gặp ở1 là vị trí đầu tiên phù hợp. Target8 đưa kết quả tới len=4, biểu diễn không có phần tử đáp ứng, không phải index được phép đọc.
+Với [1,3,3,7] và target 3, left=0,right=4. Mid 2 có value 3 nên right=2; mid 1 vẫn 3 nên right=1; mid0 có 1 nên left=1. Hai biên gặp ở 1 là vị trí đầu tiên phù hợp. Target 8 đưa kết quả tới len=4, biểu diễn không có phần tử đáp ứng, không phải index được phép đọc.
 
 ## Code và giải thích từng bước
 

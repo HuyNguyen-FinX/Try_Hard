@@ -1,44 +1,21 @@
-# Interview readiness checklist
+# Tự đánh giá bằng một walkthrough hoàn chỉnh
 
-Đánh dấu theo khả năng thực tế, không chỉ đã đọc file.
+Tên file được giữ cho link cũ. Trang này giúp kiểm tra khả năng giải thích sau khi học, không là ngân hàng câu hỏi hoặc danh sách thuật ngữ cần thuộc.
 
-- [ ] [Goroutine](../03-goroutines-scheduler/goroutine.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Go Scheduler / G-M-P](../03-goroutines-scheduler/scheduler-gmp.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Channels](../04-concurrency/channels.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Select](../04-concurrency/select.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Mutex](../04-concurrency/mutex.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Context](../05-context/context-basics.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Memory model](../02-memory-runtime/memory-model.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Stack vs Heap](../02-memory-runtime/stack-vs-heap.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Escape Analysis](../02-memory-runtime/escape-analysis.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Garbage Collector](../02-memory-runtime/garbage-collector.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Slices](../01-go-core/arrays-slices.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Maps](../01-go-core/maps.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Interfaces](../01-go-core/interfaces.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [nil](../01-go-core/nil.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [net/http](../06-http-backend/net-http.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [HTTP client](../06-http-backend/http-client.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [HTTP connection pooling](../06-http-backend/connection-pooling.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [database/sql](../08-database/database-sql.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Database connection pool](../08-database/database-sql-pool.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Error handling](../01-go-core/errors.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Graceful shutdown](../06-http-backend/graceful-shutdown.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Race condition](../04-concurrency/race-condition.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Goroutine leak](../04-concurrency/goroutine-leak.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Worker pool](../04-concurrency/worker-pool.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [pprof](../16-performance/pprof.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [Distributed systems](../12-distributed-systems/fundamentals.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
-- [ ] [System Design](../13-system-design/system-design-framework.md): giải thích mechanism, vẽ flow, nêu failure, chọn debugging evidence.
+## Từ một request tới tài nguyên được trả
 
-## Practical gates
+Chọn endpoint đọc dữ liệu và gọi partner. Theo request từ HTTP handler qua context, SQL pool, query/Rows và HTTP response body. Ghi ai tạo/acquire, ai dùng, ai Close/cancel và owner nào chờ worker kết thúc. Đặt client disconnect ở giữa flow rồi chỉ rõ operation nào quan sát, operation nào có thể đã commit và state nào cần đối soát.
 
-- [ ] Chạy default tests và race detector; hiểu negative race demo cố ý fail.
-- [ ] Đọc CPU/heap/goroutine profile và phân biệt waiting với runnable.
-- [ ] Thiết kế worker pool có bound, error policy, cancellation và join.
-- [ ] Size DB/HTTP pools theo max replicas+surge và downstream capacity.
-- [ ] Chứng minh idempotency qua crash sau commit trước ack.
-- [ ] Vẽ5 diagrams cho một system design và tính units rõ ràng.
-- [ ] Kể2 STAR stories thật với contribution, alternative và lesson.
-- [ ] Full mock đạt mục tiêu cá nhân và không còn critical correctness gaps.
+Nếu chỉ viết “dùng context” mà không chỉ ra điểm select hoặc Context API, lifetime chưa được chứng minh. Nếu chỉ viết “dùng WaitGroup” mà worker không có đường thoát, shutdown vẫn có thể treo. Đọc lại [cancellation](../05-context/cancellation.md) và [pool](../04-concurrency/worker-pool.md) để nối hai phần.
 
-[30 ngày](30-day-plan.md) · [14 ngày](14-day-crash-plan.md) · [Mock](../23-mock-interview/full-mock-interview.md)
+## Từ code tới runtime và bằng chứng
+
+Chạy một ví dụ [slice](../01-go-core/arrays-slices.md) với cap khác nhau, rồi giải thích aliasing và allocation có điều kiện. Chạy [labs](../examples/README.md) với race detector và đọc một CPU/heap profile đúng sample type. Phân biệt điều test đã kiểm chứng với điều mới là assumption; compile SQL không chứng minh isolation của PostgreSQL.
+
+## Từ phiên bản đơn giản tới thiết kế lớn hơn
+
+Lấy một [system design](../13-system-design/README.md), trình bày V1 chỉ với các thành phần cần thiết. Dùng workload và failure story để biện minh replica/cache/queue tiếp theo. Theo crash trước/sau durable commit rồi xác định retry identity, checkpoint và recovery owner. Một sơ đồ rõ phải giải thích được mũi tên nào đồng bộ, mũi tên nào bất đồng bộ và lúc nào client nhận accepted/completed.
+
+## Cách dùng kết quả tự đánh giá
+
+Ghi một chỗ còn thiếu bằng câu cụ thể, ví dụ “chưa phân biệt pool wait với query execute” rồi đọc/chạy bài liên quan. Tránh tự chấm đã biết chỉ vì nhận ra tên thuật ngữ. Khi nền tảng đã vững, [mock interview](../23-mock-interview/README.md) giúp luyện trình bày có thời gian, còn [cheatsheets](../24-cheatsheets/README.md) giúp tìm lại điều kiện và links.

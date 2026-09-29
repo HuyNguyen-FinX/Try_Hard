@@ -16,7 +16,7 @@ Phiên bản 3 bổ sung quota store hoặc policy service khi cần limit chung
 
 Latency budget gateway gồm auth, route/pool wait và proxy response. Retry tự động mutation ở gateway có thể double-apply nếu backend đã commit; chỉ cho phép theo contract method/operation rõ. HTTP/2/WebSocket/streaming cần proxy behavior và timeout riêng, không được buffer body vô hạn để log hoặc inspect.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,15 +24,15 @@ Route nhiều backend, authenticate request, enforce tenant quota, propagate dea
 
 ## Non-functional Requirements
 
-Giả định 30k RPS, gateway added P99 <20ms trong cùng region, availability 99.95%; giới hạn headers/body và route config rollout có rollback.
+Giả định 30k RPS, gateway added P99 <20 ms trong cùng region, availability 99.95%; giới hạn headers/body và route config rollout có rollback.
 
 ## Capacity Estimation
 
-Payload trung bình 4KiB mỗi chiều: khoảng 117MiB/s mỗi chiều ở 30k RPS chưa tính TLS/protocol overhead. Mean upstream time 80ms → khoảng 2400 concurrent requests toàn fleet. Nếu 12 pods thì trung bình 200/pod; load-test CPU TLS và tail trước chọn cap.
+Payload trung bình 4KiB mỗi chiều: khoảng 117MiB/s mỗi chiều ở 30k RPS chưa tính TLS/protocol overhead. Mean upstream time 80 ms → khoảng 2400 concurrent requests toàn fleet. Nếu 12 pods thì trung bình 200/pod; load-test CPU TLS và tail trước chọn cap.
 
 ## API
 
-Public `/v1/orders` route theo method/path; admin config API private có version/ETag. Error body có code/request_id; 429 quota, 503 overload, 504 upstream deadline theo policy.
+Public `/v 1/orders` route theo method/path; admin config API private có version/ETag. Error body có code/request_id; 429 quota, 503 overload, 504 upstream deadline theo policy.
 
 ## Data Model
 

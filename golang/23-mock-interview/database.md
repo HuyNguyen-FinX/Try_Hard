@@ -1,6 +1,8 @@
 # Database Mock
 
-Câu hỏi English, answer cues Vietnamese. Tự trả lời60–90 giây rồi mở đáp án; câu trả lời senior cần thêm trade-off và failure evidence.
+Đây là phụ lục luyện tập sau giáo trình. Đọc bài lý thuyết liên quan trước, dùng đáp án để đối chiếu reasoning rồi quay lại ví dụ nếu chưa giải thích được cơ chế. Câu hỏi ở đây được giữ riêng, không là cấu trúc của các bài học.
+
+Câu hỏi English, answer cues Vietnamese. Tự trả lời 60–90 giây rồi mở đáp án; câu trả lời senior cần thêm trade-off và failure evidence.
 
 ## Database
 
@@ -15,12 +17,12 @@ Long-lived concurrent-safe pool handle, không một connection.
 
 </details>
 
-### 2. What happens with 500 requests and20 open connections?
+### 2. What happens with 500 requests and 20 open connections?
 
 <details>
 <summary>Answer</summary>
 
-Chỉ tối đa20 giữ slots, excess acquire waits/deadlines theo workload.
+Chỉ tối đa 20 giữ slots, excess acquire waits/deadlines theo workload.
 
 Đọc sâu: [database/sql: pool handle, rows và transaction ownership](../08-database/database-sql.md).
 

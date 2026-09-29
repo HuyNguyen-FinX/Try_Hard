@@ -67,7 +67,7 @@ go tool trace trace.out
 
 ### Giải thích code và kết quả
 
-Chạy từ examples. Lệnh đầu lấy10 benchmark samples vào before.txt; các lệnh tiếp ghi/read CPU và allocation profiles. Trace chỉ chạy test pool cancellation để xem runtime timeline, rồi go tool trace mở UI. Những lần chạy có profiler có overhead và không so trực tiếp với benchmark thường như cùng điều kiện. Giữ binary/toolchain/workload metadata để diễn giải đúng.
+Chạy từ examples. Lệnh đầu lấy 10 benchmark samples vào before.txt; các lệnh tiếp ghi/read CPU và allocation profiles. Trace chỉ chạy test pool cancellation để xem runtime timeline, rồi go tool trace mở UI. Những lần chạy có profiler có overhead và không so trực tiếp với benchmark thường như cùng điều kiện. Giữ binary/toolchain/workload metadata để diễn giải đúng.
 
 `benchstat before.txt after.txt` so samples khi tool đã được cài/pin; không coi một run là bằng chứng. Muốn capture production qua net/http/pprof, dùng listener quản trị private có access control, không mount public mux. Ví dụ command khi operator đã mở tunnel được phép:
 
@@ -77,7 +77,7 @@ go tool pprof -top 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 ### Giải thích code và kết quả
 
-Lệnh cuối lấy CPU profile30giây từ một process đã expose pprof trên loopback6060. Server lab mặc định không tự mở endpoint đó, nên đây là mẫu quan sát một service đã cấu hình admin listener. Chỉ dùng endpoint quản trị được phép, giới hạn thời lượng và đọc đúng binary. Đây không phải lệnh thay đổi business data nhưng profiling có overhead cần tính khi thu dưới tải.
+Lệnh cuối lấy CPU profile 30 giây từ một process đã expose pprof trên loopback6060. Server lab mặc định không tự mở endpoint đó, nên đây là mẫu quan sát một service đã cấu hình admin listener. Chỉ dùng endpoint quản trị được phép, giới hạn thời lượng và đọc đúng binary. Đây không phải lệnh thay đổi business data nhưng profiling có overhead cần tính khi thu dưới tải.
 
 Mutex/block cần enable sampling (`runtime.SetMutexProfileFraction`, `runtime.SetBlockProfileRate`) trước capture; revert theo operational policy. Không expose stack dumps cho internet vì có implementation/request metadata.
 

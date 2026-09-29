@@ -1,4 +1,4 @@
-# OAuth2, OIDC và authorization code flow
+# OAuth 2, OIDC và authorization code flow
 
 ## Bài toán và ví dụ đầu tiên
 
@@ -14,7 +14,7 @@ Scopes biểu diễn quyền được cấp trong contract, không tự map đú
 
 ## Khái niệm và mô hình làm việc
 
-OAuth2 cấp delegated access; OIDC thêm identity layer. Flow choice phụ thuộc client type và threat model.
+OAuth 2 cấp delegated access; OIDC thêm identity layer. Flow choice phụ thuộc client type và threat model.
 
 ## Cơ chế và những ranh giới cần giữ
 

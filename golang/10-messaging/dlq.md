@@ -53,4 +53,4 @@ Test poison record xen giữa hai event phụ thuộc và kiểm tra state cuố
 
 ## Thực hành có điều kiện kiểm chứng
 
-Replay drill: lấy10 records cùng một schema error, deploy transform fix, replay giữ original event ID và source metadata. Verify business effect count đúng, original DLQ item được đánh dấu resolved sau durable completion. Scale replay rate từ nhỏ; nếu dùng ID mới sẽ không kiểm chứng idempotency của original workflow. Dashboard phải có oldest unresolved age, không chỉ count.
+Replay drill: lấy 10 records cùng một schema error, deploy transform fix, replay giữ original event ID và source metadata. Verify business effect count đúng, original DLQ item được đánh dấu resolved sau durable completion. Scale replay rate từ nhỏ; nếu dùng ID mới sẽ không kiểm chứng idempotency của original workflow. Dashboard phải có oldest unresolved age, không chỉ count.

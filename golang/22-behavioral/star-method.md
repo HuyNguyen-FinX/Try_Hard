@@ -26,11 +26,11 @@ Mẫu minh họa: S backlog tăng, T bảo vệ checkout, A bound backfill và f
 
 ## Những đường lỗi cần hiểu
 
-Nói we toàn bộ không rõ contribution; outcome không gắn action; kể10 phút context.
+Nói we toàn bộ không rõ contribution; outcome không gắn action; kể 10 phút context.
 
 ## Lần theo bằng chứng khi có sự cố
 
-Tự record2 và5 phút, nhờ reviewer hỏi sâu vào hypothesis/testing/rollback.
+Tự record 2 và 5 phút, nhờ reviewer hỏi sâu vào hypothesis/testing/rollback.
 
 ## Đánh đổi và giới hạn sử dụng
 
@@ -38,7 +38,7 @@ STAR là cấu trúc hỗ trợ, không script học thuộc; câu trả lời p
 
 ## Thực hành, debugging và kết luận
 
-Chuẩn bị phiên bản ngắn2 phút và dài5 phút từ facts thật, kiểm tra mỗi số liệu có nguồn bạn nhớ/được phép chia sẻ. Không cần học thuộc script; ưu tiên câu chuyện trả lời đúng phạm vi và có thể giải thích sâu một quyết định.
+Chuẩn bị phiên bản ngắn 2 phút và dài 5 phút từ facts thật, kiểm tra mỗi số liệu có nguồn bạn nhớ/được phép chia sẻ. Không cần học thuộc script; ưu tiên câu chuyện trả lời đúng phạm vi và có thể giải thích sâu một quyết định.
 
 
 ## Đọc tiếp

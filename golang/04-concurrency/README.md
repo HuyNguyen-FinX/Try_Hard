@@ -1,8 +1,12 @@
-# Concurrency
+# Đồng bộ dữ liệu và vòng đời công việc
 
-Thiết kế synchronization và lifecycle có proof.
+Bắt đầu counter bị mất cập nhật và producer/consumer chờ nhau. Mutex bảo vệ invariant dữ liệu, channel phối hợp trao đổi, còn context và join quản lý lúc kết thúc. Sau các primitive mới ghép worker pool/pipeline; mọi ví dụ đều cần xác định ai gửi, ai đóng và điều gì xảy ra khi caller bỏ cuộc.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [mutex](mutex.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -26,10 +30,4 @@ Thiết kế synchronization và lifecycle có proof.
 | [WaitGroup: join và lifecycle](waitgroup.md) | P1 |
 | [Worker pool và bounded concurrency](worker-pool.md) | P0 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

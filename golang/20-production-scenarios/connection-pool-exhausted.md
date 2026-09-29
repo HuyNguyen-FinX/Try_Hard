@@ -2,7 +2,7 @@
 
 ## Bài toán và ví dụ đầu tiên
 
-**Tình huống mô phỏng.** HTTP timeout tăng, DB.Stats cho InUse=30 đúng MaxOpenConns và WaitCount tăng liên tục. PostgreSQL CPU chỉ 25%. Pool cạn không tự chứng minh cần nâng từ30 lên300 connections.
+**Tình huống mô phỏng.** HTTP timeout tăng, DB.Stats cho InUse=30 đúng MaxOpenConns và WaitCount tăng liên tục. PostgreSQL CPU chỉ 25%. Pool cạn không tự chứng minh cần nâng từ 30 lên300 connections.
 
 ## Đi từng bước qua một tình huống
 
@@ -18,7 +18,7 @@ Chỉ tăng pool khi DB còn capacity và evidence cho thấy thiếu concurrenc
 
 ## Khái niệm và mô hình làm việc
 
-500 requests và max open20 gây waits khi hold time/arrival vượt capacity; pool limit có thể đang bảo vệ database.
+500 requests và max open 20 gây waits khi hold time/arrival vượt capacity; pool limit có thể đang bảo vệ database.
 
 ## Cơ chế và những ranh giới cần giữ
 
@@ -42,7 +42,7 @@ Pause backfill, reduce admission/retries, cancel stale queries theo operational 
 
 ## Những đường lỗi cần hiểu
 
-Unclosed Rows, missing rollback, external I/O trong Tx, nested db call với pool1, HPA pool multiplication.
+Unclosed Rows, missing rollback, external I/O trong Tx, nested db call với pool 1, HPA pool multiplication.
 
 ## Lần theo bằng chứng khi có sự cố
 
@@ -66,11 +66,3 @@ Test lỗi Scan, return sớm, dependency timeout và nested transaction behavio
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **DB pool exhausted** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Pool Stats**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

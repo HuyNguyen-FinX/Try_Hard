@@ -1,71 +1,47 @@
-# Senior Golang / Senior Backend Interview Preparation
+# Giáo trình Go backend: từ ví dụ nhỏ tới hệ thống production
 
-Bộ tài liệu tiếng Việt, interview questions tiếng Anh cho Senior Golang, Senior Backend/Software Engineer, Platform và Distributed Systems Engineer. Học theo **WHAT → WHY → HOW → INTERNALS → RUNTIME → PRODUCTION → FAILURE → TRADE-OFF → DEBUGGING → INTERVIEW**.
+Tài liệu tiếng Việt dành cho backend engineer mới tìm hiểu Go sâu. Mỗi bài đi từ bài toán và ví dụ quan sát được tới cơ chế, runtime khi cần, failure/debugging và trade-off. Đọc code cùng phần giải thích ngay sau nó; mọi Mermaid diagram có mục **Cách đọc diagram** mô tả nodes, arrows và ý nghĩa luồng.
 
-## Learning Roadmap
+## Bắt đầu học
 
-- [30-day plan](00-roadmap/30-day-plan.md) —2–3 giờ/ngày, có deliverable cụ thể.
-- [14-day crash plan](00-roadmap/14-day-crash-plan.md) —3–4 giờ/ngày, ưu tiên P0.
-- [P0 / P1 / P2](00-roadmap/priority-topics.md) và [readiness checklist](00-roadmap/interview-checklist.md).
+Bắt đầu [giá trị và slices](01-go-core/arrays-slices.md), [goroutine](03-goroutines-scheduler/goroutine.md) và [context](05-context/context-basics.md) theo kiến thức đang thiếu. Sau đó nối thành đường request qua [HTTP](06-http-backend/net-http.md) và [database](08-database/database-sql.md). [Lộ trình 30 ngày](00-roadmap/30-day-plan.md) dành thời gian cho ví dụ và lab; [14 ngày](00-roadmap/14-day-crash-plan.md) là lịch tập trung vào nền tảng, cần điều chỉnh khi một cơ chế chưa rõ.
 
-## Version và cách đọc
+Một cách học hiệu quả là dự đoán output, chạy ví dụ, giải thích khác biệt rồi đổi một điều kiện: capacity của slice/channel, thời điểm cancel, pool size hoặc điểm crash. Với hệ thống phân tán, theo durable state sau từng bước thay vì chỉ nhìn response của caller. Các [mức ưu tiên](00-roadmap/priority-topics.md) giúp chọn thứ tự, không là danh sách phải học thuộc.
 
-Mental model/spec contract đi trước implementation. Code labs baseline Go 1.23, kiểm chứng bằng toolchain **Go 1.26.4**; không gọi đây là phiên bản Go mới nhất. Map default Swiss Tables từ1.24; container-aware GOMAXPROCS từ1.25 tùy config; Green Tea GC mặc định1.26. Scheduler/GC/map private layouts có thể đổi: **Implementation detail, subject to change between Go releases.** Xem [sources/version policy](references.md).
+## Bản đồ giáo trình
 
-27 bài canonical P0 được đánh dấu rõ; mỗi bài có30 câu theo10 basic/mid +10 senior +5 production +5 follow-ups. Các bài bổ trợ giải quyết từng chủ đề cụ thể và dẫn về deep dive. Snippets thiếu package/import được ghi rõ là snippet; code chạy được tập trung trong [examples](examples/README.md). Các estimates system design là giả định, không là benchmark đã đo.
+| Phần | Nội dung |
+|---|---|
+| [00-roadmap](00-roadmap/README.md) | Cách học giáo trình Go backend |
+| [01-go-core](01-go-core/README.md) | Giá trị, kiểu dữ liệu và ownership trong Go |
+| [02-memory-runtime](02-memory-runtime/README.md) | Bộ nhớ và runtime từ lifetime của object |
+| [03-goroutines-scheduler](03-goroutines-scheduler/README.md) | Từ goroutine tới cách runtime chia CPU |
+| [04-concurrency](04-concurrency/README.md) | Đồng bộ dữ liệu và vòng đời công việc |
+| [05-context](05-context/README.md) | Context từ request bị bỏ dở tới cleanup |
+| [06-http-backend](06-http-backend/README.md) | HTTP từ kết nối đến response và shutdown |
+| [07-api-design](07-api-design/README.md) | Contract giữa backend và client |
+| [08-database](08-database/README.md) | SQL từ pool connection tới invariant durable |
+| [09-redis-cache](09-redis-cache/README.md) | Cache, freshness và tải khi cache lỗi |
+| [10-messaging](10-messaging/README.md) | Message từ publish tới effect và replay |
+| [11-software-architecture](11-software-architecture/README.md) | Tổ chức code theo trách nhiệm và dependency |
+| [12-distributed-systems](12-distributed-systems/README.md) | Suy luận khi chỉ một phần hệ thống thất bại |
+| [13-system-design](13-system-design/README.md) | Xây hệ thống qua từng phiên bản có lý do |
+| [14-microservices](14-microservices/README.md) | Vận hành các boundary qua mạng |
+| [15-docker-kubernetes](15-docker-kubernetes/README.md) | Nối Go lifecycle với container và deployment |
+| [16-performance](16-performance/README.md) | Đo trước khi tối ưu |
+| [17-observability](17-observability/README.md) | Từ tín hiệu tới lời giải thích sự cố |
+| [18-testing](18-testing/README.md) | Kiểm chứng hành vi tại đúng boundary |
+| [19-security](19-security/README.md) | Giữ trust boundary trong backend |
+| [20-production-scenarios](20-production-scenarios/README.md) | Điều tra sự cố bằng timeline và giả thuyết |
+| [21-coding-interview](21-coding-interview/README.md) | Học thuật toán qua invariant và walkthrough |
+| [22-behavioral](22-behavioral/README.md) | Diễn đạt quyết định và đóng góp kỹ thuật |
+| [23-mock-interview](23-mock-interview/README.md) | Phụ lục luyện phỏng vấn sau khi học lý thuyết |
+| [24-cheatsheets](24-cheatsheets/README.md) | Phụ lục tra cứu sau khi đã hiểu bài |
 
-## Module links và Progress tracker
+## Thực hành và giới hạn của ví dụ
 
-Checkbox dành cho tiến độ học của bạn, không phải trạng thái tác giả viết tài liệu.
+[Go labs](examples/README.md) có worker pool, HTTP client/server, SQL cleanup patterns và thuật toán cùng tests. Code module dùng language baseline Go 1.23, được kiểm tra bằng toolchain cục bộ Go 1.26.4; đây không phải tuyên bố phiên bản mới nhất. Runtime internals được phân biệt với language/package contract và có [nguồn chính thức](references.md) để đối chiếu theo version.
 
-- [ ] [00-roadmap](00-roadmap/README.md) — Lập kế hoạch theo gap và role, có đầu ra hằng ngày.
-- [ ] [01-go-core](01-go-core/README.md) — Giải thích semantics và ownership trước runtime.
-- [ ] [02-memory-runtime](02-memory-runtime/README.md) — Liên hệ lifetime, allocation và GC với production memory.
-- [ ] [03-goroutines-scheduler](03-goroutines-scheduler/README.md) — Theo dấu G/M/P qua CPU, syscall và network waits.
-- [ ] [04-concurrency](04-concurrency/README.md) — Thiết kế synchronization và lifecycle có proof.
-- [ ] [05-context](05-context/README.md) — Truyền budget/cancellation đúng request và service ownership.
-- [ ] [06-http-backend](06-http-backend/README.md) — Bound HTTP resources, reuse pools và drain an toàn.
-- [ ] [07-api-design](07-api-design/README.md) — Thiết kế API contracts, compatibility và trust boundaries.
-- [ ] [08-database](08-database/README.md) — Giữ durable invariants và quản connection lifecycle.
-- [ ] [09-redis-cache](09-redis-cache/README.md) — Cache là hệ consistency/failure có source capacity budget.
-- [ ] [10-messaging](10-messaging/README.md) — Delivery, ordering, replay và backpressure trong Go consumers.
-- [ ] [11-software-architecture](11-software-architecture/README.md) — Packages nhỏ, interfaces tại consumer, dependency direction rõ.
-- [ ] [12-distributed-systems](12-distributed-systems/README.md) — Reason về safety/liveness/unknown outcomes và recovery.
-- [ ] [13-system-design](13-system-design/README.md) — Whiteboard requirements→capacity→commit→failure→evolution.
-- [ ] [14-microservices](14-microservices/README.md) — Vận hành network boundaries với version/deadline contracts.
-- [ ] [15-docker-kubernetes](15-docker-kubernetes/README.md) — Nối Go runtime budgets với container/platform lifecycle.
-- [ ] [16-performance](16-performance/README.md) — Tối ưu bằng profile và measurements đúng workload.
-- [ ] [17-observability](17-observability/README.md) — Đo user impact và tìm evidence xuyên boundaries.
-- [ ] [18-testing](18-testing/README.md) — Test invariants, protocol behavior và cancellation.
-- [ ] [19-security](19-security/README.md) — Bảo vệ identity/resource/input và secrets boundaries.
-- [ ] [20-production-scenarios](20-production-scenarios/README.md) — Tập incident response với giả thuyết có thể bác bỏ.
-- [ ] [21-coding-interview](21-coding-interview/README.md) — Code đúng, giải thích complexity và edge cases.
-- [ ] [22-behavioral](22-behavioral/README.md) — Nói về judgment/ownership bằng trải nghiệm thật.
-- [ ] [23-mock-interview](23-mock-interview/README.md) — Phỏng vấn có timebox, đáp án và rubric.
-- [ ] [24-cheatsheets](24-cheatsheets/README.md) — Ôn toàn bộ trong110 phút bằng compact prompts.
+[Chín bài system design](13-system-design/README.md) xây từ phiên bản đơn giản, giải thích lúc nào thêm replica, cache hoặc queue và cách phục hồi sau failure. Các mục tiêu20k RPS hoặc 4–5 tỷ records là assumptions để tính toán; repository không tuyên bố đã benchmark workload đó. [Mười hai case production](20-production-scenarios/README.md) là timeline mô phỏng, không là sự cố thật đã xảy ra ở workspace.
 
-## Deep dive topics
-
-- [G-M-P, syscalls, netpoll, preemption](03-goroutines-scheduler/scheduler-gmp.md)
-- [Channel internals](04-concurrency/channels.md), [select](04-concurrency/select.md), [worker pool](04-concurrency/worker-pool.md)
-- [Slices](01-go-core/arrays-slices.md), [interfaces/typed nil](01-go-core/interfaces.md), [maps/versioning](01-go-core/maps.md)
-- [Memory model](02-memory-runtime/memory-model.md), [escape analysis](02-memory-runtime/escape-analysis.md), [GC](02-memory-runtime/garbage-collector.md)
-- [HTTP pooling](06-http-backend/connection-pooling.md), [DB pooling](08-database/database-sql-pool.md), [graceful shutdown](06-http-backend/graceful-shutdown.md)
-
-## System design labs
-
-[API 20k RPS](13-system-design/design-high-throughput-api.md) · [Migration 4–5B records](13-system-design/design-migration-platform.md) · [Payments](13-system-design/design-payment-system.md) · [Gateway](13-system-design/design-api-gateway.md) · [Notifications](13-system-design/design-notification-system.md) · [Files](13-system-design/design-file-processing.md) · [Chat](13-system-design/design-chat-system.md) · [Jobs](13-system-design/design-job-processing-system.md) · [URL shortener](13-system-design/design-url-shortener.md).
-
-Mỗi design có requirements, capacity/API/data model,5 diagrams, Go implementation, failures, observability, security, trade-offs và evolution.
-
-## Production scenarios
-
-[12 incident runbooks](20-production-scenarios/README.md): high latency/CPU/memory,20k goroutines, exhausted pools, slow DB, Redis down, Kafka lag, duplicates, traffic spike, races và outage. Mỗi bài gắn evidence với mitigation và recovery checks.
-
-## Mock interviews và Cheatsheets
-
-[115-minute full mock](23-mock-interview/full-mock-interview.md) · [Top 100 Go](23-mock-interview/top-100-golang-questions.md) · [Top 50 Backend](23-mock-interview/top-50-senior-backend-questions.md) · [110-minute last-day review](24-cheatsheets/last-day-review.md).
-
-## Verification
-
-[Runnable labs](examples/README.md) · [Repository audit](00-roadmap/repository-audit.md) · [Study-first lists](00-roadmap/study-first.md). Chỉ nội dung dưới `golang/` được tạo; Python được kiểm tra bằng content hashes.
+Câu hỏi phỏng vấn chỉ ở [phụ lục luyện tập](23-mock-interview/README.md). [Cheatsheets](24-cheatsheets/README.md) dùng để tra lại sau khi đã học bài, không thay giáo trình. [Báo cáo kiểm tra](00-roadmap/repository-audit.md) phân biệt structural checks, compile examples, behavior tests và những integration chưa chạy.

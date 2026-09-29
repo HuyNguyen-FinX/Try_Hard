@@ -38,7 +38,7 @@ Index tăng read performance nhưng thêm write/storage cost; không index mọi
 
 ## Thực hành, debugging và kết luận
 
-So p95/p99 theo normalized query và cùng parameter distribution. Kiểm tra lock waits trước khi thêm index; index không mở khóa một transaction giữ row. Với EXPLAIN ANALYZE, chọn môi trường và query an toàn vì nó thực thi công việc. Xác nhận sửa bằng load đại diện và pool wait giảm thật.
+So p 95/p99 theo normalized query và cùng parameter distribution. Kiểm tra lock waits trước khi thêm index; index không mở khóa một transaction giữ row. Với EXPLAIN ANALYZE, chọn môi trường và query an toàn vì nó thực thi công việc. Xác nhận sửa bằng load đại diện và pool wait giảm thật.
 
 
 ## Đọc tiếp

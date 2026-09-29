@@ -1,8 +1,12 @@
-# Go Core
+# Giá trị, kiểu dữ liệu và ownership trong Go
 
-Giải thích semantics và ownership trước runtime.
+Module này giải thích vì sao copy một slice vẫn chia sẻ dữ liệu, vì sao interface chứa nil pointer có thể không nil, và vì sao defer chạy khác trực giác về block scope. Đi từ output của ví dụ đến value/reference/lifetime giúp các bài concurrency sau không trở thành học thuộc quy tắc. Bắt đầu arrays-slices, rồi maps, interfaces/nil, methods và cleanup/errors.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [arrays-slices](arrays-slices.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -23,10 +27,4 @@ Giải thích semantics và ownership trước runtime.
 | [Value versus pointer](value-vs-pointer.md) | P1 |
 | [Variables, types và zero values](variables-types.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

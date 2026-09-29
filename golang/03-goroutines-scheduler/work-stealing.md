@@ -44,11 +44,11 @@ Trace giúp phân biệt một P thiếu work với toàn hệ thống đang ch�
 
 ## Một diễn tiến tải lệch để phân biệt ba nguyên nhân
 
-Giả sử P1 có100 job, mỗi job xử lý1ms CPU, P2 không có local work và cả hai đều được quyền dùng CPU. Nếu các job thực sự độc lập và runnable, việc chuyển một nhóm sang P2 giảm thời gian P2 nhàn. Tổng work vẫn là100ms CPU theo giả định; thời gian tường có thể giảm khi chạy song song, nhưng không thể suy chính xác giảm một nửa vì còn scheduling, cache và OS policy.
+Giả sử P1 có 100 job, mỗi job xử lý 1 ms CPU, P2 không có local work và cả hai đều được quyền dùng CPU. Nếu các job thực sự độc lập và runnable, việc chuyển một nhóm sang P2 giảm thời gian P2 nhàn. Tổng work vẫn là 100 ms CPU theo giả định; thời gian tường có thể giảm khi chạy song song, nhưng không thể suy chính xác giảm một nửa vì còn scheduling, cache và OS policy.
 
-Bây giờ đổi100 job thành100 goroutine chờ cùng một socket chưa có dữ liệu. P2 rảnh là hợp lý vì chưa có work runnable. Stealing không làm network response tới sớm hơn. Nếu profile chỉ cho thấy waiting, câu hỏi cần chuyển sang deadline/dependency, không phải queue balancing.
+Bây giờ đổi 100 job thành 100 goroutine chờ cùng một socket chưa có dữ liệu. P2 rảnh là hợp lý vì chưa có work runnable. Stealing không làm network response tới sớm hơn. Nếu profile chỉ cho thấy waiting, câu hỏi cần chuyển sang deadline/dependency, không phải queue balancing.
 
-Đổi lần nữa:100 jobs đều cần giữ cùng mutex cho toàn phép tính1ms. Các goroutine chờ mutex chưa thể cùng tiến triển trong critical section; hai P vẫn không tạo100ms CPU work thành50ms wall time bằng stealing. Sửa cần tách state theo key hoặc giảm phạm vi độc quyền nếu invariant cho phép. Bỏ lock để benchmark nhanh hơn làm thay đổi correctness.
+Đổi lần nữa:100 jobs đều cần giữ cùng mutex cho toàn phép tính 1 ms. Các goroutine chờ mutex chưa thể cùng tiến triển trong critical section; hai P vẫn không tạo 100 ms CPU work thành 50 ms wall time bằng stealing. Sửa cần tách state theo key hoặc giảm phạm vi độc quyền nếu invariant cho phép. Bỏ lock để benchmark nhanh hơn làm thay đổi correctness.
 
 Khi đọc trace, đối chiếu trạng thái runnable/waiting và critical sections thay vì chỉ thấy một P ít hoạt động. Một benchmark tạo jobs từ cùng một goroutine có thể cho runtime phân tải khác source topology production. Ghi job sizes, skew, CPU quota và Go version khi so kết quả; không dựa vào thứ tự victim hoặc số job lấy mỗi lần như API ổn định.
 

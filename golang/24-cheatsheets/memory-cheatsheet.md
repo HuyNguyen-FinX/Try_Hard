@@ -1,6 +1,12 @@
 # Memory Cheatsheet
 
-Review8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
+## Ví dụ để đọc bảng đúng điều kiện
+
+Nếu allocation/request tăng nhưng live heap sau GC gần cũ, ưu tiên xem churn qua alloc_space và GC CPU. Nếu live heap tăng sau mỗi burst rồi không giảm khi drain, ưu tiên retention: cache, slice view hoặc goroutine giữ references. RSS còn có phần ngoài heap, nên một dòng “heap thấp” không đủ bác bỏ container memory pressure. Stack/heap placement là quyết định compiler theo lifetime, không suy chỉ từ dấu &.
+
+Đọc bảng sau như chỉ mục tra cứu. Khi một dòng chưa rõ, mở bài đầy đủ ở link cuối trang để xem walkthrough, failure và phép kiểm chứng; không dùng câu ngắn làm quy tắc tuyệt đối.
+
+Review 8–10 phút; che cột bên phải và tự giải thích bằng một ví dụ.
 
 | Prompt | Điều phải nhớ |
 |---|---|
@@ -13,8 +19,5 @@ Review8–10 phút; che cột bên phải và tự giải thích bằng một v�
 | Profiles | inuse_space retained; alloc_space churn; RSS còn memory ngoài Go heap. |
 | Leaks | Reachable cache/sub-slice/closure/G; GC không Close resources hoặc kill worker. |
 
-## Self-check
-
-Explain one failure, the resource it retains, and the measurement that proves your fix. Trả lời bằng mechanism, không chỉ definition.
 
 [Đọc sâu](../02-memory-runtime/README.md) · [Review ngày cuối](last-day-review.md)

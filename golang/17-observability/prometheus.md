@@ -26,7 +26,7 @@ Pool InUse gauge, acquire wait histogram, requests by route/status class.
 
 ## Những đường lỗi cần hiểu
 
-Label raw URL/order ID tạo hàng triệu series; buckets không bao quanh 200ms SLO.
+Label raw URL/order ID tạo hàng triệu series; buckets không bao quanh 200 ms SLO.
 
 ## Lần theo bằng chứng khi có sự cố
 

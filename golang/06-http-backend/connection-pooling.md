@@ -47,7 +47,7 @@ Xem [NewClient](../examples/http.go) với MaxConnsPerHost=40 và MaxIdleConnsPe
 
 ## Từ runtime đến production
 
-Ví dụ downstream 1000 calls/s, mean in-flight time 50ms: Little's Law gợi ý khoảng 50 concurrent calls trong trạng thái ổn định. Tail/burst cần headroom và load test, không dùng P99 thay mean một cách máy móc. 10 pods mỗi pod cap 40 có thể tạo 400 connections tới cùng dependency; autoscaling phải nằm trong global budget.
+Ví dụ downstream 1000 calls/s, mean in-flight time 50 ms: Little's Law gợi ý khoảng 50 concurrent calls trong trạng thái ổn định. Tail/burst cần headroom và load test, không dùng P99 thay mean một cách máy móc. 10 pods mỗi pod cap 40 có thể tạo 400 connections tới cùng dependency; autoscaling phải nằm trong global budget.
 
 ## Những đường lỗi cần hiểu
 

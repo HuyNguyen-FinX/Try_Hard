@@ -22,7 +22,7 @@ Client.Timeout gồm body read; Dial timeout cho kết nối, TLSHandshakeTimeou
 
 ## Áp dụng vào hệ thống thật
 
-Budget 200ms chia admission/connect/dependency/serialize với headroom; từng hop lấy remaining parent deadline.
+Budget 200 ms chia admission/connect/dependency/serialize với headroom; từng hop lấy remaining parent deadline.
 
 ## Những đường lỗi cần hiểu
 
@@ -53,4 +53,4 @@ Dùng test server trì hoãn từng pha để xác nhận field cấu hình th�
 
 ## Thực hành có điều kiện kiểm chứng
 
-Experiment server trả headers sau20ms rồi body sau2s; client timeout500ms phải fail trong body read dù header timeout100ms không hết. Test khác giữ connection cap1 và occupy slot: request thứ hai có thể hết budget trước dial. Dùng httptrace để phân biệt acquisition wait với remote first-byte latency, rồi size concurrency theo evidence thay tăng mọi timeout.
+Experiment server trả headers sau 20 ms rồi body sau2s; client timeout500 ms phải fail trong body read dù header timeout 100 ms không hết. Test khác giữ connection cap 1 và occupy slot: request thứ hai có thể hết budget trước dial. Dùng httptrace để phân biệt acquisition wait với remote first-byte latency, rồi size concurrency theo evidence thay tăng mọi timeout.

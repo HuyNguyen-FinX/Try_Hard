@@ -52,4 +52,4 @@ Thay một giả thuyết, test output/invariants, benchmark rồi canary theo S
 
 ## Thực hành có điều kiện kiểm chứng
 
-Giả sử CPU profile40% JSON,10% compression,50% khác: tối ưu compression2× chỉ cải thiện tổng time lý tưởng khoảng5%, không2× toàn API. Nếu DB wait chiếm wall latency lớn, CPU savings có thể không đổi P99 nhưng giảm cost. Ghi mục tiêu rõ: latency, throughput/core hay memory; tránh dùng một benchmark metric thay cho tất cả.
+Giả sử CPU profile 40% JSON,10% compression,50% khác: tối ưu compression 2× chỉ cải thiện tổng time lý tưởng khoảng 5%, không 2× toàn API. Nếu DB wait chiếm wall latency lớn, CPU savings có thể không đổi P99 nhưng giảm cost. Ghi mục tiêu rõ: latency, throughput/core hay memory; tránh dùng một benchmark metric thay cho tất cả.

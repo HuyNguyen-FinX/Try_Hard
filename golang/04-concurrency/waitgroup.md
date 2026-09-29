@@ -2,7 +2,7 @@
 
 ## Bài toán và ví dụ đầu tiên
 
-Main tạo ba worker rồi phải đóng database sau khi cả ba dừng. Một biến boolean cannot diễn đạt có bao nhiêu worker còn sống. WaitGroup là bộ đếm công việc chưa hoàn tất; Wait chặn caller đến khi bộ đếm trở về zero.
+Main tạo ba worker rồi phải đóng database sau khi cả ba dừng. Một biến boolean không diễn đạt có bao nhiêu worker còn sống. WaitGroup là bộ đếm công việc chưa hoàn tất; Wait chặn caller đến khi bộ đếm trở về zero.
 
 ## Đi từng bước qua một tình huống
 

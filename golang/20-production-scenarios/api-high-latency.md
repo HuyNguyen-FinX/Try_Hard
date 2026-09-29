@@ -18,7 +18,7 @@ Một số client disconnect giữa response làm server latency metrics khó hi
 
 ## Khái niệm và mô hình làm việc
 
-P99 tăng từ80ms lên800ms, RPS không đổi, CPU40%; chưa đủ bằng chứng để scale CPU.
+P99 tăng từ 80 ms lên800 ms, RPS không đổi, CPU40%; chưa đủ bằng chứng để scale CPU.
 
 ## Cơ chế và những ranh giới cần giữ
 
@@ -66,11 +66,3 @@ Verify P99 ở cùng load và route mix, cả requests thành công lẫn bị r
 ## Nguồn đối chiếu
 
 - [Tài liệu chính thức](https://go.dev/doc/diagnostics)
-
-## Drill và exit criteria
-
-Trong staging, tạo triệu chứng **API high latency** bằng failure injection có bounded duration. Trước khi thay đổi, ghi baseline traffic, version, resource limits và câu hỏi cần trả lời: **Wait by stage**. Thực hiện một mitigation, rồi so outcome theo cùng workload.
-
-- Success: user-facing errors/latency trở về SLO, accepted durable work được hoàn tất hoặc replayable, queues không tiếp tục tăng.
-- Regression guard: test tái hiện failure path, metrics/alert chỉ ra triệu chứng trước saturation, runbook có owner và rollback trigger.
-- Follow-up: **What would make your diagnosis wrong?** Nêu một measurement có thể bác bỏ giả thuyết, không chỉ evidence xác nhận.

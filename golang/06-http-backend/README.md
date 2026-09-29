@@ -1,8 +1,12 @@
-# Http Backend
+# HTTP từ kết nối đến response và shutdown
 
-Bound HTTP resources, reuse pools và drain an toàn.
+Module bắt đầu TCP/request/handler, rồi mới mở rộng keep-alive, Client, Transport và pools. Mỗi pha có resource owner và timeout khác nhau; hiểu pha giúp debug connection churn hoặc P99 cao mà không đổi mọi timeout cùng lúc. Cuối module ghép lifetime request với signal/drain của process.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [net-http](net-http.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -19,10 +23,4 @@ Bound HTTP resources, reuse pools và drain an toàn.
 | [Transport: pool owner](transport.md) | P1 |
 | [WebSocket: long-lived connection lifecycle](websocket.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

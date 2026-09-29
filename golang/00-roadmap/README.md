@@ -1,8 +1,12 @@
-# Roadmap
+# Cách học giáo trình Go backend
 
-Lập kế hoạch theo gap và role, có đầu ra hằng ngày.
+Bắt đầu từ hành vi quan sát được, chạy một ví dụ nhỏ rồi mới đọc runtime và các lựa chọn production. Một thuật ngữ được nhớ chưa đủ để dùng đúng: cần theo được dữ liệu, điểm chờ và đường lỗi trong một tình huống cụ thể. Lộ trình bên dưới giúp chia việc học thành các buổi có đầu ra, không đòi đọc mọi module cùng lúc.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [study-first](study-first.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -11,14 +15,4 @@ Lập kế hoạch theo gap và role, có đầu ra hằng ngày.
 | [Interview readiness checklist](interview-checklist.md) | Practice |
 | [Priority topics](priority-topics.md) | Practice |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
-
-## Completion evidence
-
-[Study-first priorities](study-first.md) · [Repository audit](repository-audit.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

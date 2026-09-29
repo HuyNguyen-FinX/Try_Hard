@@ -73,7 +73,7 @@ func main() {
 
 ### Giải thích code và kết quả
 
-result gán named return n=4 trước khi defer tăng n thành5, nên main in5. Defer fmt.Println nhận x=1 ngay lúc đăng ký. Closure đọc x lúc main kết thúc, khi x đã2; vì LIFO, closure in trước argument. Output tiếp là closure2 rồi argument1. Không có goroutine; sự khác nhau đến từ evaluation time và thứ tự defer, không phải scheduler.
+result gán named return n=4 trước khi defer tăng n thành 5, nên main in 5. Defer fmt.Println nhận x=1 ngay lúc đăng ký. Closure đọc x lúc main kết thúc, khi x đã 2; vì LIFO, closure in trước argument. Output tiếp là closure 2 rồi argument 1. Không có goroutine; sự khác nhau đến từ evaluation time và thứ tự defer, không phải scheduler.
 
 Output: `5`, rồi `closure 2`, rồi `argument 1`. Return expression gán named result trước defer; closure sửa result. Argument x cho Println evaluate lúc defer đăng ký; closure đọc x lúc exit. LIFO quyết định closure chạy trước deferred Println.
 

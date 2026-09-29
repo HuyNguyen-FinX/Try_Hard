@@ -1,4 +1,4 @@
-## Khái niệm và mô hình làm việc
+# Giải bài Go từ contract tới invariant
 
 ## Bài toán và ví dụ đầu tiên
 

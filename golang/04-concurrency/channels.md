@@ -71,7 +71,7 @@ func main() {
 
 ### Giải thích code và kết quả
 
-Capacity1 cho phép send42 hoàn tất trước khi có receiver. Close cấm send mới nhưng không xóa42; receive đầu trả42,true. Lần receive sau thấy channel đóng và đã hết dữ liệu nên trả zero int0,false ngay, không block. Nếu tiếp tục range, nó kết thúc; nếu tự loop nhận mà bỏ ok, code có thể quay mãi nhận zero.
+Capacity 1 cho phép send42 hoàn tất trước khi có receiver. Close cấm send mới nhưng không xóa42; receive đầu trả42,true. Lần receive sau thấy channel đóng và đã hết dữ liệu nên trả zero int0,false ngay, không block. Nếu tiếp tục range, nó kết thúc; nếu tự loop nhận mà bỏ ok, code có thể quay mãi nhận zero.
 
 Production sender/receiver phải dùng select với ctx khi có thể block. Chỉ coordinator biết mọi sender đã dừng mới close; receiver thường không close input do mình không sở hữu. Không cần close mọi channel để GC thu hồi; close mang protocol “không còn values”.
 

@@ -16,7 +16,7 @@ Phiên bản 3 phân chunk cho nhiều workers nếu format và operation cho ph
 
 Idempotent output dùng deterministic chunk key và finalize manifest atomically theo storage contract. Nếu transform cần order toàn file, reorder/merge có memory và time cost. Với dữ liệu không tin cậy, kiểm soát decompression expansion, record size và CPU budget trước khi gọi parser tốn tài nguyên.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,11 +24,11 @@ Upload files, scan/validate, transform và download outputs. Jobs resumable/idem
 
 ## Non-functional Requirements
 
-Giả định100k files/ngày, mean20MiB, peak20 jobs/s; accepted P99<200ms, processing95%<2min cho class small. Untrusted file processing phải isolate.
+Giả định100k files/ngày, mean20MiB, peak 20 jobs/s; accepted P99<200 ms, processing 95%<2min cho class small. Untrusted file processing phải isolate.
 
 ## Capacity Estimation
 
-100k×20MiB≈1.9TiB/day raw ingress. Transform mean CPU5s, arrival20/s peak →100 CPU-seconds/s nếu sustained; cần ~100 cores at 100% ideal hoặc queue/shaping. Memory budget per worker đo decoded size, không file compressed size.
+100k×20MiB≈1.9TiB/day raw ingress. Transform mean CPU5s, arrival 20/s peak →100 CPU-seconds/s nếu sustained; cần ~100 cores at 100% ideal hoặc queue/shaping. Memory budget per worker đo decoded size, không file compressed size.
 
 ## API
 

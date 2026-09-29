@@ -6,7 +6,7 @@ Two Sum yêu cầu tìm hai index khác nhau có tổng target. Map có thể l�
 
 ## Đi từng bước qua một tình huống
 
-Với nums=[2,7,11], target9: ở2 chưa thấy7 nên lưu2→0; ở7 thấy2 trong map nên trả0,1. Lookup trước insert giữ việc không dùng cùng index hai lần. Với [3,3], target6, lần3 đầu lưu rồi lần3 sau mới tìm thấy cặp hợp lệ.
+Với nums=[2,7,11], target9: ở 2 chưa thấy 7 nên lưu 2→0; ở 7 thấy 2 trong map nên trả0,1. Lookup trước insert giữ việc không dùng cùng index hai lần. Với [3,3], target 6, lần 3 đầu lưu rồi lần 3 sau mới tìm thấy cặp hợp lệ.
 
 ## Code và giải thích từng bước
 

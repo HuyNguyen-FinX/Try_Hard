@@ -1,4 +1,4 @@
-## Khái niệm và mô hình làm việc
+# Scheduler: đọc tình huống CPU, I/O và lock
 
 ## Bài toán và ví dụ đầu tiên
 

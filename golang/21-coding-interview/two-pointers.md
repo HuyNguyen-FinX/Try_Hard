@@ -6,7 +6,7 @@ Tìm hai số có tổng target trong slice đã sort mà không dùng map. Hai 
 
 ## Đi từng bước qua một tình huống
 
-Với [1,2,4,7], target6: 1+7=8 quá lớn nên giảm right; 1+4=5 quá nhỏ nên tăng left; 2+4=6 trả hai index. Khi sum nhỏ, giữ left cũ và giảm right chỉ làm tổng nhỏ hơn nữa, nên bỏ left là hợp lý. Lập luận tương tự cho sum lớn.
+Với [1,2,4,7], target 6: 1+7=8 quá lớn nên giảm right; 1+4=5 quá nhỏ nên tăng left; 2+4=6 trả hai index. Khi sum nhỏ, giữ left cũ và giảm right chỉ làm tổng nhỏ hơn nữa, nên bỏ left là hợp lý. Lập luận tương tự cho sum lớn.
 
 ## Code và giải thích từng bước
 

@@ -53,4 +53,4 @@ Test delay một event đầu và cho event sau hoàn tất trước để lộ 
 
 ## Thực hành có điều kiện kiểm chứng
 
-Cho offsets100,101,102 chạy parallel, ép101 chậm. Dù102 xong, next committed offset chỉ được tiến tới101 khi100 complete; sau101 complete mới có thể tới103 nếu102 đã xong. Nếu client API dùng record offset thay next-offset, tuân API mapping rõ. Test restart ở mỗi bước để chứng minh không skip101. Per-key state version guard bổ sung chống reordered effects.
+Cho offsets 100,101,102 chạy parallel, ép101 chậm. Dù102 xong, next committed offset chỉ được tiến tới101 khi 100 complete; sau101 complete mới có thể tới103 nếu102 đã xong. Nếu client API dùng record offset thay next-offset, tuân API mapping rõ. Test restart ở mỗi bước để chứng minh không skip101. Per-key state version guard bổ sung chống reordered effects.

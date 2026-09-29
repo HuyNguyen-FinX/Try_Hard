@@ -1,8 +1,12 @@
-# Api Design
+# Contract giữa backend và client
 
-Thiết kế API contracts, compatibility và trust boundaries.
+Một API phải diễn đạt kết quả, lỗi, quyền truy cập, pagination và retry an toàn để client phục hồi được khi mạng lỗi. Học HTTP/gRPC/schema theo tình huống client thực, rồi xem identity, quota và compatibility. Type-safe payload không thay semantics của mutation hoặc authorization trên resource.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [rest-api](rest-api.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -18,10 +22,4 @@ Thiết kế API contracts, compatibility và trust boundaries.
 | [API retry và deadline](retry-timeout.md) | P1 |
 | [API versioning và compatibility](versioning.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

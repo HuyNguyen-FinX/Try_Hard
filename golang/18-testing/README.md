@@ -1,8 +1,12 @@
-# Testing
+# Kiểm chứng hành vi tại đúng boundary
 
-Test invariants, protocol behavior và cancellation.
+Unit test kiểm rule với dependency kiểm soát; integration test kiểm driver/protocol/database thật; race/fuzz/benchmark trả lời những câu hỏi khác. Các bài hướng dẫn chọn test cho failure và invariant, dùng signals cho concurrency thay vì Sleep đoán lịch chạy. Pass một loại test không chứng minh các loại behavior còn lại.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [unit-testing](unit-testing.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -15,10 +19,4 @@ Test invariants, protocol behavior và cancellation.
 | [Table-driven tests và subtests](table-driven-tests.md) | P1 |
 | [Unit testing business contracts](unit-testing.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

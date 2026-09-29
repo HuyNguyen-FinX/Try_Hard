@@ -85,7 +85,7 @@ func main() {
 
 ### Giải thích code và kết quả
 
-Interface x chứa type *User và nil value nên false khi so nil. Lookup nil map trả zero int, len nil slice bằng0. Append trả slice chứa1 nên gán lại s rồi in[1]. Ví dụ không ghi vào m, không dereference p và không dùng nil channel; nếu thêm các operations đó, phải áp semantics riêng thay vì suy từ nil slice.
+Interface x chứa type *User và nil value nên false khi so nil. Lookup nil map trả zero int, len nil slice bằng0. Append trả slice chứa 1 nên gán lại s rồi in[1]. Ví dụ không ghi vào m, không dereference p và không dùng nil channel; nếu thêm các operations đó, phải áp semantics riêng thay vì suy từ nil slice.
 
 ## Từ runtime đến production
 

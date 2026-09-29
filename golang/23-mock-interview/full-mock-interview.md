@@ -1,6 +1,8 @@
 # Full Mock Interview — 115 minutes
 
-Interviewer giữ timebox; candidate hỏi assumptions, nói invariant và tự sửa khi có evidence. Score tổng100; mức tham khảo80+ với không có lỗi nghiêm trọng về correctness/cancellation. Đây là rubric luyện tập, không là hiring guarantee.
+Đây là phụ lục luyện tập sau giáo trình. Đọc bài lý thuyết liên quan trước, dùng đáp án để đối chiếu reasoning rồi quay lại ví dụ nếu chưa giải thích được cơ chế. Câu hỏi ở đây được giữ riêng, không là cấu trúc của các bài học.
+
+Interviewer giữ timebox; candidate hỏi assumptions, nói invariant và tự sửa khi có evidence. Score tổng 100; mức tham khảo 80+ với không có lỗi nghiêm trọng về correctness/cancellation. Đây là rubric luyện tập, không là hiring guarantee.
 
 | Time | Section | Points |
 |---|---|---:|
@@ -36,7 +38,7 @@ Cần context traffic/data/team scope, contribution cá nhân và một decision
 <details>
 <summary>Answer</summary>
 
-Slice header giữ pointer vào backing array nên whole allocation reachable; clone phần cần giữ tách lifetime nhưng tăng copy/allocation. GC pressure phụ thuộc live set, allocation rate và pointer scan, không chỉ STW. G/M syscall có thể giữ OS thread trong kernel, P release/retake để M khác execute Go; khi return không có P thì G enqueue. Runtime-managed network FD park G qua netpoll, không giữ một dedicated M mỗi socket. Typed nil interface còn dynamic type nên interface!=nil; success phải return nil interface. Chấm8 memory,8 scheduler,4 nil; trừ mạnh nếu khẳng định return pointer luôn heap hoặc P là core vật lý.
+Slice header giữ pointer vào backing array nên whole allocation reachable; clone phần cần giữ tách lifetime nhưng tăng copy/allocation. GC pressure phụ thuộc live set, allocation rate và pointer scan, không chỉ STW. G/M syscall có thể giữ OS thread trong kernel, P release/retake để M khác execute Go; khi return không có P thì G enqueue. Runtime-managed network FD park G qua netpoll, không giữ một dedicated M mỗi socket. Typed nil interface còn dynamic type nên interface!=nil; success phải return nil interface. Chấm 8 memory,8 scheduler,4 nil; trừ mạnh nếu khẳng định return pointer luôn heap hoặc P là core vật lý.
 
 </details>
 
@@ -49,44 +51,44 @@ Requirements: fixed positive worker count, caller owns jobs, fn honors context a
 <details>
 <summary>Answer</summary>
 
-Xem [runnable pool](../examples/pool.go) và [tests](../examples/pool_test.go). Child context, fixed workers, Add trước launch, select ctx ở receive, cancel khi first error, buffered error slot không block, Wait trước return. Caller producer phải có cancellation riêng khi pool return sớm. Không claim pool có thể ép fn không hợp tác dừng. Chấm6 bounds/ownership,6 cancellation/error,4 join/cleanup,4 tests. Test job completion exactly once trong one run, cancel blocked workers, task error và active count zero sau return.
+Xem [runnable pool](../examples/pool.go) và [tests](../examples/pool_test.go). Child context, fixed workers, Add trước launch, select ctx ở receive, cancel khi first error, buffered error slot không block, Wait trước return. Caller producer phải có cancellation riêng khi pool return sớm. Không claim pool có thể ép fn không hợp tác dừng. Chấm 6 bounds/ownership,6 cancellation/error,4 join/cleanup,4 tests. Test job completion exactly once trong one run, cancel blocked workers, task error và active count zero sau return.
 
 </details>
 
 ## 15 min — Backend / Database
 
-**You have500 concurrent requests and sql.DB MaxOpenConns20. Latency is rising but database CPU is low. Diagnose it.**
+**You have500 concurrent requests and sql.DB MaxOpenConns 20. Latency is rising but database CPU is low. Diagnose it.**
 
 **A team creates a new http.Client for each call. Under what circumstances does that actually destroy pooling?**
 
 <details>
 <summary>Answer</summary>
 
-20 connections giới hạn holders; excess waits/cancel theo ctx. Tìm long Tx/Rows leak/dedicated Conn và DB lock waits; Stats InUse/Idle/Wait deltas rồi server sessions/locks, không tăng pool mù. Client mới với nil Transport vẫn shared DefaultTransport; Transport mới mỗi request mới phá reuse. Body phải Close, HTTP/1 thường cần EOF để reuse; bound read cho untrusted body. Chấm8 DB evidence/capacity,7 client nuance/lifecycle.
+20 connections giới hạn holders; excess waits/cancel theo ctx. Tìm long Tx/Rows leak/dedicated Conn và DB lock waits; Stats InUse/Idle/Wait deltas rồi server sessions/locks, không tăng pool mù. Client mới với nil Transport vẫn shared DefaultTransport; Transport mới mỗi request mới phá reuse. Body phải Close, HTTP/1 thường cần EOF để reuse; bound read cho untrusted body. Chấm 8 DB evidence/capacity,7 client nuance/lifecycle.
 
 </details>
 
 ## 30 min — System Design
 
-**Design a 20,000 RPS API with P99 below 200ms using Go, PostgreSQL, Redis, Kafka and Kubernetes.**
+**Design a 20,000 RPS API with P99 below 200 ms using Go, PostgreSQL, Redis, Kafka and Kubernetes.**
 
 Clarify read/write ratio, cache hit, payload và durability. **What happens when Redis fails? How do retries and HPA affect your DB budget?**
 
 <details>
 <summary>Answer</summary>
 
-Tham khảo [design đầy đủ](../13-system-design/design-high-throughput-api.md), gồm5 diagrams. Với90% reads/95% hit:900 read misses/s+2000 write ops/s nếu assumptions một operation một DB step. Mean50ms→1000 in-flight toàn fleet. Bound handlers/workers/pools; max replicas+surge nhân DB caps phải dưới verified server budget. Redis down đưa reads lên18k/s: bounded fallback/stale theo policy và shedding, không unrestricted fallback. Domain+outbox same Tx, idempotent consumer và commit contiguous offsets. Context remaining deadline, transport reuse, graceful drain, private pprof. Chấm5 requirements/estimates,5 data/API/commit,5 Go capacity,5 failures,5 observability/security/evolution. Không chấm target throughput là đạt nếu không có load-test gates.
+Tham khảo [design đầy đủ](../13-system-design/design-high-throughput-api.md), gồm 5 diagrams. Với 90% reads/95% hit:900 read misses/s+2000 write ops/s nếu assumptions một operation một DB step. Mean 50 ms→1000 in-flight toàn fleet. Bound handlers/workers/pools; max replicas+surge nhân DB caps phải dưới verified server budget. Redis down đưa reads lên18k/s: bounded fallback/stale theo policy và shedding, không unrestricted fallback. Domain+outbox same Tx, idempotent consumer và commit contiguous offsets. Context remaining deadline, transport reuse, graceful drain, private pprof. Chấm 5 requirements/estimates,5 data/API/commit,5 Go capacity,5 failures,5 observability/security/evolution. Không chấm target throughput là đạt nếu không có load-test gates.
 
 </details>
 
 ## 10 min — Production Incident
 
-**The service now has20,000 goroutines, low CPU and rising memory. What would you do in the first ten minutes?**
+**The service now has 20,000 goroutines, low CPU and rising memory. What would you do in the first ten minutes?**
 
 <details>
 <summary>Answer</summary>
 
-Assess user impact/traffic/connection count và recent deploy, cap intake nếu saturation. Capture goroutine groups và heap profile: chan send/receive, DB acquire, net waits hay mutex. Kiểm owner đã return, missing cancel/timeouts và queue bounds; low CPU gợi ý waiting chứ không chứng minh nguyên nhân. So G/heap sau drain; giữ evidence trước restart nếu không trì hoãn mitigation. Chấm4 evidence selection,3 bounded mitigation,3 regression/recovery verification.
+Assess user impact/traffic/connection count và recent deploy, cap intake nếu saturation. Capture goroutine groups và heap profile: chan send/receive, DB acquire, net waits hay mutex. Kiểm owner đã return, missing cancel/timeouts và queue bounds; low CPU gợi ý waiting chứ không chứng minh nguyên nhân. So G/heap sau drain; giữ evidence trước restart nếu không trì hoãn mitigation. Chấm 4 evidence selection,3 bounded mitigation,3 regression/recovery verification.
 
 </details>
 
@@ -97,13 +99,13 @@ Assess user impact/traffic/connection count và recent deploy, cap intake nếu 
 <details>
 <summary>Answer</summary>
 
-Dùng facts cá nhân thật theo STAR. Nêu alternative công bằng, criteria và experiment; contribution của mình, cách communicate quyết định và outcome. Lesson cần action hệ thống có owner, không chỉ “cẩn thận hơn”. Chấm2 clarity,2 judgment/learning,1 team impact.
+Dùng facts cá nhân thật theo STAR. Nêu alternative công bằng, criteria và experiment; contribution của mình, cách communicate quyết định và outcome. Lesson cần action hệ thống có owner, không chỉ “cẩn thận hơn”. Chấm 2 clarity,2 judgment/learning,1 team impact.
 
 </details>
 
 ## Feedback form
 
 - Ghi score từng section và một evidence cụ thể cho score.
-- Chọn3 gaps lớn nhất; mỗi gap link tới bài liên quan trong [P0 roadmap](../00-roadmap/priority-topics.md).
+- Chọn 3 gaps lớn nhất; mỗi gap link tới bài liên quan trong [P0 roadmap](../00-roadmap/priority-topics.md).
 - Làm một lab sửa gap và phỏng vấn lại sau48 giờ với inputs/failure timing khác.
 - Red flags: unlimited goroutines/retries, ignored cleanup, timeout đồng nghĩa remote failure, exactly-once không nêu boundary, claims benchmark không có measurement.

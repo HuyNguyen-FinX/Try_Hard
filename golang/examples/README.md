@@ -16,6 +16,13 @@ go tool trace trace.out
 go run ./cmd/server
 ```
 
+### Giải thích lệnh và kết quả
+
+Ba lệnh đầu kiểm tra behavior, data races trên đường đã chạy và các vấn đề static mà go vet hỗ trợ. Benchmark in chi phí operation/allocation; các fuzz targets tìm counterexample cho properties trong thời gian hữu hạn. Trace ghi timeline test pool rồi mở công cụ xem. Lệnh server cuối chạy liên tục trên loopback cho tới khi được dừng, nên dùng terminal khác để gửi HTTP request; không chạy nó như một test sẽ tự kết thúc. Số liệu benchmark là của môi trường chạy, không là capacity production.
+
+Trước khi chạy, đọc contract ở từng function rồi dự đoán output/điểm chờ. Khi test cancellation, xem started/finished channels tạo thứ tự như thế nào; timeout bảo vệ test không phải Sleep đoán lịch. SQL helpers trong module chỉ được compile vì chưa có driver/DB integration. Nếu cần kiểm tra PostgreSQL isolation hoặc Kafka replay, dựng môi trường riêng với schema/client version tương ứng.
+
+
 | Code | Contract / verification |
 |---|---|
 | [pool.go](pool.go) | Fixed workers, fail-fast cancellation, join; caller owns input, fn honors ctx |
@@ -35,6 +42,11 @@ go run ./cmd/server
 ```bash
 go test -race -tags racedemo -run TestIntentionalRace
 ```
+
+### Giải thích lệnh và kết quả
+
+Build tag bật một test cố ý có shared counter race. Race detector phải báo DATA RACE và command trả exit khác0; đây là outcome mong đợi của negative demonstration, không được gộp vào suite mặc định phải pass. WaitGroup trong ví dụ chỉ chờ workers kết thúc, không bảo vệ các increments concurrent. Đọc report để nối reader/writer stacks với protocol thiếu, rồi so với bài mutex/atomic.
+
 
 ## Lab scope
 

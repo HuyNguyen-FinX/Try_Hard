@@ -1,4 +1,4 @@
-## Khái niệm và mô hình làm việc
+# Lập trình concurrency với lifecycle rõ ràng
 
 ## Bài toán và ví dụ đầu tiên
 

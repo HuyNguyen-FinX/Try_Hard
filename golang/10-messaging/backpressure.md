@@ -48,11 +48,11 @@ Test overload dài hơn thời gian buffer có thể hấp thụ. Xác nhận me
 
 ## Tính budget cho một queue cụ thể
 
-Một worker pool8 workers xử lý trung bình mỗi job80ms, capacity lý tưởng khoảng100 job/s khi không có bottleneck khác. Queue200 jobs có thể chứa khoảng2giây công việc ở tốc độ đó. Nếu deadline còn500ms, nhận thêm job khi queue gần đầy thường chỉ giữ payload rồi trả timeout trước khi job tạo giá trị. Admission có thể từ chối sớm hoặc chuyển thành durable async contract thay vì giả vờ mọi request được xử lý ngay.
+Một worker pool 8 workers xử lý trung bình mỗi job 80 ms, capacity lý tưởng khoảng 100 job/s khi không có bottleneck khác. Queue200 jobs có thể chứa khoảng 2 giây công việc ở tốc độ đó. Nếu deadline còn500 ms, nhận thêm job khi queue gần đầy thường chỉ giữ payload rồi trả timeout trước khi job tạo giá trị. Admission có thể từ chối sớm hoặc chuyển thành durable async contract thay vì giả vờ mọi request được xử lý ngay.
 
 Giả sử payload mỗi job20KB trung bình nhưng có tail5MB. Cap200 phần tử không cho một hard memory bound20KB×200 vì distribution có tail. Giới hạn bytes hoặc chuẩn hóa queue chỉ giữ object references/IDs tới storage bền; worker fetch payload khi có slot và áp size limit. Concurrency count, queue bytes và max item size phối hợp mới cho memory model hữu ích.
 
-Khi sink DB chỉ chịu50 writes/s,8 workers không còn capacity100/s như tính ban đầu. Queue đầy nhanh hơn, acquire pool wait tăng và average job time đổi. Backpressure là vòng phản hồi theo capacity thực, nên measurements phải cập nhật khi dependency chậm. Tăng queue từ200 lên20000 không thay50/s, chỉ kéo dài thời gian user chờ và làm recovery lâu hơn.
+Khi sink DB chỉ chịu 50 writes/s,8 workers không còn capacity 100/s như tính ban đầu. Queue đầy nhanh hơn, acquire pool wait tăng và average job time đổi. Backpressure là vòng phản hồi theo capacity thực, nên measurements phải cập nhật khi dependency chậm. Tăng queue từ200 lên 20000 không thay 50/s, chỉ kéo dài thời gian user chờ và làm recovery lâu hơn.
 
 Test nên giữ input vượt capacity đủ lâu, kiểm tra accepted/rejected theo policy, max memory và job age. Sau khi hạ input dưới capacity, backlog phải giảm với tốc độ gần completed-arrival theo giả định ổn định; nếu không, có thể retry churn hoặc poison jobs. Đo tiến triển hữu ích thay vì chỉ số attempts để không nhầm hệ thống bận với hệ thống xử lý được việc.
 

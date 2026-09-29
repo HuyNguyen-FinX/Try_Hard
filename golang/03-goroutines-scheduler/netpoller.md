@@ -44,7 +44,7 @@ Khi CPU thấp mà request chậm, xem goroutine stack internal/poll rồi dùng
 
 ## Từ Read tới parser: vì sao ready chưa có nghĩa request hoàn chỉnh
 
-Giả sử client gửi phần đầu HTTP request rồi dừng200ms trước phần tiếp theo. Goroutine server đọc được những bytes đầu, parser biết message chưa đủ nên tiếp tục Read. Khi chưa có bytes, runtime có thể park goroutine đang dùng socket này. Thread không cần đứng chờ riêng nó; các request khác vẫn có thể được xử lý nếu CPU và tài nguyên còn đủ.
+Giả sử client gửi phần đầu HTTP request rồi dừng200 ms trước phần tiếp theo. Goroutine server đọc được những bytes đầu, parser biết message chưa đủ nên tiếp tục Read. Khi chưa có bytes, runtime có thể park goroutine đang dùng socket này. Thread không cần đứng chờ riêng nó; các request khác vẫn có thể được xử lý nếu CPU và tài nguyên còn đủ.
 
 Khi bytes mới tới, thông báo OS làm goroutine có thể runnable. Nó vẫn phải được scheduler chọn trước khi parser tiếp tục; đây là khoảng khác với network wait. Read có thể trả một phần dữ liệu, EOF hoặc lỗi, nên code ứng dụng cần framing và error handling. Một TCP packet không tương ứng đúng một JSON object hoặc một message nghiệp vụ.
 

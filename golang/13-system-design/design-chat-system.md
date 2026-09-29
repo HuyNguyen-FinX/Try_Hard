@@ -16,7 +16,7 @@ Phiên bản 3 thêm fanout bus khi nhiều gateways cần nhận events độc 
 
 Mỗi session có outbound budget theo bytes và tuổi message. Slow consumer phải bị disconnect hoặc drop chỉ event ephemeral được phép, rồi lấy lại durable messages qua history. Một unbounded slice outbound biến một điện thoại mạng yếu thành memory leak ở server. Reader/writer goroutine phải tuân contract thư viện WebSocket và có owner shutdown.
 
-**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
+**Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
 
@@ -24,11 +24,11 @@ Realtime one-to-one/group messages, durable history, per-conversation order, rec
 
 ## Non-functional Requirements
 
-Giả định200k concurrent connections,10k messages/s peak; online delivery P99<200ms trong region; durable accepted messages replay được khi reconnect.
+Giả định200k concurrent connections,10k messages/s peak; online delivery P99<200 ms trong region; durable accepted messages replay được khi reconnect.
 
 ## Capacity Estimation
 
-200k connections ×20KiB measured state giả định≈3.8GiB chỉ session state, chưa tính kernel buffers/G/stacks. 10k msg/s×1KiB≈9.8MiB/s ingress; average fanout20 →195MiB/s outbound chưa protocol overhead.
+200k connections ×20KiB measured state giả định≈3.8GiB chỉ session state, chưa tính kernel buffers/G/stacks. 10k msg/s×1KiB≈9.8MiB/s ingress; average fanout 20 →195MiB/s outbound chưa protocol overhead.
 
 ## API
 

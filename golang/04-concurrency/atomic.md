@@ -70,7 +70,7 @@ func main() {
 
 ### Giải thích code từng bước
 
-requests có zero value0. Mỗi worker gọi một Add nguyên tử, nên không có khoảng read-modify-write mà worker kia chen vào làm mất cập nhật. WaitGroup chờ cả hai xong; Load cuối trả2. Nếu cần đọc trong lúc workers hoạt động, vẫn dùng Load thay vì trộn atomic với truy cập memory không đồng bộ. Không copy requests sau khi bắt đầu dùng.
+requests có zero value0. Mỗi worker gọi một Add nguyên tử, nên không có khoảng read-modify-write mà worker kia chen vào làm mất cập nhật. WaitGroup chờ cả hai xong; Load cuối trả 2. Nếu cần đọc trong lúc workers hoạt động, vẫn dùng Load thay vì trộn atomic với truy cập memory không đồng bộ. Không copy requests sau khi bắt đầu dùng.
 
 Đổi thành hai atomic fields balance và version không tạo một transaction: writer có thể cập nhật balance rồi bị tạm ngừng trước version, reader thấy cặp không đồng nhất. Snapshot immutable đặt cả hai trong một object được publish một lần, hoặc mutex quanh cặp, có thể diễn đạt invariant rõ hơn. Race detector không phát hiện cặp sai nghiệp vụ nếu mọi access riêng lẻ đều atomic hợp lệ.
 

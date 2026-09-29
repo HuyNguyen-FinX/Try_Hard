@@ -52,4 +52,4 @@ Tách báo cáo compile/unit pass với integration đã chạy. Lab SQL trong r
 
 ## Thực hành có điều kiện kiểm chứng
 
-Transaction test có hai concurrent sessions reserve cùng last inventory item; expected total successful reservations1 và stock không âm. Sau cancel long query, query nhẹ từ cùng limited pool phải acquire được để chứng minh release. Những kiểm tra này cần PostgreSQL/driver thật; stdlib example compile pass không đủ bằng chứng. Record database/driver versions và migrated schema.
+Transaction test có hai concurrent sessions reserve cùng last inventory item; expected total successful reservations 1 và stock không âm. Sau cancel long query, query nhẹ từ cùng limited pool phải acquire được để chứng minh release. Những kiểm tra này cần PostgreSQL/driver thật; stdlib example compile pass không đủ bằng chứng. Record database/driver versions và migrated schema.

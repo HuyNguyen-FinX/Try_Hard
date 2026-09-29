@@ -30,7 +30,7 @@ Claim root cause từ correlation; thay nhiều thứ cùng lúc; quên thông b
 
 ## Lần theo bằng chứng khi có sự cố
 
-Tập kể5 phút, giữ timeline và kết quả thực; phân biệt điều biết lúc incident với điều biết sau.
+Tập kể 5 phút, giữ timeline và kết quả thực; phân biệt điều biết lúc incident với điều biết sau.
 
 ## Đánh đổi và giới hạn sử dụng
 

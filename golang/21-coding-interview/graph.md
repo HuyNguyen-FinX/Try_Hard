@@ -6,7 +6,7 @@ Cần tìm số cạnh ít nhất từ một node tới các node khác trong gr
 
 ## Đi từng bước qua một tình huống
 
-Graph0 nối1,2;1 nối3;2 cũng nối3. Queue bắt đầu0 với distance0. Pop0, đánh dấu1 và2 distance1 ngay khi enqueue. Pop1, thêm3 distance2. Pop2 thấy3 đã được đánh dấu nên không enqueue lại. Nếu đợi tới lúc pop mới mark, cùng node có thể bị thêm nhiều lần.
+Graph0 nối 1,2;1 nối 3;2 cũng nối 3. Queue bắt đầu0 với distance0. Pop0, đánh dấu 1 và 2 distance 1 ngay khi enqueue. Pop 1, thêm 3 distance 2. Pop 2 thấy 3 đã được đánh dấu nên không enqueue lại. Nếu đợi tới lúc pop mới mark, cùng node có thể bị thêm nhiều lần.
 
 ## Hiểu cơ chế từ kết quả quan sát
 

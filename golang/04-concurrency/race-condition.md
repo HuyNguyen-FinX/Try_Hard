@@ -57,7 +57,7 @@ wg.Wait()
 
 ### Giải thích code và kết quả
 
-Đoạn này cố ý có data race: WaitGroup chỉ giúp caller chờ hai workers return, không đồng bộ hai lần n++ với nhau. Mỗi increment có đọc/cộng/ghi shared n và có thể đua; kết quả không phải bằng chứng an toàn nếu tình cờ là2. Lab riêng có build tag racedemo để chạy -race và nhận failure mong đợi; snippets checker chỉ compile để không thực thi lỗi có chủ đích.
+Đoạn này cố ý có data race: WaitGroup chỉ giúp caller chờ hai workers return, không đồng bộ hai lần n++ với nhau. Mỗi increment có đọc/cộng/ghi shared n và có thể đua; kết quả không phải bằng chứng an toàn nếu tình cờ là 2. Lab riêng có build tag racedemo để chạy -race và nhận failure mong đợi; snippets checker chỉ compile để không thực thi lỗi có chủ đích.
 
 WaitGroup chỉ đồng bộ completion với caller, không đồng bộ hai `n++`. Dùng mutex bao increment hoặc atomic.Int64.Add. Ví dụ executable âm tính tách build tag tại [examples/race_demo_test.go](../examples/race_demo_test.go): `go test -race -tags racedemo -run TestIntentionalRace` **phải thất bại**, chứng minh detector quan sát race. Suite mặc định chỉ chứa code an toàn.
 

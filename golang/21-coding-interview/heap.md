@@ -6,7 +6,7 @@ Muốn giữ k giá trị lớn nhất trong một luồng mà không sort toàn
 
 ## Đi từng bước qua một tình huống
 
-Với [5,1,9,3], k2: push5 rồi1, root1. Gặp9 lớn hơn1 thì thay root và heap.Fix, heap giữ5,9. Gặp3 nhỏ hơn root5 thì bỏ. Pop lần lượt min từ heap cho output5,9 như contract TopK của lab.
+Với [5,1,9,3], k 2: push 5 rồi 1, root 1. Gặp9 lớn hơn 1 thì thay root và heap.Fix, heap giữ 5,9. Gặp 3 nhỏ hơn root 5 thì bỏ. Pop lần lượt min từ heap cho output 5,9 như contract TopK của lab.
 
 ## Hiểu cơ chế từ kết quả quan sát
 

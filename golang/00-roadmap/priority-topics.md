@@ -2,7 +2,7 @@
 
 ## P0 - MUST KNOW
 
-Mỗi link sau là bài P0 chính có đầy đủ30 questions (10 basic/mid,10 senior,5 scenarios,5 follow-ups), diagram, code/lab, debugging và trade-offs. Bài bổ trợ trong cùng module mở rộng từng góc nhìn; mức P0 áp cho các bài được đánh dấu rõ tại đây.
+P0 là nền tảng cần hiểu trước khi ghép một service: bài toán, ví dụ, ownership, cơ chế và failure. Các bài chính có diễn giải dài, diagram cùng cách đọc và code/lab cùng walkthrough. Các chuyên đề kế tiếp mở từng nhánh như netpoller, RWMutex hoặc Transport; đọc chúng khi cơ chế nền đã rõ, không dùng danh sách này thay nội dung bài.
 
 - [Goroutine](../03-goroutines-scheduler/goroutine.md)
 - [Go Scheduler / G-M-P](../03-goroutines-scheduler/scheduler-gmp.md)
@@ -47,4 +47,4 @@ Mỗi link sau là bài P0 chính có đầy đủ30 questions (10 basic/mid,10 
 - [Rare sync primitives](../04-concurrency/condition-variable.md): Cond/Once khi invariant cần.
 - [Advanced generics](../01-go-core/generics.md): constraints/type sets, không thay mọi interface.
 
-P0 completion: nói được mechanism2 phút, vẽ được flow, chạy/giải thích code, xử lý failure và chỉ ra evidence. P1 học sau khi P0 đạt chuẩn; P2 tùy role/interviewer.
+Chuyển từ P0 sang P1 khi có thể theo một ví dụ từ input tới output, chỉ ra ai sở hữu tài nguyên và điều gì xảy ra khi lỗi. P2 phục vụ nhu cầu cụ thể hoặc điều tra sâu; private runtime thresholds không cần học thuộc. Một buổi profile/test trong từng module giúp kiến thức gắn với hành vi thực.

@@ -1,8 +1,12 @@
-# Performance
+# Đo trước khi tối ưu
 
-Tối ưu bằng profile và measurements đúng workload.
+Bắt đầu symptom và chọn profile phù hợp: CPU execution, memory retained/allocated hoặc thời gian chờ. Bài pprof có lệnh cùng giải thích flat/cumulative và sample types; trace bổ sung timeline. Tối ưu chỉ được xác nhận khi output đúng và mục tiêu latency/throughput/tài nguyên tốt hơn dưới workload tương đương.
 
-## Reading map
+## Bắt đầu và cách thực hành
+
+Bắt đầu với [pprof](pprof.md). Với mỗi ví dụ, viết trạng thái ban đầu, theo từng thao tác và dự đoán kết quả trước khi chạy. Khi kết quả khác dự đoán, tìm assumption sai trước khi ghi nhớ một quy tắc mới. Phần production nối cơ chế với một failure cụ thể và phép đo để kiểm chứng.
+
+## Các bài trong module
 
 | Bài | Ưu tiên |
 |---|---|
@@ -18,10 +22,4 @@ Tối ưu bằng profile và measurements đúng workload.
 | [pprof: chọn profile từ câu hỏi production](pprof.md) | P0 |
 | [Execution trace: timeline scheduling](trace.md) | P1 |
 
-## Learning gate
-
-- [ ] Nói rõ invariant và assumptions của một bài trong module.
-- [ ] Vẽ lại flow hoặc chạy lab, dự đoán output trước khi xem lời giải.
-- [ ] Giải thích một failure, mitigation và metric/test chứng minh fix.
-
-[Dashboard](../README.md) · [Priority topics](../00-roadmap/priority-topics.md) · [Runnable labs](../examples/README.md)
+[Giáo trình](../README.md) · [Lộ trình học](../00-roadmap/study-first.md) · [Labs](../examples/README.md)

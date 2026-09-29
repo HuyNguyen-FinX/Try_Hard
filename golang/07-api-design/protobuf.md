@@ -72,6 +72,6 @@ service Inventory {
 
 ### Giải thích code và kết quả
 
-Syntax khai báo proto3, package/go_package định danh schema và vị trí generated Go code của ví dụ. Các field numbers1,2,3 là identity trên wire; optional display_name cho phép thể hiện presence theo semantics schema. Reserved4 ngăn tái dùng số đã loại. Service khai báo unary GetItem. Đây là schema minh họa, không được snippets checker Go compile hay protoc generate trong repo; dùng toolchain generator đã pin nếu tích hợp thật.
+Syntax khai báo proto 3, package/go_package định danh schema và vị trí generated Go code của ví dụ. Các field numbers 1,2,3 là identity trên wire; optional display_name cho phép thể hiện presence theo semantics schema. Reserved 4 ngăn tái dùng số đã loại. Service khai báo unary GetItem. Đây là schema minh họa, không được snippets checker Go compile hay protoc generate trong repo; dùng toolchain generator đã pin nếu tích hợp thật.
 
-Presence của display_name cho phép phân biệt omitted với empty theo generated API. Reserved4 ngăn reuse field number cũ. Semantic validation vẫn phải kiểm ID/authorization/version. [Protobuf language guide](https://protobuf.dev/programming-guides/proto3/).
+Presence của display_name cho phép phân biệt omitted với empty theo generated API. Reserved 4 ngăn reuse field number cũ. Semantic validation vẫn phải kiểm ID/authorization/version. [Protobuf language guide](https://protobuf.dev/programming-guides/proto3/).
