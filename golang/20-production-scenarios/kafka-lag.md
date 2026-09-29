@@ -1,10 +1,26 @@
 # Kafka consumer lag tăng
 
-## Concept và Mental Model
+## Bài toán và ví dụ đầu tiên
+
+**Tình huống mô phỏng.** Lag tăng50k records mỗi phút trong khi producer rate gần như cũ. Một vài partitions tăng mạnh hơn phần còn lại. Chưa có lý do để kết luận cần thêm consumer replicas; cần biết capacity nào không theo kịp.
+
+## Đi từng bước qua một tình huống
+
+Đo arrival và completed rate per partition, oldest record age, processing latency và rebalance rate. Giả sử DB call trong handler từ10ms lên100ms khiến mỗi worker chậm10 lần. Consumer CPU thấp là điều dễ hiểu vì chờ DB. Nếu chỉ một partition lag, xem hot key hoặc poison record làm retry blocking.
+
+Kiểm tra actual assignment và số partitions so với members; thêm member vượt parallelism group không tạo thêm partition work.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Giảm retries lặp, sửa query hoặc giới hạn concurrency để DB phục hồi. Nếu downstream còn capacity và còn partitions chưa phân tải tốt, scale consumers có thể giúp. Nếu ordering per key bắt buộc, không song song hóa tùy ý rồi commit highest offset trong khi offsets trước chưa xong.
+
+Đánh giá retention: backlog có nguy cơ vượt log window thì cần kế hoạch bảo toàn/rebuild dữ liệu, không chỉ dashboard lag. Pause/retry phải theo client protocol để không gây rebalance liên tục.
+
+## Khái niệm và mô hình làm việc
 
 Lag offset count và oldest event age trả lời hai câu khác nhau; skew một partition có thể bị aggregate che.
 
-## How it works
+## Cơ chế và những ranh giới cần giữ
 
 So produce/consume rates, processing duration, rebalance, retry/DLQ và target DB waits. Check partitions versus active consumers.
 
@@ -16,32 +32,32 @@ flowchart TD
     V --> R[Regression test and prevention owner]
 ```
 
-## Production Use Case
+### Cách đọc diagram
+
+Đọc từ trên xuống: Partition lag and sink rate là điểm lấy bằng chứng từ per-partition age, sink latency và rebalance; Skew poison event or saturated sink là nhóm giả thuyết cần kiểm chứng, không phải kết luận tự động. Mũi tên tới mitigation yêu cầu một thay đổi có bound và có thể đảo ngược. Sau đó kiểm tra completed rate vượt arrival và không gap checkpoint, rồi chuyển cause đã xác nhận thành regression scenario và action có owner. Sơ đồ là trình tự điều tra; phần timeline ở đầu bài chỉ cách chọn bằng chứng để loại giả thuyết sai.
+
+## Áp dụng vào hệ thống thật
 
 Pause noncritical work, fix poison record/quarantine theo policy, scale only khi sink và partitions còn headroom.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Thêm consumers vượt partitions vô ích; larger batches kéo processing quá liveness budget; commit ahead tạo false low lag và mất work.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Per-partition lag/age, contiguous completed offsets, worker queue bytes và DB throughput.
 
-## Trade-offs và When NOT to use
+## Đánh đổi và giới hạn sử dụng
 
 Retry topic giữ progress nhưng có thể reorder; giải thích consistency impact trước dùng.
 
-## Interview practice
+## Thực hành, debugging và kết luận
 
-How do you estimate recovery time while new events arrive? Backlog chia net service rate μ−λ.
-
-## Key Takeaways
-
-Lag offset count và oldest event age trả lời hai câu khác nhau; skew một partition có thể bị aggregate che..
+Test slow dependency và rebalance khi còn in-flight, kiểm tra contiguous checkpoints/dedup. Recovery đo completion>arrival đủ lâu và oldest age giảm, không chỉ lag total giảm vì retention xóa record. Ramp workers sau fix để DB không bị burst. Ghi owner cho DLQ/replay và invariant kiểm chứng sau catch-up.
 
 
-## See also
+## Đọc tiếp
 
 - [Ordering và contiguous commit](../10-messaging/ordering.md)
 - [pprof: chọn profile từ câu hỏi production](../16-performance/pprof.md)

@@ -1,39 +1,47 @@
 # Goroutine profiles và stack grouping
 
-## Concept và Mental Model
+## Bài toán và ví dụ đầu tiên
+
+Goroutine count từ 500 lên 20000 trong một giờ và không giảm sau traffic. Goroutine profile chụp stack để biết các công việc đang chạy hoặc chờ ở đâu.
+
+## Đi từng bước qua một tình huống
+
+Nhóm stack theo vị trí như chan send, SQL acquire, net read hay mutex. Hàng nghìn send ở cùng function gợi ý consumer đã rời; nhiều net read có thể là long-lived sessions hợp lệ. So creation site và owner lifetime trước khi gọi tất cả là leak.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Một ảnh chụp không cho duration đầy đủ; lấy các snapshot có khoảng cách và đối chiếu request/connection count. Waiting không chiếm CPU liên tục nhưng vẫn giữ stack và reachable data. Context cancel chỉ hữu ích nếu operation đang chờ quan sát nó.
+
+## Khái niệm và mô hình làm việc
 
 Snapshot cho thấy G đang chạy/chờ ở call stack nào; trend mới giúp phân biệt leak với concurrency hợp lệ.
 
-## How it works
+## Cơ chế và những ranh giới cần giữ
 
 Debug dump group by stack signature, state và creation site; strip volatile IDs khi aggregate.
 
-## Production Use Case
+## Áp dụng vào hệ thống thật
 
 20k G phần lớn database/sql acquire: kiểm tra pool/DB hold time trước scheduler tune.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Stack dump quá lớn gây log volume; gọi mọi waiting G là leak.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Lấy ba snapshots trước/trong/sau drain, xem nhóm nào không giảm và owner đã exit.
 
-## Trade-offs và When NOT to use
+## Đánh đổi và giới hạn sử dụng
 
 Snapshot không cho duration chính xác; dùng trace/metrics để bổ sung timeline.
 
-## Interview practice
+## Thực hành, debugging và kết luận
 
-What is evidence that a waiting goroutine is leaked? Lifetime owner đã kết thúc và không còn event/exit hợp lệ.
-
-## Key Takeaways
-
-Snapshot cho thấy G đang chạy/chờ ở call stack nào; trend mới giúp phân biệt leak với concurrency hợp lệ..
+Test caller bỏ cuộc rồi chờ worker-owned finished signal. Trong incident, xác định đường exit/cancel/close và sửa protocol thay vì chỉ tăng memory. Count tuyệt đối không là invariant chung vì runtime và libraries có goroutine nền hợp lệ.
 
 
-## See also
+## Đọc tiếp
 
 - [pprof: chọn profile từ câu hỏi production](pprof.md)
 - [design-high-throughput-api](../13-system-design/design-high-throughput-api.md)

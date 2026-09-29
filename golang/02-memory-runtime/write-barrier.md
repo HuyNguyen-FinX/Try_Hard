@@ -1,39 +1,47 @@
 # Write barrier và concurrent marking
 
-## Concept và Mental Model
+## Bài toán và ví dụ đầu tiên
+
+GC đang đánh dấu object sống trong lúc ứng dụng vẫn sửa pointer. Nếu collector đã scan một object rồi ứng dụng chuyển một reference mới vào đó, collector cần cơ chế giữ invariant để không bỏ sót object còn sống. Write barrier hỗ trợ việc ghi pointer trong giai đoạn thích hợp.
+
+## Đi từng bước qua một tình huống
+
+Hình dung collector đã đi qua A, còn B chưa được xét. Application thay một cạnh trong object graph để A trỏ tới B. Nếu mọi thay đổi đều vô hình với collector, thuật toán mark đơn giản có thể suy luận sai. Barrier bổ sung bookkeeping theo thuật toán runtime để việc mutation không phá tính đúng.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Màu trắng/xám/đen là mô hình đối tượng chưa đánh dấu, đã biết cần scan và đã scan. Nó diễn giải proof của collector, không phải state nghiệp vụ và không cần xuất hiện trong code ứng dụng. Go dùng barrier cụ thể theo runtime; không biến sơ đồ tricolor đơn giản thành mô tả mọi instruction của release hiện tại.
+
+## Khái niệm và mô hình làm việc
 
 Write barrier giúp GC theo dõi pointer mutations trong concurrent mark, không phải mutex cho application.
 
-## How it works
+## Cơ chế và những ranh giới cần giữ
 
 Tri-color reasoning: nếu graph đổi lúc scan, barrier duy trì invariant cần thiết để object reachable không bị bỏ sót. Exact hybrid barrier phụ thuộc runtime version.
 
-## Production Use Case
+## Áp dụng vào hệ thống thật
 
 Pointer-rich cache churn có thể tăng GC work; value arrays ít pointers có scan cost khác.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Bỏ synchronization vì tưởng barrier bảo vệ dữ liệu tạo race; unsafe pointer manipulation phá assumptions.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 CPU profile tìm GC/barrier-related work, xem pointer density và allocation rate trước khi sửa layout.
 
-## Trade-offs và When NOT to use
+## Đánh đổi và giới hạn sử dụng
 
 Không tự tắt barrier; giảm churn và đo representation khi memory profile chỉ ra bottleneck.
 
-## Interview practice
+## Thực hành, debugging và kết luận
 
-How can the graph change during marking? Mutator viết pointer trong lúc collector scan graph.
-
-## Key Takeaways
-
-Write barrier giúp GC theo dõi pointer mutations trong concurrent mark, không phải mutex cho application..
+Barrier không là mutex và không tạo quyền sửa map đồng thời. Nếu CPU profile có nhiều GC/barrier work, xem allocation và churn của graph nhiều pointer. Dùng unsafe để né barrier có thể phá assumptions của runtime; ưu tiên thiết kế dữ liệu và ownership rõ rồi đo tác động.
 
 
-## See also
+## Đọc tiếp
 
 - [Garbage collection: live heap, pacing và memory budget](garbage-collector.md)
 - [Escape analysis: đọc quyết định của compiler](escape-analysis.md)

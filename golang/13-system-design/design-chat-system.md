@@ -1,5 +1,21 @@
 # Design Chat System
 
+## Bài toán và ví dụ đầu tiên
+
+Chat cần phân biệt message đã được server lưu, đã chuyển tới thiết bị và đã được người nhận đọc. Nếu coi ba mốc này là một ack, reconnect có thể làm user nghĩ tin đã tới dù chỉ được giữ trong memory gateway. Thiết kế bắt đầu từ durable history và cursor để phục hồi session.
+
+## Đi từng bước qua một tình huống
+
+Phiên bản 1 có một Go service, PostgreSQL message store và WebSocket connections. Client gửi client_msg_id, server authorize membership rồi commit message/sequence trước durable ack. Người nhận offline đọc history khi quay lại. Một bảng unique(sender,client_msg_id) giữ retry không tạo hai tin. Chưa cần Kafka để một nhóm nhỏ chat trong cùng service.
+
+Khi connection count hoặc egress vượt một instance, phiên bản 2 tách hoặc nhân gateway và lưu routing session có TTL. Message service vẫn sở hữu durable history; presence là gợi ý tạm thời, không là nguồn sự thật message đã giao. Gateway nào chết thì client reconnect với last contiguous sequence và replay.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Phiên bản 3 thêm fanout bus khi nhiều gateways cần nhận events độc lập hoặc backlog/replay yêu cầu rõ. Partition theo conversation giữ một phần thứ tự, nhưng một room cực hot vẫn cần chiến lược riêng; tăng tổng partitions không chia room đó tự động. Kafka có ích cho durable stream/fanout consumers khi cần, còn local routing hoặc broker nhỏ hơn có thể đủ trước đó.
+
+Mỗi session có outbound budget theo bytes và tuổi message. Slow consumer phải bị disconnect hoặc drop chỉ event ephemeral được phép, rồi lấy lại durable messages qua history. Một unbounded slice outbound biến một điện thoại mạng yếu thành memory leak ở server. Reader/writer goroutine phải tuân contract thư viện WebSocket và có owner shutdown.
+
 **Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
@@ -35,6 +51,10 @@ flowchart LR
     G --> P[Ephemeral presence]
 ```
 
+### Cách đọc diagram
+
+Clients giữ session ở gateways; Message service commit durable store, outbox chuyển fact tới fanout routers rồi quay lại gateways để giao online. Presence là nhánh ephemeral tại gateway. Vòng fanout không phải vòng commit lặp: durable history là nguồn replay, presence chỉ hỗ trợ tìm session hiện tại.
+
 ## Request Flow
 
 Authenticate upgrade và authorize từng conversation action. Commit trước sender durable ack; duplicate client_msg_id trả message cũ. Online fanout at-least-once nên client dedup bằng message ID/seq.
@@ -54,6 +74,10 @@ sequenceDiagram
     R-->>M: Delivery or read receipt
 ```
 
+### Cách đọc diagram
+
+Sender gửi client message ID tới gateway, gateway authorize rồi message service commit message/sequence. Durable ack sau commit khác receipt từ recipient ở cuối. Fanout có thể lặp hoặc recipient offline; ack không nói người nhận đã đọc. Các mũi tên bỏ routing chi tiết để phân biệt ba mốc lưu, giao và đọc.
+
 ## Data Flow
 
 ```mermaid
@@ -64,6 +88,10 @@ flowchart TD
     E --> N[Offline notification]
     O --> C[Client sequence cursor]
 ```
+
+### Cách đọc diagram
+
+Message đã commit phục vụ history query và tạo fanout event. Fanout chia tới bounded online queues hoặc offline notification; online client cập nhật sequence cursor. Những nhánh không cần hoàn tất cùng thời điểm, nhưng cursor phải là sequence liên tục để reconnect không bỏ qua gap.
 
 ## Go Service Implementation
 
@@ -83,11 +111,15 @@ flowchart LR
     G2 --> S2[Conversation shard 2]
 ```
 
+### Cách đọc diagram
+
+Connection LB phân sessions tới Gateway A/B; bus phân sự kiện để gateway có session nhận được message. Storage chia theo conversation shards. Hình minh họa một mapping đơn giản; production router phải định vị mọi conversation, không mặc định gateway chỉ được truy cập một shard cố định. Hot room vẫn có thể tập trung trên một shard.
+
 ## Failure Modes
 
 Slow consumers, reconnect storm, duplicate message, sequence gap, stale presence, hot room và gateway crash. Presence TTL không là source of truth cho message durability.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Thử crash/network loss tại từng durable boundary ở request flow; kiểm tra invariant sau recovery, không chỉ việc service khởi động lại. Client reconnect gửi last contiguous seq; replay durable history rồi stream live có boundary chống gap. Slow receiver bị disconnect hoặc drop ephemeral events, không drop durable history silent.
 
@@ -101,11 +133,15 @@ flowchart TD
     Q -->|yes| D
 ```
 
+### Cách đọc diagram
+
+Connection mất dẫn tới reconnect kèm cursor; server kiểm tra membership rồi replay sau sequence liên tục trước khi nối live. Nếu outbound queue đầy, session bị đóng theo policy và đi lại đường reconnect. Vòng này giữ durable replay nhưng phải rate-limit/backoff để slow client không tạo reconnect storm.
+
 ## Observability
 
 Active connections, outbound queue age/bytes, delivery latency, reconnect rate, sequence gaps và persistence P99.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Active connections, outbound queue age/bytes, delivery latency, reconnect rate, sequence gaps và persistence P99. Tách offered, accepted và completed rates; chọn dependency/queue đầu tiên lệch baseline. Thu profile đúng triệu chứng, đối chiếu trace với durable state theo operation ID. Sau mitigation kiểm tra cả SLO và backlog/reconciliation để tránh tuyên bố phục hồi quá sớm.
 
@@ -113,7 +149,7 @@ Active connections, outbound queue age/bytes, delivery latency, reconnect rate, 
 
 Membership check mỗi send/read, tenant isolation, message size/rate caps, abuse reporting, encrypted transport và retention access controls.
 
-## Trade-offs
+## Đánh đổi
 
 | Option | Best for | Weakness |
 |---|---|---|
@@ -125,18 +161,14 @@ Membership check mỗi send/read, tenant isolation, message size/rate caps, abus
 
 One region with durable history trước; thêm large-room fanout/cache khi measured skew; multi-region cần conversation home region và failover sequence authority.
 
-## Interview rehearsal
+## Thực hành, debugging và kết luận
 
-1. What is the primary correctness invariant?
-2. Which measured resource limits throughput first?
-3. What happens if a response is lost after commit?
-4. How would you handle a tenfold hot-key skew?
-5. Which evidence would justify the next architectural change?
+Test mất response sau message commit rồi retry cùng client_msg_id; test reconnect ở boundary replay/live để không gap hoặc double-apply. Delivery duplicate được client dedup bằng message ID/sequence, read receipt có semantics riêng. Membership cần kiểm tra cả send và history, tránh chỉ authorize lúc upgrade rồi để quyền cũ sống mãi.
 
-Trả lời bằng API semantics, capacity arithmetic và failure flow cụ thể của bài này. Một câu trả lời senior phải giải thích điểm commit, ownership trong Go, bounds của concurrency/pools và recovery cho unknown outcome.
+Trong incident reconnect storm, đo session opens, queue bytes, persistence P99 và replay requests. Rate-limit reconnect có jitter/client policy, bảo vệ DB history bằng pagination và budget. Server.Shutdown không tự join hijacked sessions; registry gateway phải đóng/join trong drain window.
 
 
-## See also
+## Đọc tiếp
 
 - [capacity-estimation](capacity-estimation.md)
 - [Worker pool và bounded concurrency](../04-concurrency/worker-pool.md)

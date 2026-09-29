@@ -1,8 +1,24 @@
 # Goroutine leaks: blocked work còn giữ tài nguyên
 
-**P0 · Must know**
+## Bài toán và ví dụ đầu tiên
 
-## Concept, Why và Mental Model
+Handler tạo goroutine tính giá và đợi tối đa 100 ms. Worker mất 200 ms rồi gửi kết quả vào unbuffered channel, nhưng handler đã return. Worker không còn receiver và chờ mãi. Mỗi request timeout để lại một goroutine; ban đầu service vẫn chạy, sau vài giờ memory tăng vì stack và dữ liệu của các worker cũ vẫn còn.
+
+Một goroutine chờ lâu chưa tự động là leak. WebSocket reader có thể chờ hợp lệ suốt nhiều giờ nếu connection còn được sở hữu. Leak được xác định bằng việc công việc đã hết lifetime hữu ích mà không còn đường tiến triển hoặc giải phóng tài nguyên.
+
+## Đi từng bước qua một tình huống
+
+Lần theo timeline: t=0 handler tạo channel và worker; t=100 ms handler chọn nhánh timeout; t=200 ms worker tới send; không ai còn giữ trách nhiệm receive. Thêm buffer 1 giúp đúng trường hợp một worker chỉ gửi đúng một kết quả, nhưng nếu worker gửi stream thì buffer lại đầy. Phải sửa giao thức theo số producer, số message và điều kiện người nhận có thể rời đi.
+
+Cách tổng quát cho công việc được phép bỏ là gửi bằng select với ctx.Done, để sender có đường dừng. Caller vẫn cần join nếu worker còn dùng tài nguyên mà caller chuẩn bị đóng. Với công việc phải hoàn thành dù client rời đi, chuyển ownership sang job bền vững; không coi nó là một goroutine con vô chủ.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Goroutine bị park không đốt CPU liên tục, nhưng stack của nó là một phần tập root mà GC phải xét. Pointer trên stack có thể giữ backing array, request, client hoặc object graph lớn. Vì vậy leak có thể biểu hiện thành live heap tăng dù không có một vòng loop allocate liên tục ở worker bị kẹt.
+
+Cancellation là tín hiệu tự nguyện: worker phải quan sát ở mọi điểm có thể chờ lâu, gồm receive input, send output và dependency call. WaitGroup chỉ chờ, không hủy; gọi Wait trước khi mở đường thoát cho worker có thể làm shutdown treo. Thứ tự đúng phụ thuộc protocol nhưng thường là ngừng nhận việc, yêu cầu dừng hoặc drain, rồi chờ hoàn tất và đóng dependency.
+
+## Khái niệm và lý do tồn tại
 
 Leak là G vẫn sống sau lifetime hữu ích và không có đường hoàn tất hợp lệ. Một service có 20k long-lived connections hợp lệ có thể không leak; trend sau drain và stack ownership mới quyết định.
 
@@ -14,7 +30,11 @@ flowchart LR
     C -. no receiver .-> S
 ```
 
-## Code Example
+### Cách đọc diagram
+
+Nhánh trên cho thấy request kết thúc làm consumer rời đi. Nhánh dưới là producer vẫn tới send result rồi mắc vì không còn receiver, thể hiện bằng cạnh nét đứt. Node cuối chỉ tài nguyên bị giữ: stack và payload reachable. Sửa cần một đường thoát hoặc owner nhận/chờ rõ; chỉ request return không đi tới node kết thúc của producer.
+
+## Ví dụ code
 
 Ví dụ **cố ý sai**, chỉ đọc hoặc chạy isolated process rồi kết thúc:
 
@@ -25,21 +45,25 @@ func leak() {
 }
 ```
 
+### Giải thích code và kết quả
+
+Đây là ví dụ cố ý lỗi, không gọi lặp trong service. Leak tạo unbuffered channel rồi khởi chạy sender, nhưng không có receiver và không ai close/cancel để send tiến triển. Hàm leak return không hủy goroutine con; goroutine bị park ở send và còn giữ state. Compiler check chỉ kiểm tra syntax/type, không chạy function này. Sửa cần owner/receive hoặc send có cancellation theo contract.
+
 Caller return nhưng child đang send unbuffered; không ai có thể receive. G và channel wait state vẫn sống. Fix dùng owner + receive/join, hoặc context-aware send với cancel guaranteed, hoặc buffer 1 cho one-shot result khi đúng protocol. Buffer 1 không chữa producer gửi vô hạn.
 
-## How và Internals
+## Cơ chế bên trong
 
 Các lifetime traps: channel không bao giờ receive; input không bao giờ send/close; context có cancel function nhưng owner không gọi; background loop không có stop branch; HTTP/DB không deadline; ticker loop range không exit; consumer blocked khi downstream bỏ đọc. `Ticker.Stop` không close ticker.C và không dừng goroutine đang range. Go 1.23+ có thể GC unreachable ticker, nhưng reachable worker loop vẫn phải tự dừng. `WithCancel` không nhất thiết tạo goroutine riêng, vì vậy “quên cancel” có thể leak resources/timers/tree references mà không trực tiếp thêm G.
 
-## Runtime behavior và Production Use Case
+## Từ runtime đến production
 
 GC thấy blocked G như live execution state; stack và payload references làm heap retention. Đặt service context cho background worker, request context cho request work; gọi cancel sau operation và join child trước khi owner đóng dependencies. HTTP call dùng shared client + timeout và close body.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Search fan-out chỉ lấy result đầu rồi bỏ các senders; ticker Stop nhưng loop vẫn đợi; producer cancellation không truyền tới DB; HTTP body đọc vô hạn; shutdown close DB trong khi worker chưa dừng.
 
-## Trade-offs
+## Đánh đổi
 
 | Fix | Hợp với | Giới hạn |
 |---|---|---|
@@ -47,15 +71,15 @@ Search fan-out chỉ lấy result đầu rồi bỏ các senders; ticker Stop nh
 | Buffer 1 | One-shot delivery | Không bound stream dài |
 | Join ownership | Task tree | Caller phải chờ cleanup |
 
-## Common Misconceptions
+## Những cách hiểu dễ sai
 
 GC không kill G blocked. Không phải mọi tăng NumGoroutine là leak. Cancel chỉ đóng tín hiệu, không ép library bỏ syscall hoặc callback bất kỳ.
 
-## When NOT to use
+## Khi nên chọn cách khác
 
 Không chữa leak bằng tăng memory limit hoặc restart định kỳ như giải pháp cuối cùng. Không spawn watcher per request mà chính watcher không có exit.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 1. So NumGoroutine trước, trong và sau tải; xét connection count.
 2. Lấy goroutine profile vài thời điểm, group blocking stacks và creation site.
@@ -65,58 +89,14 @@ Không chữa leak bằng tăng memory limit hoặc restart định kỳ như gi
 6. Reproduce cancellation tại blocking point; fix và verify done signals dưới race detector.
 7. Sau canary, đợi drain rồi so G count, retained heap, FD và downstream latency.
 
-## Key Takeaways
+## Thực hành, debugging và kết luận
 
-Mỗi `go` cần câu trả lời: ai dừng, điều gì unblock và ai đợi nó xong.
+Để debug, ghi số goroutine ở tải ổn định, sau burst và sau drain. Nếu không trở lại gần baseline, lấy nhiều profile cách nhau một khoảng và nhóm stack giống nhau cùng nơi tạo goroutine. Một stack cố định ở send result phù hợp giả thuyết người nhận rời đi; một stack ở SQL pool cần kiểm tra connection ownership và query latency trước.
 
-## Interview Questions
-
-### Basic / Mid — 10
-
-1. What makes a goroutine leaked?
-2. Can GC kill a blocked goroutine?
-3. Does cancel force a function to return?
-4. What keeps a blocked sender alive?
-5. Does closing an input end range?
-6. Does Ticker.Stop close its channel?
-7. Does every context create a goroutine?
-8. What is a join signal?
-9. Does a buffer always solve leaks?
-10. Is a high goroutine count sufficient evidence?
-
-### Senior — 10
-
-1. How can one-shot results use a buffer safely?
-2. Why can first-result-wins fan-out leak siblings?
-3. How does a blocked stack retain payload memory?
-4. What differs between timer retention and goroutine retention?
-5. How should request and service lifetimes differ?
-6. How do you test cancellation without relying on sleep?
-7. Why can wrapping a noncancelable call worsen leaks?
-8. What must every blocking send support?
-9. How can a library ignore context?
-10. How do you distinguish slow progress from permanent leakage?
-
-### Production scenarios — 5
-
-1. How would you investigate 20000 goroutines in production?
-2. Why did stopping a ticker leave a worker alive?
-3. Why did a canceled HTTP handler retain DB waiters?
-4. Why are fan-out senders accumulating?
-5. Why does memory stay high after traffic stops?
-
-### Senior Follow-ups — 5
-
-1. Who owns this G?
-2. What is it waiting on?
-3. Can that event still happen?
-4. What alternative exit is available?
-5. Who confirms it exited?
-
-Chuỗi follow-up: trả lời lần lượt 5 câu cuối; mỗi câu cần một invariant, bằng chứng runtime hoặc trade-off cụ thể.
+Bài có ví dụ cố ý leak để đọc, không chạy nó lặp vô hạn trong process thật. Regression test cho bản sửa phải chủ động làm consumer rời đi, cancel và đợi worker báo kết thúc. Chỉ so runtime.NumGoroutine bằng một số tuyệt đối dễ flaky vì runtime/test framework có goroutine riêng. Ưu tiên kiểm tra những worker do test sở hữu qua tín hiệu cụ thể.
 
 
-## See also
+## Đọc tiếp
 
 - [cancellation](../05-context/cancellation.md)
 - [goroutine-profile](../16-performance/goroutine-profile.md)

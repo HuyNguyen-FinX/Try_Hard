@@ -1,39 +1,47 @@
 # API idempotency key
 
-## Concept và Mental Model
+## Bài toán và ví dụ đầu tiên
+
+Hai lần nhấn nút tạo order có thể sinh hai HTTP requests với cùng ý định. Idempotency ở API cần giúp client diễn đạt chúng là cùng operation hoặc hai operation khác, không đoán bằng payload giống nhau trong vài giây.
+
+## Đi từng bước qua một tình huống
+
+Client tạo key trước attempt đầu, server lưu key theo tenant/operation cùng request fingerprint. Cùng key và cùng input trả kết quả đã biết hoặc pending; cùng key nhưng input khác là conflict. Unique durable claim xử lý hai attempts đến đồng thời, không chỉ cache in-memory.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Nếu order và dedup state cùng DB, commit chúng trong cùng transaction. Khi effect ở partner bên ngoài, giữ provider reference và workflow unknown/reconcile. TTL của key phải phù hợp retry window, nếu không retry cũ sau expiry thành đơn mới.
+
+## Khái niệm và mô hình làm việc
 
 Idempotency bảo đảm replay cùng logical operation không tạo side effect thêm theo contract/retention window.
 
-## How it works
+## Cơ chế và những ranh giới cần giữ
 
 Scope key theo tenant+operation; lưu request hash, state và stable response trong durable store. Unique constraint claim; key trùng payload khác trả conflict.
 
-## Production Use Case
+## Áp dụng vào hệ thống thật
 
 Payment creation lưu operation trước provider call và dùng cùng provider key; reconcile ambiguous outcome.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Redis TTL hết trước retry; cache response chỉ sau side effect để lại crash window; hai replicas cùng xử lý key.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Trace logical operation ID và attempts; inject crash giữa claim, effect, response persistence.
 
-## Trade-offs và When NOT to use
+## Đánh đổi và giới hạn sử dụng
 
 Storage retention có cost; không cache mọi 500 vĩnh viễn nếu contract cho retry sau recovery.
 
-## Interview practice
+## Thực hành, debugging và kết luận
 
-What happens if the server crashes after charging but before saving the response? Query provider bằng stable key và reconcile.
-
-## Key Takeaways
-
-Idempotency bảo đảm replay cùng logical operation không tạo side effect thêm theo contract/retention window..
+Test concurrency, crash windows và expiry. Theo dõi duplicate hits cùng conflict khác payload, bảo vệ response đã lưu theo permission. Contract phải nói rõ key scope, retention và response cho operation đang chạy để client có thể phục hồi đúng.
 
 
-## See also
+## Đọc tiếp
 
 - [HTTP client reuse và response ownership](../06-http-backend/http-client.md)
 - [idempotency](../12-distributed-systems/idempotency.md)

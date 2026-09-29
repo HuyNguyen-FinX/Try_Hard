@@ -1,8 +1,24 @@
 # Race condition versus data race
 
-**P0 · Must know**
+## Bài toán và ví dụ đầu tiên
 
-## Concept, Why và Mental Model
+Hai request cùng thấy mã giảm giá còn một lượt rồi đều tạo đơn được giảm. Dù mỗi request là một goroutine tuần tự và driver database hoàn toàn thread-safe, nghiệp vụ vẫn sai vì bước kiểm tra và cập nhật không nguyên tử. Đây là race condition: kết quả phụ thuộc cách các bước của nhiều actor xen kẽ.
+
+Data race hẹp hơn: hai goroutine truy cập cùng vị trí memory, ít nhất một bên ghi, thiếu đồng bộ phù hợp. Counter++ đồng thời là ví dụ data race. Hai transaction cùng thực hiện check-then-insert có thể không có Go data race nhưng vẫn tạo race condition ở database.
+
+## Đi từng bước qua một tình huống
+
+Hãy viết timeline A đọc remaining=1, B đọc remaining=1, A ghi 0 và tạo đơn, B ghi 0 và tạo đơn. Lock một map cục bộ trong một replica không bảo vệ replica khác. Ở database, dùng conditional update có điều kiện remaining>0 trong transaction và kiểm tra affected rows, hoặc constraint/locking phù hợp theo invariant.
+
+Ngược lại với counter nằm trong cùng process, mutex quanh toàn bộ read-modify-write hoặc atomic.Add có thể đủ. Atomic Load rồi Store riêng không biến cặp thao tác thành một increment nguyên tử. Hai worker vẫn có thể cùng đọc một giá trị và ghi cùng kết quả mới.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Race detector chèn kiểm tra vào chương trình để theo dõi truy cập và quan hệ đồng bộ trên những đường thực sự chạy. Báo cáo chỉ ra stack đọc/ghi và nơi goroutine được tạo, giúp tìm những access phải dùng cùng protocol. Nó không biết quy tắc “mỗi coupon chỉ dùng một lần” của sản phẩm, cũng không chạy mọi lịch xen kẽ có thể có.
+
+Mutex và channel tạo quan hệ đồng bộ cho memory trong process. Transaction, unique constraint và compare-and-set ở kho dữ liệu bảo vệ invariant bền vững qua nhiều process. Chọn công cụ ở đúng nơi state được sở hữu. Kiểm tra lỗi duplicate key là một phần luồng hợp lệ khi nhiều client cạnh tranh, không nên chỉ log rồi vẫn báo success.
+
+## Khái niệm và lý do tồn tại
 
 Data race là accesses cùng memory location, ít nhất một write, không có synchronization thích hợp. Race condition là kết quả đúng/sai phụ thuộc interleaving; có thể xảy ra giữa các processes hoặc transactions dù không có Go data race.
 
@@ -17,11 +33,15 @@ sequenceDiagram
     B->>DB: Insert duplicate side effect
 ```
 
-## How và Internals
+### Cách đọc diagram
+
+Đọc từ trên xuống: A và B cùng kiểm tra key trước khi ai insert. Cả hai thấy absent rồi cùng tạo side effect. Các participant là hai requests và một database; không cần có data race trong memory Go để timeline này sai nghiệp vụ. Unique constraint/atomic claim hoặc transaction đúng invariant phải chặn một nhánh trước duplicate effect.
+
+## Cơ chế bên trong
 
 Race detector instrument memory accesses trên paths được chạy; report read/write stacks và goroutine creation. Nó không exhaustively khám phá schedules hay hiểu business invariants trong DB. Fix data race bằng happens-before/ownership; fix duplicate business action bằng unique constraint + transaction + idempotency.
 
-## Code Example
+## Ví dụ code
 
 Đoạn **cố ý race**, không dùng trong production:
 
@@ -35,17 +55,21 @@ for i := 0; i < 2; i++ {
 wg.Wait()
 ```
 
+### Giải thích code và kết quả
+
+Đoạn này cố ý có data race: WaitGroup chỉ giúp caller chờ hai workers return, không đồng bộ hai lần n++ với nhau. Mỗi increment có đọc/cộng/ghi shared n và có thể đua; kết quả không phải bằng chứng an toàn nếu tình cờ là2. Lab riêng có build tag racedemo để chạy -race và nhận failure mong đợi; snippets checker chỉ compile để không thực thi lỗi có chủ đích.
+
 WaitGroup chỉ đồng bộ completion với caller, không đồng bộ hai `n++`. Dùng mutex bao increment hoặc atomic.Int64.Add. Ví dụ executable âm tính tách build tag tại [examples/race_demo_test.go](../examples/race_demo_test.go): `go test -race -tags racedemo -run TestIntentionalRace` **phải thất bại**, chứng minh detector quan sát race. Suite mặc định chỉ chứa code an toàn.
 
-## Runtime behavior và Production Use Case
+## Từ runtime đến production
 
 Race build tăng CPU/memory đáng kể; dùng tests/staging hoặc canary có capacity. Race trên slice/string/interface nhiều-word representation đặc biệt không được reasoning như “đọc cũ cũng được”. Một pair atomic Load rồi Store vẫn có thể lost-update logic; dùng Add/CAS hoặc lock cho whole transition.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Map read/write; shared response buffer; cache pointer mutation sau unlock; DB check-then-insert; bank balance read-modify-write trong nhiều requests. Không phải mọi case bị runtime concurrent-map check bắt.
 
-## Trade-offs
+## Đánh đổi
 
 | Cách | Giải quyết | Giới hạn |
 |---|---|---|
@@ -53,70 +77,26 @@ Map read/write; shared response buffer; cache pointer mutation sau unlock; DB ch
 | Mutex/atomic | In-process synchronization | Không xuyên process |
 | DB constraint/transaction | Durable invariant | Lock/retry/cost |
 
-## Common Misconceptions
+## Những cách hiểu dễ sai
 
 Test pass không chứng minh không race. WaitGroup không serialize workers. Atomic field không làm compound workflow atomic. “Không crash” không chứng minh correctness.
 
-## When NOT to use
+## Khi nên chọn cách khác
 
 Không dùng sleeps để né race. Không bỏ race test vì quá chậm mà không có targeted suite phù hợp. Không dùng local lock làm substitute cho DB uniqueness.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Giữ crash/data-corruption evidence, xác định shared object hoặc business key. Reproduce dưới race detector; đọc cả access stacks, không chỉ nơi crash. Nếu detector im lặng, kiểm tra transactional timeline và constraints. Thêm stress test có synchronization tạo interleaving nguy hiểm; verify invariant sau nhiều runs. Đo contention sau fix để tránh chuyển corruption thành timeout.
 
-## Key Takeaways
+## Thực hành, debugging và kết luận
 
-Correctness cần cả memory synchronization lẫn business atomicity. Chọn công cụ theo tầng invariant.
+Lab [race_demo_test.go](../examples/race_demo_test.go) được gắn build tag riêng vì cố ý sai. Nó minh họa data race để học cách đọc báo cáo; test thường của repository không bật tag này. Đối với race nghiệp vụ, tạo integration test điều phối hai transaction tới cùng barrier rồi cho chúng tiếp tục, kiểm tra invariant cuối thay vì hy vọng load test tình cờ va chạm.
 
-## Interview Questions
-
-### Basic / Mid — 10
-
-1. What is a data race?
-2. What is a race condition?
-3. Can they occur independently?
-4. What does the race detector instrument?
-5. How do you enable it?
-6. Does WaitGroup serialize workers?
-7. Is n++ atomic?
-8. Does a clean race run prove safety?
-9. Does concurrent map checking catch all races?
-10. Can atomics still permit logical races?
-
-### Senior — 10
-
-1. How do you reason about happens-before?
-2. Why can a race on an interface be especially unsafe?
-3. How would you distinguish local memory races from distributed duplicates?
-4. What does a unique constraint guarantee?
-5. Why does check-then-insert need a transaction or constraint?
-6. How can a returned pointer bypass a lock?
-7. How should a regression test control interleaving?
-8. What overhead affects race deployments?
-9. How can race fixes introduce deadlock?
-10. Why is sleeping an invalid correctness argument?
-
-### Production scenarios — 5
-
-1. Why does a counter lose increments?
-2. Why are responses mixing user data?
-3. Why do two pods process the same payment with no race report?
-4. Why does a race vanish under logging?
-5. Why does a locked cache still race on stored values?
-
-### Senior Follow-ups — 5
-
-1. Which invariant failed?
-2. Which operations conflict?
-3. Is the conflict in one address space?
-4. Which synchronization or durable constraint applies?
-5. What test proves the full invariant?
-
-Chuỗi follow-up: trả lời lần lượt 5 câu cuối; mỗi câu cần một invariant, bằng chứng runtime hoặc trade-off cụ thể.
+Production có thể xuất hiện lỗi hiếm dù test chạy hàng nghìn lần không thấy. Ghi operation ID, version state và durable outcome đủ để dựng timeline, tránh log dữ liệu nhạy cảm. Một bản sửa đúng cần bảo vệ toàn operation hoặc constraint, không chỉ đặt lock quanh một dòng đọc và một dòng ghi rời nhau.
 
 
-## See also
+## Đọc tiếp
 
 - [Go memory model và happens-before](../02-memory-runtime/memory-model.md)
 - [race-detector](../18-testing/race-detector.md)

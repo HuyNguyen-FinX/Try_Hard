@@ -1,5 +1,21 @@
 # Design URL Shortener
 
+## Bài toán và ví dụ đầu tiên
+
+Người dùng tạo một link ngắn rồi người khác mở link đó để được redirect. Bài toán cốt lõi là ánh xạ code tới URL, xử lý collision và bảo đảm một code không bất ngờ trỏ sang đích khác. Analytics có thể xử lý sau; redirect path cần nhanh và có policy an toàn cho URL/abuse.
+
+## Đi từng bước qua một tình huống
+
+Phiên bản 1 dùng Go API và bảng links(code unique, destination, owner, created_at). Tạo code ngẫu nhiên đủ không gian, insert với unique constraint và thử lại collision theo bound. Redirect lookup theo code rồi trả status theo contract. Không cần Kafka chỉ để redirect; log click có thể ở pipeline observability hoặc job phù hợp nếu volume còn nhỏ.
+
+Khi read traffic lớn hơn write nhiều lần và lookup lặp, phiên bản 2 thêm API replicas và cache code→destination. Cache giảm DB reads nhưng phải giữ policy link bị khóa/xóa: TTL dài tăng stale window, invalidation có failure cần xử lý. Negative cache giảm lookup mã không tồn tại nhưng phải tránh giữ trạng thái missing quá lâu khi mã vừa được tạo.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Phiên bản 3 thêm pipeline click events khi analytics không được phép kéo latency redirect hoặc cần nhiều consumer/replay. Chỉ gửi event theo durability/SLO analytics đã chọn; không block mọi redirect vì analytics unavailable nếu sản phẩm cho phép mất telemetry. Kafka hợp lý khi log volume, replay và consumers độc lập biện minh vận hành; trước đó queue nhỏ hơn có thể đủ.
+
+Capacity tách read QPS, create QPS và click event bytes. Giả sử 10000 redirects/s, cache hit 95% thì còn khoảng 500 read misses/s trước traffic mã ngẫu nhiên; abuse có thể làm hit ratio thấp hơn nhiều. Một hot code cần cache strategy nhưng không cần shard tất cả writes chỉ vì read peak cao.
+
 **Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
@@ -34,6 +50,10 @@ flowchart LR
     Q --> A[Analytics workers]
 ```
 
+### Cách đọc diagram
+
+Client qua edge tới redirect API, API đọc Redis hoặc link DB. Click events đi pipeline analytics riêng. Mũi tên analytics không có nghĩa redirect phải chờ aggregation hoàn tất; độ bền click events theo product contract, còn link DB là authority cho destination/block state.
+
 ## Request Flow
 
 Create validate scheme/length, allocate unpredictable code, INSERT unique retry on collision. Redirect đọc cache/DB và verify expiry/state; analytics enqueue best effort nếu product cho phép, không làm redirect chờ analytics DB.
@@ -53,6 +73,10 @@ sequenceDiagram
     R-->>C: Redirect status and Location
 ```
 
+### Cách đọc diagram
+
+GET code thử cache, miss thì đọc active link từ DB, nhận target/version rồi fill TTL và trả redirect Location. Đây là miss path normal; concurrent update/takedown có thể đua với fill nên cần freshness/version policy. Không suy thứ tự mũi tên tạo transaction atomic giữa DB và Redis.
+
 ## Data Flow
 
 ```mermaid
@@ -63,6 +87,10 @@ flowchart TD
     E --> A[Aggregated analytics]
     T[Takedown] --> I[Invalidate and block state]
 ```
+
+### Cách đọc diagram
+
+Create link đi qua durable unique code rồi fill/invalidate cache. Redirect tạo sampled click event cho aggregation; takedown tạo block state/invalidation. Ba nhánh có semantics khác: analytics có thể sampled, nhưng block propagation phải theo policy an toàn của redirect.
 
 ## Go Service Implementation
 
@@ -82,11 +110,15 @@ flowchart LR
     C --> S2[Code shard 2]
 ```
 
+### Cách đọc diagram
+
+Edge LB phân traffic tới hai redirect pods dùng cache shards và code shards phía dữ liệu. Sharding là phiên bản mở rộng khi cần, không bắt buộc ngay từ đầu. Hot code có thể nằm ở một shard nên cache/skew handling vẫn quan trọng dù số shards tăng.
+
 ## Failure Modes
 
 Hot viral code, malicious target, alias collision, stale takedown cache, cache miss storm, analytics outage.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Thử crash/network loss tại từng durable boundary ở request flow; kiểm tra invariant sau recovery, không chỉ việc service khởi động lại. Redis down fallback có bounded DB admission; stale target/takedown behavior theo security contract, không blindly serve stale blocked link.
 
@@ -100,11 +132,15 @@ flowchart TD
     A -->|no| X[Expired or blocked response]
 ```
 
+### Cách đọc diagram
+
+Cache unavailable dẫn tới kiểm tra DB budget: có capacity mới authoritative lookup, không thì fail có giới hạn. Lookup chỉ redirect nếu link active/allowed; expired/blocked trả response tương ứng. Không bỏ kiểm tra block để giảm latency hoặc cho fallback flood DB trong outage.
+
 ## Observability
 
 Redirect hit ratio, P99 by hit/miss, DB fallback load, blocked/expired hits, collision attempts và dropped analytics.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Redirect hit ratio, P99 by hit/miss, DB fallback load, blocked/expired hits, collision attempts và dropped analytics. Tách offered, accepted và completed rates; chọn dependency/queue đầu tiên lệch baseline. Thu profile đúng triệu chứng, đối chiếu trace với durable state theo operation ID. Sau mitigation kiểm tra cả SLO và backlog/reconciliation để tránh tuyên bố phục hồi quá sớm.
 
@@ -112,7 +148,7 @@ Redirect hit ratio, P99 by hit/miss, DB fallback load, blocked/expired hits, col
 
 Prevent management IDOR, rate-limit creation, abuse scanning/takedown, avoid fetching arbitrary targets from privileged network; redirect service là open redirect có chủ đích nên phải có abuse policy.
 
-## Trade-offs
+## Đánh đổi
 
 | Option | Best for | Weakness |
 |---|---|---|
@@ -124,18 +160,14 @@ Prevent management IDOR, rate-limit creation, abuse scanning/takedown, avoid fet
 
 Single DB+cache trước; add edge caching khi invalidation/takedown SLA cho phép; analytics pipeline independent từ latency-critical redirect.
 
-## Interview rehearsal
+## Thực hành, debugging và kết luận
 
-1. What is the primary correctness invariant?
-2. Which measured resource limits throughput first?
-3. What happens if a response is lost after commit?
-4. How would you handle a tenfold hot-key skew?
-5. Which evidence would justify the next architectural change?
+Failure quan trọng là cache trả link đã bị chặn, code collision, DB down và analytics backlog. Test tạo cùng candidate code đồng thời để constraint chọn đúng; test disable link khi cache stale và xác minh policy freshness. Metrics redirect latency/error theo reason, cache miss và blocked-link propagation cho biết product contract giữ được không.
 
-Trả lời bằng API semantics, capacity arithmetic và failure flow cụ thể của bài này. Một câu trả lời senior phải giải thích điểm commit, ownership trong Go, bounds của concurrency/pools và recovery cho unknown outcome.
+Go handler giới hạn URL input, không tự fetch destination tùy ý và không dùng một goroutine không bound cho mỗi click log. HTTP response commit và cache write có lifetime rõ. Khi mở rộng multi-region, quyết định authority cấp code và replication freshness trước khi hứa redirect ở mọi region thấy link ngay.
 
 
-## See also
+## Đọc tiếp
 
 - [capacity-estimation](capacity-estimation.md)
 - [Worker pool và bounded concurrency](../04-concurrency/worker-pool.md)

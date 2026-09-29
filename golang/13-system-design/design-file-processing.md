@@ -1,5 +1,21 @@
 # Design File Processing
 
+## Bài toán và ví dụ đầu tiên
+
+Người dùng upload file lớn để parse và transform. Đọc toàn bộ file vào []byte rồi tạo goroutine cho mọi record dễ cạn memory. Thiết kế tách nhận file bền, xử lý streaming/chunk và publish kết quả để restart không phải đoán phần nào đã xong.
+
+## Đi từng bước qua một tình huống
+
+Phiên bản 1 API kiểm tra metadata/quota, lưu file vào object storage theo cơ chế upload phù hợp rồi tạo job DB. Worker đọc có giới hạn, decode từng phần, transform và ghi output tạm. Chỉ khi output hoàn tất mới publish trạng thái/result reference; file nửa chừng không được trả như kết quả hợp lệ.
+
+Phiên bản 2 có fixed worker pools hoặc pipeline stages với concurrency theo CPU/target storage. Bounded queues theo bytes ngăn parser đi quá xa writer. Chunk boundaries phải giữ record semantics; cắt một byte range tùy ý có thể chia giữa UTF-8 hoặc record nén.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Phiên bản 3 phân chunk cho nhiều workers nếu format và operation cho phép độc lập, giữ manifest/version cùng checkpoint. Broker hỗ trợ phân phối/retry khi job coordination cần scale, nhưng Kafka không cần ở giai đoạn một worker đọc file tuần tự đã đủ. Input checksum/version ngăn replay nhầm file bị đổi dưới cùng path.
+
+Idempotent output dùng deterministic chunk key và finalize manifest atomically theo storage contract. Nếu transform cần order toàn file, reorder/merge có memory và time cost. Với dữ liệu không tin cậy, kiểm soát decompression expansion, record size và CPU budget trước khi gọi parser tốn tài nguyên.
+
 **Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
@@ -35,6 +51,10 @@ flowchart LR
     W --> O
 ```
 
+### Cách đọc diagram
+
+Client xin quyền upload từ Go control API rồi gửi bytes tới object storage theo authorization đã scope. API lưu job/outbox, queue đưa việc tới isolated processors và workers đọc/ghi object storage. Control path nhỏ tách khỏi data bytes path; job chỉ accepted khi durable state theo contract đã có.
+
 ## Request Flow
 
 Upload completion phải verify size/checksum/object ownership trước job ready. Worker claim job, process bounded stream, persist output manifest atomically trong DB; API status dựa manifest, không dựa existence của temporary file.
@@ -53,6 +73,10 @@ sequenceDiagram
     W->>O: Read input and write versioned output
 ```
 
+### Cách đọc diagram
+
+Client nhận presigned upload có phạm vi, upload bytes rồi submit input version bất biến. API trả durable job ID; worker sau đó đọc input và ghi output versioned. Mũi tên theo thời gian nhắc upload hoàn tất và tạo job là hai bước cần validation/idempotency, không mặc nhiên một transaction chung.
+
 ## Data Flow
 
 ```mermaid
@@ -63,6 +87,10 @@ flowchart TD
     O --> C[Checksum and publish manifest]
     C --> R[Downloadable result]
 ```
+
+### Cách đọc diagram
+
+Input bất biến được validate/scan, transform theo chunks rồi ghi output tạm. Chỉ sau checksum và publish manifest mới có downloadable result. Các node là giai đoạn hoàn thành có điều kiện; output tạm không được coi như result chính thức khi worker crash giữa chừng.
 
 ## Go Service Implementation
 
@@ -82,11 +110,15 @@ flowchart LR
     L --> D
 ```
 
+### Cách đọc diagram
+
+Classifier tách small-file và large-file pools để workload lớn không giữ hết capacity của file nhỏ. Cả hai vẫn dùng chung object storage và job state, nên có budget chung ở sink. Mũi tên không có nghĩa nhân workers có thể vượt storage throughput mà vẫn tăng completion.
+
 ## Failure Modes
 
 Zip bomb/decompression expansion, corrupt input, disk full, retry writes overwrite output, orphan objects và hung native decoder. Process timeout có thể cần kill isolated subprocess chứ context alone không đủ.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Thử crash/network loss tại từng durable boundary ở request flow; kiểm tra invariant sau recovery, không chỉ việc service khởi động lại. Write temporary output, publish manifest only after verification; duplicate attempt uses conditional state/version update and cleanup orphan objects by retention.
 
@@ -99,11 +131,15 @@ flowchart TD
     V -->|no| T[Reprocess isolated chunks]
 ```
 
+### Cách đọc diagram
+
+Worker crash làm lease hết và attempt mới dùng lại input/transform version. Nếu output checksum hợp lệ, publish có version guard; nếu không, xử lý lại chunks cô lập. Lease không tự dừng worker cũ, nên version guard/idempotent writes vẫn cần để stale completion không thắng attempt mới.
+
 ## Observability
 
 Queue age by file class, bytes processed/s, peak RSS per job, CPU duration, failure category, orphan storage bytes.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Queue age by file class, bytes processed/s, peak RSS per job, CPU duration, failure category, orphan storage bytes. Tách offered, accepted và completed rates; chọn dependency/queue đầu tiên lệch baseline. Thu profile đúng triệu chứng, đối chiếu trace với durable state theo operation ID. Sau mitigation kiểm tra cả SLO và backlog/reconciliation để tránh tuyên bố phục hồi quá sớm.
 
@@ -111,7 +147,7 @@ Queue age by file class, bytes processed/s, peak RSS per job, CPU duration, fail
 
 Content sniff/allowlist, sandbox transformation, no arbitrary filesystem paths/URLs, signed downloads scoped tenant, malware scanning và retention policy.
 
-## Trade-offs
+## Đánh đổi
 
 | Option | Best for | Weakness |
 |---|---|---|
@@ -123,18 +159,14 @@ Content sniff/allowlist, sandbox transformation, no arbitrary filesystem paths/U
 
 Bắt đầu one transform với immutable versions; thêm chunk checkpoints cho large files khi retry cost đáng kể; autoscale theo work units/queue age thay count đơn thuần.
 
-## Interview rehearsal
+## Thực hành, debugging và kết luận
 
-1. What is the primary correctness invariant?
-2. Which measured resource limits throughput first?
-3. What happens if a response is lost after commit?
-4. How would you handle a tenfold hot-key skew?
-5. Which evidence would justify the next architectural change?
+Test crash giữa chunk, sau output write trước checkpoint và lúc finalize. Retry phải tạo kết quả hợp lệ không trộn outputs hai versions; orphan temp objects cần cleanup có retention. Client cancel request upload khác user cancel durable processing job.
 
-Trả lời bằng API semantics, capacity arithmetic và failure flow cụ thể của bài này. Một câu trả lời senior phải giải thích điểm commit, ownership trong Go, bounds của concurrency/pools và recovery cho unknown outcome.
+Observability theo bytes/records processed, throughput stages, queue age và lỗi format. Khi CPU bình thường nhưng pipeline chậm, xem writer I/O hoặc DB pool chứ không thêm parser goroutines. Quota tenant và auth trên object reference ngăn một user đọc output của user khác.
 
 
-## See also
+## Đọc tiếp
 
 - [capacity-estimation](capacity-estimation.md)
 - [Worker pool và bounded concurrency](../04-concurrency/worker-pool.md)

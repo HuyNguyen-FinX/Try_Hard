@@ -1,5 +1,21 @@
 # Design Migration Platform — 4–5 Billion Records
 
+## Bài toán và ví dụ đầu tiên
+
+Migrate 4–5 tỷ records trong khi source vẫn nhận writes là bài toán giữ snapshot, change stream và verification cùng một mô hình tiến trình. Copy thật nhanh mà thiếu boundary giữa snapshot và changes có thể mất update hoặc hồi sinh record đã delete.
+
+## Đi từng bước qua một tình huống
+
+Phiên bản 1 thử trên một dataset nhỏ với một worker, source snapshot nhất quán và target idempotent upsert. Ghi manifest/checkpoint bền theo range, source position/version và transform version. Xác minh counts/checksums theo partition và mẫu semantic fields. API/UI chỉ điều khiển job; nó không quyết định correctness của data plane.
+
+Phiên bản 2 chia snapshot thành ranges có ownership/lease và bounded workers. Capacity dựa source read budget, network, target write/index cost và retention change log, không chỉ số goroutine. Checkpoint chỉ tiến qua dữ liệu đã ghi và kiểm chứng theo contract; worker restart replay cùng range phải an toàn.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Phiên bản 3 phối hợp snapshot với CDC — change data capture, luồng thay đổi sau một position được xác định. Phải chọn thuật toán boundary theo source/connector để không gap giữa snapshot và log, và áp version/order để snapshot cũ không overwrite change mới. Kafka có thể là buffer/replay log cho CDC nếu requirements cần, nhưng thêm nó không tự giải quyết snapshot consistency.
+
+Ví dụ 5 tỷ rows × 1 KB khoảng 5 TB payload thô theo đơn vị thập phân, chưa indexes/replicas/protocol. 50000 rows/s cần tối thiểu khoảng 100000 giây, hơn 27 giờ, nếu rate giữ ổn định và chưa tính catch-up/verification. Source log retention phải che tổng thời gian cùng failure margin; nếu tụt ra ngoài retention, cần chiến lược resnapshot chứ không tiếp tục như không có gap.
+
 **Design lab:** các con số dưới đây là giả định để ước lượng, chưa phải kết quả benchmark. Khi phỏng vấn, xác nhận semantics và workload trước khi chọn hạ tầng.
 
 ## Requirements
@@ -37,6 +53,10 @@ flowchart LR
     D --> V[Verification and cutover controller]
 ```
 
+### Cách đọc diagram
+
+Source cấp snapshot chunks và CDC tại boundary phối hợp; cả hai vào durable staging/log rồi bounded Go workers transform sang target. Workers giữ checkpoints, target được verification/cutover controller kiểm tra. Hai luồng nguồn phải có ordering/version semantics để snapshot cũ không ghi đè change mới.
+
 ## Request Flow
 
 Coordinator chốt source-specific snapshot/CDC boundary. Một cách triển khai: giữ CDC từ boundary, đọc consistent snapshot, load snapshot trước, rồi replay mọi changes từ boundary theo order. Hoặc interleave chỉ khi protocol target versions bảo đảm snapshot cũ không overwrite CDC mới. Không lấy snapshot và “bắt đầu CDC sau đó” vì có gap. Multi-table transaction atomicity cần explicit transaction grouping nếu business yêu cầu, per-key order alone chưa đủ.
@@ -57,6 +77,10 @@ sequenceDiagram
     C->>T: Verify then authorize cutover
 ```
 
+### Cách đọc diagram
+
+Coordinator thiết lập snapshot/CDC boundary với source, rồi source ghi snapshot và concurrent changes vào durable log. Workers apply batch/progress atomically khi cùng boundary cho phép, chỉ commit contiguous consumed progress sau durable target commit. Cutover diễn ra sau verification, không chỉ khi queue nhìn có vẻ trống.
+
 ## Data Flow
 
 ```mermaid
@@ -68,6 +92,10 @@ flowchart TD
     U --> CK[Checkpoint after durable commit]
     X --> Q[Quarantine unsupported schema]
 ```
+
+### Cách đọc diagram
+
+Row hoặc tombstone delete được đóng envelope gồm key/source position, partition theo entity, transform version xác định rồi conditional upsert/delete. Checkpoint đi sau durable commit; schema không hỗ trợ được quarantine. Tombstone phải được giữ semantics để replay snapshot không hồi sinh dữ liệu đã xóa.
 
 ## Go Service Implementation
 
@@ -90,11 +118,15 @@ flowchart LR
     W2 --> T
 ```
 
+### Cách đọc diagram
+
+Snapshot ranges chia cho readers và snapshot worker budget; CDC có lane/budget riêng để không bị backfill chiếm hết. Hai nhóm cùng đổ vào target write capacity nên tổng phải được throttle. Các lane không tự đảm bảo merge order; version/checkpoint protocol của design giữ trách nhiệm đó.
+
 ## Failure Modes
 
 Snapshot cũ overwrite CDC, missed deletes, source log retention exhausted, target commit ambiguous, duplicates after crash, cross-table order sai, schema change giữa run, transformation nondeterministic, hot partition, DLQ backlog và checksum giả do canonicalization khác.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Thử crash/network loss tại từng durable boundary ở request flow; kiểm tra invariant sau recovery, không chỉ việc service khởi động lại. Checkpoint chỉ advance sau durable target effect. Crash sau write trước offset/checkpoint tạo replay; upsert/version guard và dedup giữ idempotency. Không commit offset vượt hole khi parallel processing. Schema incompatible dừng affected stream/quarantine có alert; không silently skip rồi tuyên bố migration complete.
 
@@ -110,11 +142,15 @@ flowchart TD
     C --> M[Verify counts checksums and gaps]
 ```
 
+### Cách đọc diagram
+
+Crash/target timeout khởi động lại từ durable checkpoint và replay cùng event ID. Target đã có version mới hơn/bằng thì no-op theo policy xác minh; version chưa áp dụng thì transform deterministic rồi commit state/progress. Cuối cùng kiểm tra counts/checksums/gaps. Một timeout trước đó không chứng minh batch chưa commit, vì thế replay phải idempotent.
+
 ## Observability
 
 Progress theo rows/bytes và estimated remaining time, source_position lag theo wall time, WAL/CDC retention headroom, target throughput/lock/IO, per-partition oldest age, checkpoint age, retries/DLQ by schema/error, verification mismatches và worker memory.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Progress theo rows/bytes và estimated remaining time, source_position lag theo wall time, WAL/CDC retention headroom, target throughput/lock/IO, per-partition oldest age, checkpoint age, retries/DLQ by schema/error, verification mismatches và worker memory. Tách offered, accepted và completed rates; chọn dependency/queue đầu tiên lệch baseline. Thu profile đúng triệu chứng, đối chiếu trace với durable state theo operation ID. Sau mitigation kiểm tra cả SLO và backlog/reconciliation để tránh tuyên bố phục hồi quá sớm.
 
@@ -122,7 +158,7 @@ Progress theo rows/bytes và estimated remaining time, source_position lag theo 
 
 Read-only source credential trừ CDC privileges tối thiểu; scoped target writer, encrypted transit/staging, tenant/table authorization, redact row payloads, audit cutover approval và retention/delete staging sau acceptance.
 
-## Trade-offs
+## Đánh đổi
 
 | Option | Best for | Weakness |
 |---|---|---|
@@ -135,18 +171,14 @@ Read-only source credential trừ CDC privileges tối thiểu; scoped target wr
 
 Pilot một table10M rows với inserts/updates/deletes đồng thời, crash/rebalance tests và end-to-end checksums. Scale100M để đo source/target/WAL bottleneck; dry run full-size estimates với storage retention. Cutover chỉ khi snapshot complete, CDC caught up tới agreed boundary, DLQ resolved, verification approved; freeze/redirect writes theo plan rồi continue reconcile. Rollback sau target nhận writes cần reverse replication hoặc write reconciliation, không chỉ đổi DNS.
 
-## Interview rehearsal
+## Thực hành, debugging và kết luận
 
-1. What is the primary correctness invariant?
-2. Which measured resource limits throughput first?
-3. What happens if a response is lost after commit?
-4. How would you handle a tenfold hot-key skew?
-5. Which evidence would justify the next architectural change?
+Test crash trước/sau batch commit, checkpoint lost, duplicated/out-of-order changes và delete/tombstone. Target schema transformation cần version và nullable/type policy; counts bằng nhau vẫn có thể chứa dữ liệu sai. Verification dùng partition checksums, sampled semantic comparison và drift/catch-up metrics theo contract.
 
-Trả lời bằng API semantics, capacity arithmetic và failure flow cụ thể của bài này. Một câu trả lời senior phải giải thích điểm commit, ownership trong Go, bounds của concurrency/pools và recovery cho unknown outcome.
+Cutover chỉ khi lag và verification đạt ngưỡng, writers/readers chuyển theo kế hoạch có rollback hoặc roll-forward rõ. Giữ source authority trong giai đoạn đã chọn; dual writes hai nơi không có protocol tạo divergence. Tăng workers khi target lock/IO bão hòa có thể giảm throughput và đe dọa production source, nên throttle theo health cả hai bên.
 
 
-## See also
+## Đọc tiếp
 
 - [capacity-estimation](capacity-estimation.md)
 - [Worker pool và bounded concurrency](../04-concurrency/worker-pool.md)

@@ -1,8 +1,28 @@
 # System design framework cho Senior Go
 
-**P0 · Must know**
+## Bài toán và ví dụ đầu tiên
 
-## Concept, Why và Mental Model
+Thiết kế một hệ thống bắt đầu từ điều người dùng cần và điều không được phép sai. Với dịch vụ tạo đơn, “nhanh” chưa đủ: một lần xác nhận của người dùng không được tạo hai đơn khi response mất. Sau khi xác định invariant đó, ta mới chọn API, data model, cách commit và cách scale.
+
+Một bản thiết kế có ích phải giải thích được phiên bản đầu chạy thế nào, vì sao thêm từng thành phần và khi thành phần lỗi thì dữ liệu còn đúng ra sao. Các con số capacity trong bài là giả định để kiểm tra reasoning, không phải benchmark đã đạt trên một cấu hình phần cứng.
+
+## Đi từng bước qua một tình huống
+
+Phiên bản 1 có một Go API và PostgreSQL. POST /orders nhận operation key, validate/auth, ghi order với unique constraint rồi trả ID sau commit. GET đọc DB. Chưa cần Redis/Kafka nếu latency, throughput và availability yêu cầu vẫn được đáp ứng. Dạng đơn giản này làm rõ nguồn sự thật và cửa sổ response mất sau commit.
+
+Phiên bản 2 thêm nhiều API replicas khi CPU hoặc nhu cầu availability chứng minh cần. Load balancer chia traffic, nhưng DB vẫn có budget chung: 10 replicas × 20 pool connections đã là 200 khả năng kết nối. Nếu reads lặp lại chiếm phần lớn tải và sản phẩm chấp nhận stale data, thêm cache có key/version/TTL và phương án cache-down. Cache không giúp một write bottleneck bị khóa một row hot.
+
+Phiên bản 3 chuyển email/report lâu sang durable jobs sau khi API đã commit intent. Trả accepted cùng job ID và để worker xử lý với retries/idempotency. Kafka chỉ xuất hiện nếu cần log/replay/nhiều consumer groups hoặc scale phù hợp; một job table có thể đủ cho giai đoạn đầu. Mỗi bước thêm phải trả lời được bottleneck nào giảm và failure mode mới nào được nhận.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Capacity estimation nối rate, size và thời gian. Với hệ ổn định, mean in-flight xấp xỉ arrival rate × mean time trong phạm vi đang đo. Không thay mean bằng P99 rồi gọi đó là Little's Law chính xác. Peak traffic, skew và mất một zone cần headroom riêng; disk storage phải tính indexes, replicas và retention theo giả định.
+
+Data model thể hiện invariants qua keys/constraints/version. Request flow chỉ rõ nơi commit durable và nơi trả ack. Data flow giải thích event/projection/replay. Hai sơ đồ có thể dùng cùng components nhưng trả lời khác nhau: request latency đường đồng bộ và dữ liệu sống/đổi qua thời gian.
+
+Go runtime là một phần capacity: goroutine chờ ít CPU nhưng giữ stack/payload; GOMAXPROCS không giới hạn requests. Worker count, queue bytes, HTTP/SQL pool và deadlines phải khớp budget. HPA tăng API replicas không làm database hoặc partition hot tự scale.
+
+## Khái niệm và lý do tồn tại
 
 System design nối product contract với capacity, consistency và operations. Bắt đầu bằng invariant và workload, sau đó chọn boundaries/cơ chế; không bắt đầu bằng danh sách Kafka/Redis/Kubernetes.
 
@@ -15,13 +35,17 @@ flowchart LR
     X --> O[Measurement and evolution]
 ```
 
-## How và Internals
+### Cách đọc diagram
+
+Bắt đầu requirements/invariants rồi xác định workload và SLO để có đơn vị cho estimates. Từ capacity/data model đi tới request/commit flow, sau đó kiểm tra failure/recovery trước đo và tiến hóa. Các mũi tên là thứ tự lập luận có thể lặp lại khi đo bác bỏ assumption. Không có node chọn công nghệ đầu tiên vì components phải phục vụ constraint đã xác định.
+
+## Cơ chế bên trong
 
 Trong45 phút:5 phút clarify scope;5 phút estimates;10 phút API/data/architecture;10 phút deep dive bottleneck;10 phút failures/recovery/security;5 phút evolution và validation. Với30 phút giảm breadth, vẫn giữ commit boundary và unknown outcomes. Nêu assumptions bằng số, units và scope. Peak khác average; storage gồm indexes/replicas; concurrency dùng mean time với Little's Law trong trạng thái ổn định.
 
 Runtime Go là một tầng của system: G park khi I/O nhưng giữ memory; GOMAXPROCS bound Go CPU execution, không bound requests. Worker count, queue bytes, client pools và DB capacity phải gắn vào model. Kafka partitions bound ordering/parallelism; context deadlines đi qua dependencies; graceful shutdown cần replay-safe state.
 
-## Code Example
+## Ví dụ code
 
 Capacity arithmetic có thể chạy để kiểm tra units:
 
@@ -33,17 +57,21 @@ print(rps * mean_seconds)  # 1000 mean in-flight
 print(rps * read_fraction * (1 - hit_ratio))  # ~900 read misses/s
 ```
 
+### Giải thích code và kết quả
+
+Rps nhân mean_seconds cho mean in-flight1000 trong steady state và cùng boundary đo. Nhánh read_fraction×miss_fraction ước khoảng900 read misses/s, chưa tính multiple queries/request hoặc cache-down. Calculator chỉ kiểm tra units/assumptions, không đo throughput thật. Đổi hit_ratio về0 để thấy DB read demand tăng lên18000/s và lý do cần fallback bound.
+
 Đây là calculator, không benchmark. Go implementation patterns chạy được nằm ở [examples](../examples/README.md).
 
-## Production Use Case
+## Áp dụng vào hệ thống thật
 
 20k RPS: model cache-miss path, DB queries/Tx hold time, outbox event rate, connection budget tại max pods và one-zone loss. Design migration 5B: source log retention, snapshot+CDC ordering, target throughput và verification là trọng tâm hơn HTTP routing.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Response mất sau commit; dependency slow giữ pools; cache down tạo source overload; worker replay duplicate; schema rollout incompatible; region loss và stale leader. Mỗi case phải có owner, detection, mitigation và recovery invariant.
 
-## Trade-offs
+## Đánh đổi
 
 | Quyết định | Lợi ích | Giá phải trả |
 |---|---|---|
@@ -52,70 +80,26 @@ Response mất sau commit; dependency slow giữ pools; cache down tạo source 
 | Cache | Read capacity | Staleness/invalidation |
 | Shard | Partitioned scale | Cross-shard operations |
 
-## Common Misconceptions
+## Những cách hiểu dễ sai
 
 Một diagram nhiều boxes không chứng minh capacity/correctness. “Exactly once” không có nghĩa nếu không nêu transaction boundary. HPA không mở rộng database tự động.
 
-## When NOT to use
+## Khi nên chọn cách khác
 
 Không thêm cache/broker/microservice trước khi chỉ ra requirement hoặc measured bottleneck. Không hứa target RPS mà chưa nêu workload và test.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Vẽ lại path từ trace thật, so estimates với metrics. Xác định queue/capacity đầu tiên saturate, giảm admission hoặc isolate workload rồi mới scale. Kiểm tra correctness bằng durable IDs/state reconciliation sau mitigation. Đánh giá change ở offered load giống nhau và bao gồm failures/timeouts.
 
-## Key Takeaways
+## Thực hành, debugging và kết luận
 
-Thiết kế tốt giải thích được cách chạy bình thường, cách hỏng và cách biết recovery đã đúng.
+Kiểm chứng design bằng failure timeline trước khi mở rộng thêm boxes. Crash trước commit phải không báo completed; crash sau commit trước response cần retry cùng identity; consumer crash sau effect trước checkpoint cần replay-safe. Nếu không giải thích được state sau restart thì diagram normal path chưa đủ.
 
-## Interview Questions
-
-### Basic / Mid — 10
-
-1. What is a functional requirement?
-2. What is an SLO?
-3. What is a correctness invariant?
-4. How do peak and average traffic differ?
-5. What is a capacity estimate?
-6. What is a commit boundary?
-7. What is a data ownership boundary?
-8. What is a failure domain?
-9. What is a recovery objective?
-10. What is an architectural trade-off?
-
-### Senior — 10
-
-1. How do you apply Little's Law correctly?
-2. How do Go runtime costs influence concurrency limits?
-3. How should max replicas affect pool sizing?
-4. Why does async processing require an accepted-state contract?
-5. How do you avoid cache-induced overload?
-6. What does exactly-once mean within a transaction boundary?
-7. How do you choose a partition key?
-8. How do you plan schema evolution?
-9. How should shutdown affect accepted jobs?
-10. How do you validate a design with failure injection?
-
-### Production scenarios — 5
-
-1. How would you design a 20k RPS API with P99 below 200ms?
-2. How would you migrate five billion rows while writes continue?
-3. How would you survive Redis failure without losing the DB?
-4. How would you reconcile a payment timeout?
-5. How would you recover from an out-of-order event?
-
-### Senior Follow-ups — 5
-
-1. What must never be violated?
-2. Where is that invariant committed?
-3. What happens if the response is lost?
-4. Which resource bounds throughput?
-5. Which test would falsify the design?
-
-Chuỗi follow-up: trả lời lần lượt 5 câu cuối; mỗi câu cần một invariant, bằng chứng runtime hoặc trade-off cụ thể.
+Mỗi thay đổi cần metric chứng minh trigger và test bác bỏ assumptions: cache miss rate khi Redis down, DB wait ở max replicas, drain dưới rolling deploy, duplicate/reorder events. Trong review, trình bày contract, flow và trade-off thành câu đầy đủ trước khi rút gọn thành sơ đồ. Một thiết kế đơn giản với recovery rõ thường đáng tin hơn một hình nhiều thành phần chưa có ownership.
 
 
-## See also
+## Đọc tiếp
 
 - [Design High-Throughput API — 20,000 RPS](design-high-throughput-api.md)
 - [Design Migration Platform — 4–5 Billion Records](design-migration-platform.md)

@@ -1,126 +1,98 @@
-# Goroutine: lifetime, stack và ownership
+# Goroutine: chạy công việc đồng thời và quản lý vòng đời của nó
 
-**P0 · Must know**
+## Bài toán: một request không nên chặn mọi request khác
 
-## Concept và Why
+Một server nhận hai request. Request A chờ database 200 ms; request B chỉ đọc dữ liệu đã có trong bộ nhớ. Nếu chương trình thực hiện mọi thứ tuần tự trong một luồng điều khiển, B phải đợi cả thời gian A chờ mạng. Ta muốn các công việc có thể tiến triển độc lập: lúc A chưa làm gì được, B có thể sử dụng CPU.
 
-Goroutine là execution context do Go runtime quản lý, chạy function đồng thời với caller. `go f()` không chứng minh f đã bắt đầu, hoàn tất hoặc thành công khi caller đi tiếp. Goroutine giúp viết blocking-style code trong hệ thống có nhiều I/O waits.
+Concurrency là khả năng tổ chức nhiều công việc có tiến trình chồng lấp về thời gian. Parallelism là thực sự chạy nhiều công việc cùng lúc trên các tài nguyên xử lý khác nhau. Máy một core vẫn có concurrency bằng cách xen kẽ công việc, nhưng không thể thực thi hai luồng CPU cùng thời điểm trên cùng một logical CPU. Phân biệt này giúp hiểu vì sao thêm goroutine không luôn làm chương trình nhanh hơn.
 
-## Mental Model
+## Goroutine là gì trước khi tìm hiểu runtime
 
-```mermaid
-flowchart LR
-    C[Creator] --> R[Runnable G]
-    R --> X[Running on M with P]
-    X --> W[Waiting on I/O or synchronization]
-    W --> R
-    X --> D[Return and dead]
-```
-
-## How và Internals
-
-G có stack riêng và scheduler metadata. Stack ban đầu nhỏ; các runtime Go phổ biến bắt đầu khoảng vài KiB, thường nhắc 2 KiB, nhưng kích thước thực tế/adaptive starting size là implementation detail. Stack grow bằng cơ chế runtime khi cần và có thể shrink; không phải buffer 2 KiB cố định mãi. Các frame/locals giữ object reachable, nên goroutine treo giữ thêm memory ngoài stack.
-
-G chạy trên M đang giữ P; `GOMAXPROCS` giới hạn P chạy Go code cùng lúc. G không cố định trên một M. Blocking syscall có thể giữ M trong kernel nhưng P được release/retake; network FD phù hợp dùng netpoller park G và M/P chạy work khác. Preemption giúp G CPU-heavy nhường execution; work stealing phân phối runnable work giữa P. Xem scheduler để tách các đường này.
-
-## Code Example
-
-Function hoàn chỉnh dùng trong package có import context. Caller sở hữu ctx và nhận result/error:
+Goroutine là một luồng thực thi do Go runtime quản lý. Nó có vị trí đang chạy, stack chứa trạng thái lời gọi và vòng đời riêng. Dùng từ khóa `go` trước một lời gọi hàm để yêu cầu chạy lời gọi đó trong goroutine mới. Hàm gọi tiếp tục mà không chờ hàm mới hoàn tất.
 
 ```go
-func Receive(ctx context.Context, input <-chan int) (int, error) {
-    select {
-    case <-ctx.Done():
-        return 0, ctx.Err()
-    case n, ok := <-input:
-        if !ok { return 0, io.EOF }
-        return n, nil
-    }
+package main
+
+import "fmt"
+
+func main() {
+    result := make(chan int)
+    go func() {
+        result <- 6 * 7
+    }()
+    answer := <-result
+    fmt.Println(answer)
 }
 ```
 
-Snippet cần `context` và `io`; bản lab có module/test ở [examples](../examples/README.md). Nếu hai case ready, cancel không có priority tuyệt đối. Không gọi goroutine chỉ để bọc operation không hỗ trợ cancel rồi bỏ waiter: operation thật vẫn còn sống.
+### Giải thích code từng bước
 
-## Production Use Case
+Main tạo channel chưa có buffer. Câu lệnh go tạo công việc tính rồi gửi 42; nó không cam kết worker chạy ngay trước dòng tiếp theo của main. Main chờ receive tại `<-result`. Nếu main tới trước, main chờ worker. Nếu worker tới trước, send của worker chờ main. Khi hai bên gặp nhau, dữ liệu được chuyển và main có thể in 42.
 
-Mỗi worker phải có owner, stop signal và join point. Server nhận request có request context; background consumer cần service context riêng, lifecycle dài hơn request. Limit worker count dựa vào CPU hoặc downstream capacity, rồi bound queue và quy định overload.
+Channel làm rõ điểm đồng bộ, tức điểm một bên phải chờ sự kiện của bên kia. Bỏ receive và để main return ngay sẽ không bảo đảm worker có cơ hội chạy: chương trình kết thúc khi main kết thúc, không đợi mọi goroutine tự động. Thêm Sleep chỉ là đoán thời gian; một tín hiệu hoàn tất mới là giao thức đúng.
 
-## Failure Scenarios
+Send hoàn tất cho biết giá trị đã được nhận trong ví dụ unbuffered này, không có nghĩa mọi code sau send ở worker đã hoàn tất. Nếu caller cần chờ cleanup, dùng thêm done channel được đóng ở cuối worker hoặc WaitGroup. Không đánh đồng “có kết quả đầu tiên” với “toàn bộ vòng đời đã kết thúc”.
 
-Sender không có receiver; consumer đợi channel không bao giờ đóng; background loop không nghe cancel; HTTP call không deadline; goroutine con còn chạy sau test. Khi main return, process kết thúc mà không đợi tất cả G.
+## Vì sao không tạo một OS thread cho mỗi request
 
-## Trade-offs
+OS thread là đơn vị mà hệ điều hành lập lịch. Nó có tài nguyên kernel và stack liên quan; số lượng lớn thread gây chi phí quản lý. Go runtime ánh xạ nhiều goroutine lên một tập OS thread. Khi goroutine chờ một channel hoặc network I/O được runtime hỗ trợ, runtime thường có thể ngừng chạy goroutine đó và dùng thread để chạy goroutine khác.
 
-| Cách | Phù hợp | Chi phí |
-|---|---|---|
-| Synchronous call | Luồng tuyến tính | Chờ completion |
-| Goroutine mỗi task | Tải nhỏ đã có bound | Dễ bỏ sót ownership |
-| Worker pool | Workload liên tục | Queue và shutdown protocol |
+Do đó 100000 goroutine không đồng nghĩa 100000 OS thread. Nhưng cũng không đồng nghĩa miễn phí: mỗi goroutine giữ stack, metadata và có thể giữ request body, kết nối hoặc object mà stack tham chiếu. Chi phí thực tế thường nằm nhiều ở dữ liệu và dependency của công việc hơn ở con số stack ban đầu.
 
-## Common Misconceptions
+## Stack và lifetime của dữ liệu
 
-Không có API an toàn để kill tùy ý một goroutine. GC không dọn goroutine đang blocked chỉ vì caller mất reference. Concurrency không bảo đảm parallelism hay thứ tự chạy.
+Stack lưu trạng thái các lời gọi đang hoạt động: biến cục bộ phù hợp, return address và thông tin runtime cần để tiếp tục. Go có stack có thể tăng khi lời gọi cần thêm chỗ; không nên viết code dựa trên một kích thước stack khởi đầu cố định. Con trỏ ra khỏi một hàm có thể trỏ tới object được compiler đặt trên heap để giữ đúng lifetime.
 
-## When NOT to use
+Closure trong goroutine có thể giữ dữ liệu của caller sống lâu. Nếu handler có một buffer lớn và closure còn tham chiếu buffer, GC chưa được phép thu hồi nó. Goroutine leak vì thế cũng có thể là memory leak về mặt vận hành: dữ liệu vẫn reachable — còn đường tham chiếu tới — dù ứng dụng không còn cần công việc đó.
 
-Không spawn không giới hạn theo input không tin cậy. Không dùng sleep làm join hoặc synchronization; duration không thiết lập happens-before.
+## Các trạng thái quan trọng
 
-## How I would debug this in production
+Runnable nghĩa là có thể chạy nhưng đang đợi được cấp CPU. Running nghĩa là đang thực thi. Waiting nghĩa là chưa thể tiến triển vì chờ điều kiện như channel, timer hoặc network. Park là hành động runtime đưa goroutine vào trạng thái chờ. Chúng là mô hình đủ dùng để đọc trace; trạng thái nội bộ cụ thể còn có chi tiết khác.
 
-Xem trend `runtime.NumGoroutine`, rồi profile goroutine và group theo blocking stack. Phân biệt runnable, chan send/receive, netpoll, DB wait. Đối chiếu lifetime request với cancel/timeout và queue length. Sau fix, test repeated cancellation và chờ done channel có timeout; số G phải về steady state sau tải giảm, không nhất thiết bằng zero.
+```mermaid
+stateDiagram-v2
+    [*] --> Runnable: go statement
+    Runnable --> Running: scheduler chooses work
+    Running --> Waiting: channel or network wait
+    Waiting --> Runnable: event becomes ready
+    Running --> Runnable: preemption
+    Running --> Finished: function returns
+    Finished --> [*]
+```
 
-## Key Takeaways
+### Cách đọc diagram
 
-Goroutine rẻ hơn dedicated OS thread cho nhiều workload, nhưng mỗi G đều có tài nguyên và lifetime cần owner.
+Bắt đầu từ go statement: goroutine mới có thể chạy nhưng chưa chắc đang chạy. Scheduler đưa nó từ Runnable sang Running khi có tài nguyên. Nếu nó chưa nhận được dữ liệu thì đi sang Waiting. Sự kiện dữ liệu đến chỉ đưa nó về Runnable; nó vẫn có thể chờ thêm CPU. Mũi tên preemption là việc runtime tạm ngừng một goroutine đang chạy để chia cơ hội cho công việc khác. Chỉ khi hàm return, vòng đời ứng dụng của goroutine đó mới kết thúc.
 
-## Interview Questions
+## Scheduler, blocking và giới hạn thực tế
 
-### Basic / Mid — 10
+Scheduler là bộ phận runtime chọn goroutine nào chạy trên thread nào. Mô hình G–M–P gọi goroutine là G, OS thread là M và tài nguyên runtime cho phép thread chạy Go code là P. Số P chịu ảnh hưởng của GOMAXPROCS. P không phải một core vật lý được gắn cố định, và GOMAXPROCS không phải trần số goroutine.
 
-1. What does a go statement start?
-2. Does the caller wait automatically?
-3. What state does a goroutine own?
-4. Who schedules goroutines?
-5. How does its stack grow?
-6. Is it bound to one OS thread?
-7. What happens when main returns?
-8. How does a channel wait affect G?
-9. What is a join point?
-10. Can a goroutine be forcibly killed safely?
+Channel wait thường park G mà không giữ M chỉ để chờ nó. Network I/O dùng cơ chế netpoller để nối sự kiện từ OS với goroutine cần đánh thức. Một blocking syscall hoặc cgo call có thể giữ OS thread; runtime có cơ chế cho thread khác tiếp tục dùng P. Vì vậy phải xem loại blocking trước khi kết luận “goroutine không bao giờ chặn thread”.
 
-### Senior — 10
+## Production: fan-out có giới hạn
 
-1. Why is initial stack size not total goroutine cost?
-2. How can blocked stacks retain heap objects?
-3. How does a syscall affect M and P?
-4. How does netpoll release execution capacity?
-5. What does preemption guarantee and not guarantee?
-6. How does work stealing help runnable G?
-7. How should a parent propagate cancellation?
-8. Why does wrapping blocking work in a goroutine not cancel it?
-9. How do you choose a worker limit?
-10. Why does time.Sleep not synchronize memory?
+Endpoint tổng hợp 50 sản phẩm gọi pricing cho từng sản phẩm. Chạy tuần tự có thể chậm; tạo 50 goroutine có thể giảm latency ở tải nhỏ. Nhưng khi có 1000 request cùng lúc, downstream có thể phải chịu 50000 lời gọi. Những lời gọi chậm giữ nhiều goroutine và connection hơn, tạo một vòng khuếch đại quá tải.
 
-### Production scenarios — 5
+Giải pháp là chọn trần công việc đang chạy theo capacity dependency, giới hạn hàng chờ và truyền deadline. Worker pool là một tập worker cố định lấy job từ queue; semaphore là bộ đếm slot cho phép vào vùng công việc giới hạn. Chúng không làm downstream nhanh hơn, mà giữ số việc đang dùng tài nguyên ở mức có kiểm soát.
 
-1. How would you debug a goroutine count that grows each minute?
-2. Why did shutdown leave workers running?
-3. Why does low CPU coexist with high goroutine count?
-4. Why did tiny requests exhaust memory?
-5. Why does a test pass with sleep but fail in CI?
+## Failure: leak, race và panic
 
-### Senior Follow-ups — 5
+Goroutine leak xảy ra khi goroutine không còn công việc hữu ích nhưng không có đường kết thúc, chẳng hạn gửi kết quả vào channel mà caller đã bỏ đi. Buffer một phần tử có thể giải quyết một giao thức một kết quả cụ thể, nhưng không sửa được mọi producer vô hạn. Mỗi điểm chờ cần một người có thể làm nó tiến triển hoặc một đường cancellation.
 
-1. Who creates the goroutine?
-2. Who owns its lifetime?
-3. Which operations can block?
-4. Which event unblocks each operation?
-5. Who waits for final completion?
+Data race xảy ra khi các goroutine truy cập cùng dữ liệu, có ít nhất một ghi và không có đồng bộ phù hợp. Từ khóa go không copy sâu slice, map hay pointer. Dùng mutex, channel ownership hoặc atomic theo invariant của dữ liệu. Panic không được recover trong chính goroutine theo đúng cơ chế sẽ làm process thất bại; recover đặt ở goroutine cha không bắt được panic của goroutine con.
 
-Chuỗi follow-up: trả lời lần lượt 5 câu cuối; mỗi câu cần một invariant, bằng chứng runtime hoặc trade-off cụ thể.
+## Debugging theo triệu chứng
 
+Nếu goroutine count tăng nhưng CPU thấp, lấy goroutine profile để nhóm stack đang chờ cùng một vị trí. Một nhóm lớn ở SQL pool có ý nghĩa khác nhóm lớn ở send result. Nếu CPU cao và nhiều G runnable, lấy CPU profile rồi execution trace để phân biệt code tính toán thật, busy loop và thời gian chờ scheduler. Đo cả tốc độ hoàn tất công việc: nhiều goroutine đang hoạt động có thể là workload hợp lệ, còn tăng không giảm sau khi tải hết mới đáng nghi.
 
-## See also
+Trong test lifecycle, điều phối worker bằng channel báo bắt đầu; đóng hoặc cancel ở thời điểm đã biết rồi đợi tín hiệu hoàn tất. Race detector kiểm tra những interleaving thực sự chạy qua test, nên không có báo cáo race chưa phải chứng minh toàn chương trình đúng. Test cần ép các đường lỗi và caller bỏ cuộc.
+
+## Trade-off và tổng kết
+
+Dùng goroutine khi có công việc thực sự độc lập hoặc cần chờ đồng thời. Với vài phép cộng rất ngắn, chi phí tạo và điều phối có thể lớn hơn phần được lợi. Mọi goroutine phải có owner, điều kiện dừng và cách xác nhận hoàn tất nếu owner phụ thuộc cleanup của nó. Khả năng tạo goroutine dễ dàng chỉ hữu ích khi vòng đời và giới hạn tài nguyên cũng được thiết kế rõ.
+
+## Đọc tiếp
 
 - [Go scheduler: G, M, P và các đường blocking](scheduler-gmp.md)
 - [goroutine-leak](../04-concurrency/goroutine-leak.md)

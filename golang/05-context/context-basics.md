@@ -1,125 +1,113 @@
-# Context: cây lifetime và cooperative cancellation
+# Context: truyền thời hạn và tín hiệu dừng qua một request
 
-**P0 · Must know**
+## Bài toán bắt đầu từ một người dùng rời trang
 
-## Concept, Why và Mental Model
+Một request lấy báo cáo đi qua HTTP handler, service tính báo cáo, truy vấn PostgreSQL rồi gọi dịch vụ tỷ giá. Sau 100 ms, người dùng đóng tab. Nếu các tầng vẫn tiếp tục làm việc trong 20 giây, kết quả cuối cùng không còn người nhận, nhưng database connection, bộ nhớ và CPU vẫn bị chiếm. Khi hàng nghìn request cùng bỏ cuộc, phần việc thừa này có thể làm chậm cả những người dùng còn đang chờ.
 
-Context mang cancellation, deadline và request-scoped values qua API boundaries. Nó không là dependency container và không kill goroutine. Parent hết lifetime thì công việc con không nên tiếp tục dùng tài nguyên vô hạn.
+Ta cần truyền một thông điệp xuyên suốt chuỗi gọi: “công việc thuộc request này không còn cần thiết” hoặc “ngân sách thời gian của nó đã hết”. `context.Context` là giao diện chuẩn để mang tín hiệu đó. Nó còn mang deadline — thời điểm phải ngừng chờ — và một số thông tin gắn với request, như trace ID. Context không chứa code để cưỡng bức dừng bất kỳ hàm nào.
 
-```mermaid
-flowchart TD
-    R[Request context] --> S[Service context]
-    S --> D[DB context]
-    S --> H[HTTP context]
-    R -->|cancel| S
-    S -->|cancel| D
-    S -->|cancel| H
-```
+## Bắt đầu bằng Background, WithCancel, Done và Err
 
-## How và Internals
+`context.Background()` tạo context gốc không có thời hạn và không tự bị hủy. Đây là điểm xuất phát phù hợp ở `main` khi chương trình chưa có parent lifetime. `context.TODO()` cũng không tự bị hủy; tên của nó diễn đạt rằng người viết chưa xác định context đúng để truyền vào. Trong handler đã có `r.Context()`, thay nó bằng TODO sẽ làm mất thông tin của request.
 
-Background là empty root đã biết mục đích; TODO là root API chính thức khi chưa xác định propagation, không dùng trong request path đã rõ. Với Background/TODO, Done là nil, Err là nil, không deadline. WithCancel tạo child và cancel function; WithTimeout/WithDeadline thêm thời hạn nhưng child không vượt parent deadline. WithValue tạo derived context chứa key/value, không thêm timeout.
-
-Done đóng khi canceled/deadline; Err trả Canceled hoặc DeadlineExceeded sau đó. Cancel idempotent; cancel child không cancel parent/sibling. Context methods an toàn concurrent; values chứa mutable map/pointer không tự an toàn. Implementation có cancellation tree/timer registration tùy concrete parent; không phải mỗi node có một watcher goroutine.
-
-## Code Example
-
-Function cần imports context, database/sql, fmt và time:
+`context.WithCancel(parent)` tạo một context con cùng hàm `cancel`. Người tạo child giữ quyền gọi cancel; người thực hiện công việc nhận child. `ctx.Done()` trả về channel dùng để báo hủy. Với context có khả năng hủy, channel này được đóng khi việc hủy có hiệu lực. Đóng channel cho phép nhiều goroutine cùng nhận được một tín hiệu mà không cần gửi từng message. `ctx.Err()` trả về nil trước khi hủy, rồi trả về lỗi mô tả nhóm nguyên nhân hủy.
 
 ```go
-func CountUsers(ctx context.Context, db *sql.DB) (int, error) {
-    qctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-    defer cancel()
-    var n int
-    if err := db.QueryRowContext(qctx, "SELECT count(*) FROM users").Scan(&n); err != nil {
-        return 0, fmt.Errorf("count users: %w", err)
-    }
-    return n, nil
+package main
+
+import (
+    "context"
+    "fmt"
+)
+
+func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+    finished := make(chan struct{})
+    go func() {
+        defer close(finished)
+        <-ctx.Done()
+        fmt.Println(ctx.Err())
+    }()
+    cancel()
+    <-finished
+    fmt.Println("worker finished")
 }
 ```
 
-Timeout minh họa, phải đo query/budget thực. Driver quyết định cancellation thực thi query; return context error không chứng minh remote side effect chưa commit. HTTP outbound tạo NewRequestWithContext và dùng shared client.
+### Giải thích code từng bước
 
-## Runtime behavior và Production Use Case
+`WithCancel` chưa khởi chạy công việc của ứng dụng. `go func()` mới tạo goroutine thực hiện phần việc độc lập. Nếu goroutine chạy trước cancel, nó dừng chờ ở `<-ctx.Done()`. Nếu cancel xảy ra trước, channel đã đóng nên receive trả về ngay khi goroutine được chạy. Không cần `Sleep` để đoán thứ tự hai bên.
 
-Handler dùng r.Context; service nhận ctx ở argument đầu. Tạo child timeout cho từng dependency trong total budget, gọi cancel ngay khi xong để release registrations/timer sớm. Background durable job dùng service/job context riêng sau khi work đã ghi bền, không vô tình giữ request context đã canceled.
+`cancel()` phát tín hiệu nhưng không đợi dòng `fmt.Println` bên trong hoàn thành. Vì vậy main chờ thêm `<-finished`. Worker đóng finished bằng defer khi hàm sắp return; main chỉ in dòng cuối sau điểm đó. Đây là sự khác nhau giữa cancellation và join: cancellation yêu cầu dừng, còn join là chờ công việc đã kết thúc. Một chương trình quản lý worker thường cần cả hai.
 
-## Failure Scenarios
+`ctx.Err()` trong ví dụ là `context.Canceled`. Nếu dùng một deadline thực sự hết hạn, lỗi thường là `context.DeadlineExceeded`. Chỉ riêng hai giá trị này không giải thích mọi lỗi nghiệp vụ: thanh toán bị từ chối là lỗi nghiệp vụ, không phải mặc nhiên là context bị hủy.
 
-Thay ctx bằng Background trong repository làm query sống qua request; defer cancel trong loop giữ resources quá lâu; lưu secret/DB vào context values; stop signal không được join; HTTP request canceled nhưng remote transaction vẫn có thể hoàn tất.
+## Mental model: một cây phạm vi công việc
 
-## Trade-offs
+Một request có thể tạo hai công việc con, ví dụ lấy hồ sơ và tính giá. Mỗi child có thể có thời hạn riêng ngắn hơn request. Hủy request làm cả hai công việc mất lý do tiếp tục; hủy riêng việc tính giá không có nghĩa hồ sơ cũng phải bị hủy.
 
-| Context use | Lợi ích | Giới hạn |
-|---|---|---|
-| Parent propagation | Lifetime thống nhất | Child phải honor signal |
-| Child deadline | Bound dependency wait | Deadline quá ngắn tăng retries |
-| Values | Trace/auth metadata | Hidden API nếu dùng cho dependency |
+```mermaid
+flowchart TD
+    R[HTTP request context] --> S[Service context]
+    S --> D[Database child]
+    S --> H[HTTP child]
+    H --> P[Parser child]
+```
 
-## Common Misconceptions
+### Cách đọc diagram
 
-Cancel không rollback mọi side effect và không đợi children. Err không lưu mọi business cause; Cause APIs có vai trò riêng. Truyền ctx không đủ nếu library không dùng nó.
+Đọc từ trên xuống: request là parent của service; service là parent chung của database và HTTP call. Các mũi tên chỉ quan hệ tạo context con, cũng là chiều lan truyền hủy. Nếu R bị hủy, S, D, H và P đều nhận hủy. Nếu chỉ H bị hủy, P bị hủy theo nhưng D và S không tự bị hủy. Diagram không nói rằng từng node là một goroutine; một goroutine có thể lần lượt dùng nhiều context, và nhiều goroutine có thể cùng dùng một context.
 
-## When NOT to use
+## Cơ chế: cooperative cancellation
 
-Không truyền nil context. Không dùng values cho optional function parameters hoặc constructor dependencies. Không dùng request context để chạy background work cần sống sau response mà chưa có ownership/durability mới.
+“Cooperative” nghĩa là bên làm việc phải hợp tác quan sát tín hiệu. Context không thể tự chen một lệnh return vào hàm của bạn. Một hàm đang chờ channel thường dùng select để chờ cả dữ liệu và Done. Một vòng tính toán dài phải kiểm tra Err ở những điểm phù hợp. Một HTTP client phải nhận context qua request để thư viện biết lúc nào nên ngừng chờ I/O.
 
-## How I would debug this in production
+Khi goroutine chờ receive trên channel, runtime có thể park nó: lưu trạng thái chờ và ngừng cấp CPU cho nó cho đến khi có sự kiện phù hợp. Đây không phải một vòng lặp liên tục đọc trạng thái. Vì thế chờ `<-ctx.Done()` không đốt CPU trong lúc chưa có cancellation. Ngược lại, vòng `for` có `select default` mà không thực hiện công việc hay nghỉ có thể quay liên tục.
 
-Trace deadline còn lại qua handler/service/DB/HTTP. Tìm Background/TODO ở request path, timeouts bị reset và operations không dùng Context API. Thu goroutine profile sau cancel rồi verify join. Phân biệt client disconnect, deadline budget và dependency failure trong metrics; kiểm tra remote outcome trước retry mutation.
+Bên trong standard library có các implementation context khác nhau: context gốc, context chứa value, context có cancellation và context có deadline. Chúng có thể liên kết để truyền cancellation và giải phóng đăng ký/timer khi cancel được gọi. Không nên suy ra “mỗi context tạo một goroutine”: đó không phải hợp đồng của API. Phần chi tiết cấu trúc thuộc phiên bản Go, còn code ứng dụng dựa vào Done, Err, Deadline và Value.
 
-## Key Takeaways
+## Thêm timeout sau khi đã hiểu cancellation
 
-Context truyền lifetime; implementation phải cooperate, owner phải cancel và join, side effects cần idempotency.
+`WithTimeout(parent, d)` tạo thời hạn tương đối từ lúc gọi; `WithDeadline(parent, t)` nhận thời điểm cụ thể. Child không thể kéo dài quyền thực thi vượt deadline sớm hơn của parent. Nếu request còn 80 ms nhưng repository xin timeout 500 ms, việc chờ vẫn bị giới hạn bởi request còn 80 ms.
 
-## Interview Questions
+```go
+func CountUsers(ctx context.Context, db *sql.DB) (int, error) {
+    queryCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+    defer cancel()
+    var count int
+    err := db.QueryRowContext(queryCtx, "SELECT count(*) FROM users").Scan(&count)
+    if err != nil {
+        return 0, fmt.Errorf("count users: %w", err)
+    }
+    return count, nil
+}
+```
 
-### Basic / Mid — 10
+### Giải thích code từng bước
 
-1. What is a Context?
-2. What is Background for?
-3. What is TODO for?
-4. What does WithCancel return?
-5. What does WithTimeout add?
-6. What does WithDeadline specify?
-7. What does WithValue carry?
-8. When does Done close?
-9. What does Err return?
-10. Does child cancellation cancel the parent?
+Hàm nhận context ở tham số đầu để caller quyết định lifetime. Dòng WithTimeout đặt trần chờ cho riêng truy vấn; 200 ms là con số minh họa, cần chọn theo latency thực tế và ngân sách request. `defer cancel()` đảm bảo tài nguyên gắn với child được thu hồi sớm cả khi truy vấn trả kết quả trước deadline. Cancel sau thành công không biến kết quả đã trả thành thất bại.
 
-### Senior — 10
+`QueryRowContext` truyền context cho lớp database/sql và driver; lỗi của truy vấn có thể xuất hiện lúc Scan. `%w` giữ error chain để tầng trên còn phân loại bằng `errors.Is` hoặc `errors.As`. Khả năng dừng truy vấn ở server còn phụ thuộc driver và database. Với một lệnh ghi, việc client nhận timeout không chứng minh server chưa commit.
 
-1. Why is cancellation cooperative?
-2. How does a child deadline relate to its parent?
-3. Does every context allocate a goroutine?
-4. Why should cancel be called after successful completion?
-5. Why should context be the first argument?
-6. Why are mutable context values not automatically safe?
-7. How should database calls receive context?
-8. How should outbound HTTP inherit context?
-9. Does cancellation prove a mutation did not commit?
-10. How do request and background job contexts differ?
+## Context trong production
 
-### Production scenarios — 5
+Handler bắt đầu từ `r.Context()`, rồi truyền cùng lifetime vào service, repository và các outbound call. Context đi qua lời gọi Go trong cùng process; qua mạng, protocol hoặc thư viện phải truyền deadline/cancellation thích hợp. Một HTTP header tùy ý không tự biến thành context ở dịch vụ nhận. gRPC có hỗ trợ deadline, nhưng handler phía server vẫn phải truyền context xuống công việc của mình.
 
-1. Why is a query running after the client disconnects?
-2. Why are timers retained after fast calls?
-3. Why do background jobs immediately fail after response?
-4. Why does a canceled payment get charged twice on retry?
-5. Why do child goroutines remain after Done closes?
+Nếu người dùng yêu cầu tạo báo cáo chạy nhiều phút, lifetime của báo cáo có thể dài hơn HTTP response. Hãy ghi job bền vững, trả job ID, rồi để worker có service/job context riêng xử lý. Chỉ thay `r.Context()` bằng Background trong một goroutine không tạo độ bền: process chết thì công việc và trạng thái có thể mất.
 
-### Senior Follow-ups — 5
+## Failure, debugging và trade-off
 
-1. Who owns the parent lifetime?
-2. What is the remaining budget?
-3. Which child operation can block?
-4. How does it observe cancellation?
-5. Who joins it and reconciles ambiguous side effects?
+Khi client đã rời đi mà DB vẫn có nhiều truy vấn, theo dấu request từ handler đến repository. Kiểm tra nơi tạo context mới, deadline còn lại khi bắt đầu query và API có thực sự dùng biến ctx đó không. Sau đó so sánh thời điểm Done đóng với thời điểm worker kết thúc. Nếu worker vẫn còn, goroutine profile cho biết nó đang mắc ở receive, send, lock hay syscall. Profile là ảnh chụp stack tại một thời điểm; lấy thêm mẫu sau cancellation giúp biết trạng thái có đang tiến triển.
 
-Chuỗi follow-up: trả lời lần lượt 5 câu cuối; mỗi câu cần một invariant, bằng chứng runtime hoặc trade-off cụ thể.
+Đừng xử lý mọi timeout bằng cách tăng timeout. Thời hạn dài hơn giữ tài nguyên lâu hơn và có thể tăng hàng đợi. Thời hạn quá ngắn lại khiến công việc có ích bị bỏ dở, làm client retry nhiều hơn. Chọn ngân sách dựa trên mục tiêu latency, đo từng dependency và dành thời gian trả response hoặc cleanup.
 
+Không để transaction outcome bị suy luận từ context một cách đơn giản. Nếu server đã ghi tiền nhưng response bị mất, retry cần cùng idempotency key — mã nhận diện cùng một thao tác nghiệp vụ — để không tạo một lần ghi tiền thứ hai. Context giải quyết lifetime cục bộ; dữ liệu bền vững mới giúp đối soát kết quả từ xa.
 
-## See also
+## Tổng kết
+
+Hãy hình dung context như thông tin về quyền tiếp tục làm việc: ai sở hữu công việc, nó còn bao lâu, và lúc nào nên dừng. Người tạo child chịu trách nhiệm gọi cancel; worker chịu trách nhiệm quan sát; người quản lý goroutine chịu trách nhiệm chờ kết thúc. Ba trách nhiệm đó phải hiện diện trong code nếu muốn request thực sự trả lại tài nguyên sau khi bỏ cuộc.
+
+## Đọc tiếp
 
 - [cancellation](cancellation.md)
 - [production-patterns](production-patterns.md)

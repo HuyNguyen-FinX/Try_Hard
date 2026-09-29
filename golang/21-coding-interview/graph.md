@@ -1,39 +1,47 @@
 # Graph BFS và visited timing
 
-## Concept và Mental Model
+## Bài toán và ví dụ đầu tiên
+
+Cần tìm số cạnh ít nhất từ một node tới các node khác trong graph không trọng số. Breadth-first search, viết tắt BFS, mở rộng từng lớp khoảng cách nên lần đầu gặp node là khoảng cách ngắn nhất theo số cạnh.
+
+## Đi từng bước qua một tình huống
+
+Graph0 nối1,2;1 nối3;2 cũng nối3. Queue bắt đầu0 với distance0. Pop0, đánh dấu1 và2 distance1 ngay khi enqueue. Pop1, thêm3 distance2. Pop2 thấy3 đã được đánh dấu nên không enqueue lại. Nếu đợi tới lúc pop mới mark, cùng node có thể bị thêm nhiều lần.
+
+## Hiểu cơ chế từ kết quả quan sát
+
+Map distance đồng thời là visited set. Queue giữ thứ tự theo lớp, adjacency lists biểu diễn edges. Time O(V+E) cho phần reachable theo representation, memory O(V). Nếu cạnh có trọng số khác nhau, BFS không bảo đảm shortest weighted path; cần thuật toán phù hợp như Dijkstra với assumptions của nó.
+
+## Khái niệm và mô hình làm việc
 
 BFS tìm shortest edge-count paths trong unweighted graph; weighted graph cần thuật toán khác.
 
-## How it works
+## Cơ chế và những ranh giới cần giữ
 
 Mark visited khi enqueue để mỗi vertex vào queue một lần; distance[next]=distance[v]+1. O(V+E), map adjacency traversal order không deterministic nếu iterate map.
 
-## Production Use Case
+## Áp dụng vào hệ thống thật
 
 Dependency reachability và shortest hop count; real network latency không là edge-count distance.
 
-## Failure Scenarios
+## Những đường lỗi cần hiểu
 
 Mark lúc dequeue enqueue duplicates; cycles không visited vô hạn; disconnected vertices bị assume reachable.
 
-## How I would debug this in production
+## Lần theo bằng chứng khi có sự cố
 
 Test cycle, self-loop, disconnected node và multiple shortest paths; compare distances thay exact traversal order.
 
-## Trade-offs và When NOT to use
+## Đánh đổi và giới hạn sử dụng
 
 Dijkstra cho nonnegative weights; DFS phù hợp reachability/topological work với cycle checks.
 
-## Interview practice
+## Thực hành, debugging và kết luận
 
-Why mark visited before enqueue? Tránh nhiều predecessors enqueue cùng vertex.
-
-## Key Takeaways
-
-BFS tìm shortest edge-count paths trong unweighted graph; weighted graph cần thuật toán khác..
+Test cycle, disconnected nodes, start không có adjacency và duplicate edges. Chỉ trả distance cho reachable nodes theo lab contract. Với graph rất lớn, traversal cần budget/cancellation và storage strategy; O(V+E) vẫn có thể vượt memory dù complexity tối ưu theo mô hình nhỏ.
 
 
-## See also
+## Đọc tiếp
 
 - [README](../examples/README.md)
 - [Coding interview workflow](go-coding-patterns.md)
