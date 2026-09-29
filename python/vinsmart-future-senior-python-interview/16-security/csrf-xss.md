@@ -134,3 +134,80 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Hãy xem **CSRF và XSS** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
+
+## 14. Internals Deep Dive
+
+Bắt đầu từ asset, actor và trust boundary; authentication không thay authorization. Enforce server-side, least privilege và audit, đồng thời thiết kế key/secret rotation và incident containment.
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart LR
+            Actor --> Boundary["Trust boundary"]
+            Boundary --> AuthN
+            AuthN --> AuthZ
+            AuthZ --> Topic["CSRF và XSS control"]
+            Topic --> Resource
+            Topic --> Audit[(Audit log)]
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Credential hợp lệ vẫn có thể truy cập sai tenant nếu authorization thiếu. Fail closed cho sensitive operation, rotate/revoke credential và giữ audit không lộ secret.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Contain credential/session và preserve audit evidence.
+2. Xác định actor/resource/tenant/action bị ảnh hưởng.
+3. Kiểm authN, authZ policy và trust boundary.
+4. Rotate/revoke/fix least privilege.
+5. Backfill detection và regression test.
+
+## 18. Common Misconceptions
+
+**Sai:** JWT hợp lệ nghĩa request được phép. **Đúng:** token chỉ hỗ trợ authentication; authorization phải kiểm resource/tenant/action.
+
+## 19. When NOT to use
+
+Không tự thiết kế crypto/token protocol khi chuẩn và managed identity đáp ứng; custom security mở thêm attack surface.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does CSRF và XSS provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **CSRF và XSS** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [API Security](api-security.md)
+- [OAuth 2.0](oauth2.md)
+- [Secrets](secrets-management.md)

@@ -134,3 +134,83 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Variable không phải chiếc hộp chứa value. Variable là nhãn trỏ tới object; nhiều nhãn có thể trỏ cùng object, nên mutation nhìn thấy qua mọi alias.
+
+## 14. Internals Deep Dive
+
+
+Trong CPython build có GIL, mọi object bắt đầu bằng header tương đương `PyObject`: reference count và pointer tới `PyTypeObject`; variable-size object có thêm length. `id(obj)` là identity duy nhất trong lifetime của object; trên CPython thường liên quan địa chỉ memory nhưng language specification không bắt implementation khác phải như vậy.
+
+Assignment chỉ tăng ownership/reference phù hợp và bind name. Container giữ reference tới phần tử; function frame giữ local reference; closure cell và global/cache có thể kéo dài lifetime. Immutable không có nghĩa object “nằm trên stack”; nghĩa là state quan sát được không đổi, operation trả object khác (dù runtime có thể intern/reuse một số object).
+
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart TD
+    Name["Python name / variable"] -->|holds| Ref["Reference"]
+    Ref --> Obj["Python object"]
+    Obj --> Header["Identity + type + refcount"]
+    Obj --> Value["Value / payload"]
+    Alias["Another name"] -->|same object| Ref
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Reproduce với input/lifetime nhỏ nhất.
+2. Đo RSS và Python heap; so snapshot `tracemalloc`.
+3. Inspect type, identity, referrer/owner.
+4. Kiểm global, closure, cache và container retention.
+5. Xác nhận behavior theo Python/CPython version.
+
+## 18. Common Misconceptions
+
+**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+
+## 19. When NOT to use
+
+Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Python Memory Model provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Python Memory Model** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [Reference Counting](gc-reference-counting.md)
+- [GIL](../02-python-concurrency/gil.md)
+- [Python Profiling](../17-performance-reliability/profiling-python.md)

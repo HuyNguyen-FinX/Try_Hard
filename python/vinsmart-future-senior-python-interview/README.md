@@ -56,6 +56,32 @@ AWS/Terraform/CI/CD; RAG/LLM integration; coding pattern; domain designs cho aut
 | [Cheatsheets](23-cheatsheets/README.md) | Review nhanh 1–2 giờ trước phỏng vấn |
 | [Technical References](24-references/README.md) | Nguồn chính thức để kiểm tra chi tiết thay đổi theo version |
 
+## Architecture Diagrams
+
+Các P0/P1 topic có concept/request/data/failure diagram phù hợp; 11 System Design Lab có ít nhất 6 diagram/bài: high-level, sequence, source-of-truth data flow, scaling, failure/recovery và observability trace. Bắt đầu từ [System Design Dashboard](11-system-design/README.md).
+
+## Deep Dive Topics
+
+- [Python memory model](01-python-core/python-memory-model.md), [GIL](02-python-concurrency/gil.md), [AsyncIO](02-python-concurrency/asyncio.md), [Event Loop](02-python-concurrency/event-loop.md).
+- [FastAPI request lifecycle](03-fastapi/request-lifecycle.md) và [sync vs async endpoint](03-fastapi/sync-vs-async-endpoint.md).
+- [PostgreSQL Index](04-database-postgresql/index.md), [EXPLAIN ANALYZE](04-database-postgresql/explain-analyze.md), [MVCC](04-database-postgresql/mvcc.md) và [Transactions](04-database-postgresql/transaction.md).
+- [Redis Internals](06-redis/redis-internals.md), [Celery Task Lifecycle](07-celery/task-lifecycle.md), [Outbox Pattern](10-distributed-systems/outbox-pattern.md).
+- [RAG](18-ai-integration/rag.md) và [Production AI System](18-ai-integration/production-ai-system.md).
+
+## System Design Labs
+
+Các lab dạy cách nói trong interview theo flow **clarify → estimate → V1 → bottleneck → evolution → failure → security/observability → trade-off**. Ưu tiên: [AI Chatbot](11-system-design/design-ai-chatbot.md), [Vehicle Warranty](11-system-design/design-vehicle-warranty.md), [Document Processing](11-system-design/design-document-processing.md), [Video Analytics](11-system-design/design-video-processing.md) và [Production Planning](11-system-design/design-production-planning.md).
+
+## Production Failure Scenarios
+
+Drill [API latency regression](20-senior-scenarios/api-slow.md), [PostgreSQL high CPU](20-senior-scenarios/database-high-cpu.md), [Redis outage](20-senior-scenarios/redis-down.md), [duplicate Celery task](20-senior-scenarios/celery-task-duplicate.md), [memory leak](20-senior-scenarios/memory-leak.md) và [scale 1k→20k RPS](20-senior-scenarios/high-traffic.md).
+
+## Interview Question Bank
+
+- [Top 50 Senior Backend Questions](22-mock-interview/top-50-senior-backend-questions.md)
+- [Top 30 System Design Questions](22-mock-interview/top-30-system-design-questions.md)
+- [Full Mock Interview — 110 minutes](22-mock-interview/full-mock-interview.md)
+
 ## Progress Tracker
 
 - [ ] Python Core

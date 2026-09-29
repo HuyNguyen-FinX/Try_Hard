@@ -134,3 +134,85 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Redis nhanh nhờ RAM, data structure chuyên dụng và phần lớn command execution được serialize; vì thế một command O(N) lớn có thể giữ cả làn đường.
+
+## 14. Internals Deep Dive
+
+
+Client gửi RESP qua socket; event loop đọc request, parse command, thực thi trên data structure rồi ghi response. Redis hiện đại có thể dùng I/O thread cho network read/write tùy version/config, nhưng phần lớn command logic vẫn serialized trên main execution path. Điều này giảm lock contention nhưng O(N), big key, Lua/function dài hoặc fork pressure có thể làm tail latency của client khác tăng.
+
+Key trỏ object có encoding tối ưu theo size/type; memory footprint gồm allocator fragmentation và replication/AOF buffers. Expiry vừa passive khi access vừa active sampling. Eviction chạy khi vượt `maxmemory` theo policy. RDB fork snapshot và AOF append/rewrite có durability/latency trade-off; replication async tạo acknowledged-write loss window khi failover.
+
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart LR
+    Client --> Socket["RESP over socket"]
+    Socket --> IO["Event loop / optional I/O threads"]
+    IO --> Execute["Main command execution path"]
+    Execute --> Structures["String / Hash / List / Set / ZSet"]
+    Execute --> Expiry["TTL + eviction"]
+    Execute --> Persist["AOF / RDB"]
+    Execute --> Replica["Replication stream"]
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Redis timeout/down tạo cache miss storm hoặc mất coordination. Circuit-break nhanh, dùng stale/bounded fallback, rate-limit source of truth và warm cache dần; không retry mọi command đồng loạt.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Xem command p99/slowlog và client timeout.
+2. Đo memory/RSS/fragmentation/eviction/expired.
+3. Tìm hot/big key và O(N) command.
+4. Kiểm replication lag/failover/topology refresh.
+5. Circuit-break, bảo vệ source và verify warm-up.
+
+## 18. Common Misconceptions
+
+**Sai:** Redis ở RAM nên mọi command đều nhanh và có thể làm primary store mặc định. **Đúng:** complexity/big key/main execution path và durability model vẫn quan trọng.
+
+## 19. When NOT to use
+
+Không thêm cache nếu query đã nhanh, traffic thấp hoặc invalidation cost vượt lợi ích; không dùng lock Redis thay DB invariant.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Redis Internals provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Redis Internals** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [Cache Patterns](cache-patterns.md)
+- [Redis Outage](../20-senior-scenarios/redis-down.md)
+- [Distributed Lock](../10-distributed-systems/distributed-lock.md)

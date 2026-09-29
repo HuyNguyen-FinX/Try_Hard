@@ -46,7 +46,7 @@ Entity chính: User, Device, Conversation, Membership, Message, Receipt, Attachm
 
 ```mermaid
 flowchart LR
-    Client --> Gateway["WebSocket Gateway"] --> Router
+Client --> Gateway["WebSocket Gateway"] --> Router
 Router --> Log[(Message Log)]
 Router --> Fanout["Fan-out Workers"]
 Fanout --> Gateway
@@ -139,6 +139,154 @@ Database connection/lock, hot key/partition, queue lag, object-store bandwidth, 
 ### Future Improvements
 
 Cell-based isolation, per-tenant quota, adaptive load shedding, tiered storage, automated reconciliation, chaos drill và cost-per-success dashboard. Chỉ thêm multi-region/sharding khi metric chứng minh giới hạn.
+
+
+### Diagram 2 — Request / Sequence Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Sender
+    participant G as WebSocket Gateway
+    participant L as Durable Log
+    participant B as Regional Broker
+    participant R as Recipient Gateway
+    participant D as Recipient Device
+    C->>G: Message + client operation ID
+    G->>L: Append in conversation order
+    L-->>G: Durable sequence number
+    G->>B: Fan-out envelope
+    B->>R: Route to active connection
+    R-->>D: Deliver message
+    D-->>L: Advance durable cursor / receipt
+```
+
+Flow đồng bộ chỉ giữ các bước cần cho user-visible result. Work dài, fan-out hoặc có thể replay đi qua durable queue/log. Mỗi command có operation ID; state transition dùng unique constraint hoặc expected version.
+
+### Diagram 3 — Data Flow and Source of Truth
+
+```mermaid
+flowchart LR
+            Send --> Log[(Durable message log)]
+            Log --> Broker[(Regional fan-out transport)]
+            Broker --> Connections["Ephemeral connections"]
+            Connections --> Devices
+            Log --> History["History projection / API"]
+            Attachment --> Object[(Object storage)]
+```
+
+| Data | Source of Truth | Lý do |
+|---|---|---|
+| Message + sequence | Durable log | Conversation history truth |
+| Membership/ACL | PostgreSQL | Authorization truth |
+| Presence/connection route | Redis/registry | Ephemeral lease |
+| Attachment | Object storage | Binary truth |
+
+“Source of truth” nghĩa là nơi quyết định authoritative state sau recovery. Cache, search/vector index và analytics là projection: có thể stale và phải rebuild được từ durable source + version metadata.
+
+### Diagram 4 — Scaling Architecture
+
+```mermaid
+flowchart TB
+    Client --> GlobalLB["Global / regional load balancer"]
+    GlobalLB --> CellA
+    GlobalLB --> CellB
+    subgraph CellA["Cell A: tenant / partition group"]
+        APIA["API replicas"] --> CacheA[(Cache)]
+        APIA --> DBA[(Primary + replicas)]
+        APIA --> QueueA[(Partitioned queue)]
+        QueueA --> WorkerA["Specialized workers"]
+    end
+    subgraph CellB["Cell B: independent blast radius"]
+        APIB["API replicas"] --> DBB[(Primary + replicas)]
+        APIB --> QueueB[(Partitioned queue)]
+    end
+```
+
+Cell/partition chỉ xuất hiện khi tenant/data/traffic đủ lớn hoặc cần blast-radius isolation. HPA/autoscaling bị cap bởi DB connection, provider quota, storage bandwidth và worker resource; queue age tốt hơn queue length khi task runtime khác nhau.
+
+### Diagram 5 — Failure and Recovery Flow
+
+```mermaid
+flowchart TD
+    Request --> Dependency
+    Dependency -->|timeout / unavailable| Timeout
+    Timeout --> Classify{"Safe and retryable?"}
+    Classify -->|yes, budget remains| Backoff["Backoff + full jitter"]
+    Backoff --> Dependency
+    Classify -->|no / circuit open| Degrade["Fallback / queue / fail fast"]
+    Degrade --> Durable[(Record durable status)]
+    Durable --> Reconcile["Replay / reconciliation"]
+    Reconcile --> Verify["Verify user state and SLO"]
+```
+
+Retry không được vượt end-to-end deadline hoặc tạo duplicate effect. Circuit breaker, bulkhead và rate limit giới hạn propagation; reconciliation xử lý outcome “unknown” mà synchronous retry không thể chứng minh.
+
+### Diagram 6 — Observability Trace
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as Gateway
+    participant A as API
+    participant D as Database / Cache
+    participant Q as Queue
+    participant W as Worker
+    C->>G: traceparent + request
+    G->>A: gateway span
+    A->>D: dependency span + pool wait
+    A->>Q: event with trace / operation ID
+    Q->>W: async continuation span
+    W->>D: state transition span
+    Note over A,W: Metrics: RPS, p50/p95/p99, errors, saturation, queue age
+```
+
+Log có `trace_id`, `operation_id`, tenant đã hash, version và typed error; không log token/PII/raw document mặc định. Alert dựa user SLI và multi-window burn rate, kết hợp queue age, pool wait, cache hit, DB/resource saturation.
+
+### Architecture Evolution — Start Simple, Add Only for Measured Pain
+
+| Stage | Architecture | Khi nào đủ / vấn đề buộc thay đổi |
+|---|---|---|
+| **V1 — ~100 RPS** | 2 API instance, PostgreSQL, object storage nếu có binary; background worker đơn giản | Dễ deploy/debug. **Không** dùng Kafka, sharding hay nhiều microservice nếu vẫn đạt SLO/RTO. |
+| **V2 — ~5,000 RPS** | Load balancer, API scale ngang, Redis cho hot derived read, durable queue, worker pool, read replica cho stale read | Thêm vì cacheable read, burst/long work và deployment isolation đã được đo. Giữ global DB/pool budget. |
+| **V3 — 20,000+ RPS / large data** | Partition/cell theo tenant/key, specialized workers, event-driven projection, tiered storage và isolation quota | Chỉ thêm khi hot partition, write/connection/storage ceiling hoặc blast radius không còn đáp ứng SLO. |
+
+**Bottleneck gates:** trước mỗi bước, ghi metric trigger cụ thể—DB CPU/pool wait, cache hit, queue age, partition skew, provider quota hoặc cost/success. “Có thể scale” không phải lý do đủ để thêm component.
+
+## Failure Scenarios
+
+| Failure | Detection | Immediate mitigation | Durable design |
+|---|---|---|---|
+| API instance down | readiness, 5xx, connection reset | LB loại instance, drain/restart | ≥2 AZ, stateless API, graceful shutdown |
+| Database down/failover | connect errors, replica/HA event | shed write, read-only/degraded mode | tested failover, backup restore, RPO/RTO |
+| Redis down | timeout, hit ratio collapse | circuit-open, stale/bounded fallback | DB protection, TTL jitter, cache warm plan |
+| Queue unavailable | publish error/outbox age | persist intent, pause noncritical producer | outbox, HA broker, replay runbook |
+| Worker down | oldest age/lease expiry | autoscale/restart, requeue safely | heartbeat, idempotency, DLQ |
+| Network timeout | dependency span/deadline | fail fast or bounded retry | propagated deadline, operation status |
+| Duplicate request | same idempotency key | return prior/in-progress result | atomic dedupe + payload hash |
+| Duplicate event | inbox unique conflict | ACK duplicate after verifying result | idempotent consumer + reconciliation |
+| Slow dependency | p99, saturation, circuit state | bulkhead, fallback, rate limit | capacity contract and load/fault tests |
+| Traffic spike / partial failure | SLO burn, queue/pool age | load shed, priority, degrade features | quota, cell isolation, pre-scale plan |
+
+## Security Deep Dive
+
+- **Authentication:** OIDC/OAuth2 at edge; short-lived credential, issuer/audience validation and revocation/rotation plan.
+- **Authorization:** resource + action + tenant/ACL enforced server-side; admin/human override requires step-up and immutable audit.
+- **Input boundary:** schema/size/content-type validation, malware/archive-bomb protection and signed upload URL with narrow scope.
+- **Transport/storage:** TLS/mTLS where trust boundary requires, KMS-backed encryption, per-service IAM and secret manager—not secrets in image/log.
+- **Privacy:** data classification, PII redaction, retention/legal hold, regional residency and deletion propagated to derived indexes/backups policy.
+- **Abuse:** per-user/tenant/provider rate limit, quota, cost ceiling and anomaly signal; deny-by-default for cross-tenant access.
+
+## How to explain this design in an interview
+
+1. **Clarify requirements:** core user journey, tenant/geography, correctness, latency/availability, retention/compliance và out-of-scope.
+2. **Estimate scale:** average/peak RPS, concurrency (`RPS × latency`), bytes/day, retention, worker/provider/GPU demand.
+3. **Start simple:** V1 với ít component nhất; chỉ rõ PostgreSQL/object store nào là source of truth.
+4. **Identify bottleneck:** dùng con số để chọn DB/cache/queue/partition deep dive; không liệt kê tool.
+5. **Evolve architecture:** V2/V3 giải quyết bottleneck cụ thể và nêu cost/coupling mới.
+6. **Discuss failure:** timeout, retry budget, idempotency, circuit/bulkhead, DLQ, degraded mode và reconciliation.
+7. **Discuss security/observability:** identity/tenant/PII, SLI, trace async và alert burn-rate.
+8. **Close with trade-offs:** assumption nào rủi ro nhất, metric nào khiến đổi design và bước tương lai nào chưa cần hôm nay.
+
 
 ## 8. Interview Questions
 

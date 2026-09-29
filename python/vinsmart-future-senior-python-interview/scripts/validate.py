@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -14,10 +15,23 @@ MANDATORY = [
     "## 10. Short Answers", "## 11. Follow-up Questions", "## 12. Key Takeaways",
 ]
 EXEMPT_DIRS = {"00-interview-roadmap", "22-mock-interview", "23-cheatsheets"}
+DEEP_DIRS = {
+    "01-python-core", "02-python-concurrency", "03-fastapi", "04-database-postgresql",
+    "05-sqlalchemy", "06-redis", "07-celery", "08-api-design", "10-distributed-systems",
+    "11-system-design", "13-kubernetes", "16-security", "17-performance-reliability",
+    "18-ai-integration", "20-senior-scenarios",
+}
+DEEP_HEADINGS = [
+    "## 13. Mental Model", "## 14. Internals Deep Dive", "## 15. Request / Data Flow",
+    "## 16. Failure Scenario", "## 17. How I would debug this in production",
+    "## 18. Common Misconceptions", "## 19. When NOT to use",
+    "## 20. What interviewer may ask next", "## 21. Check Your Understanding", "## 22. See also",
+]
 errors: list[str] = []
 files = sorted(ROOT.rglob("*.md"))
 python_blocks = 0
 mermaid_blocks = 0
+hashes: dict[str, list[Path]] = {}
 
 if not files:
     errors.append("No Markdown files found")
@@ -25,6 +39,8 @@ if not files:
 for path in files:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(ROOT)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    hashes.setdefault(digest, []).append(rel)
     if not text.strip():
         errors.append(f"Empty file: {rel}")
     if re.search(r"\b(?:TODO|TBD|FIXME)\b", text, flags=re.I):
@@ -38,6 +54,15 @@ for path in files:
         for kind, minimum in expected.items():
             if counts[kind] < minimum:
                 errors.append(f"Too few {kind} questions in {rel}: {counts[kind]} < {minimum}")
+    if path.name != "README.md" and rel.parts[0] in DEEP_DIRS and not path.name.startswith("design-"):
+        words = len(re.findall(r"\b\w+\b", text, flags=re.UNICODE))
+        if words < 800:
+            errors.append(f"Deep-dive file below 800 words: {rel} ({words})")
+        if "```mermaid" not in text:
+            errors.append(f"Deep-dive file has no Mermaid diagram: {rel}")
+        missing_deep = [heading for heading in DEEP_HEADINGS if heading not in text]
+        if missing_deep:
+            errors.append(f"Missing deep-dive sections in {rel}: {', '.join(missing_deep)}")
     if text.count("```mermaid") > text.count("```") // 2:
         errors.append(f"Unbalanced Mermaid fence: {rel}")
 
@@ -67,7 +92,8 @@ design_requirements = [
     "### Scale Estimation", "### API", "### Data Model", "### High-level Architecture",
     "### Database", "### Cache", "### Message Queue", "### Storage", "### Scaling",
     "### Failure Handling", "### Security", "### Observability", "### Bottlenecks",
-    "### Future Improvements", "```mermaid",
+    "### Future Improvements", "### Architecture Evolution", "## Failure Scenarios",
+    "## Security Deep Dive", "## How to explain this design in an interview", "```mermaid",
 ]
 design_files = sorted((ROOT / "11-system-design").glob("design-*.md"))
 if len(design_files) < 10:
@@ -77,6 +103,22 @@ for path in design_files:
     missing = [item for item in design_requirements if item not in text]
     if missing:
         errors.append(f"Incomplete system design {path.name}: {', '.join(missing)}")
+    if text.count("```mermaid") < 5:
+        errors.append(f"System design has fewer than 5 diagrams: {path.name}")
+    if "sequenceDiagram" not in text:
+        errors.append(f"System design has no sequence diagram: {path.name}")
+
+for digest, duplicate_paths in hashes.items():
+    if len(duplicate_paths) > 1:
+        errors.append("Exact duplicate Markdown files: " + ", ".join(map(str, duplicate_paths)))
+
+for required in [
+    ROOT / "22-mock-interview/top-50-senior-backend-questions.md",
+    ROOT / "22-mock-interview/top-30-system-design-questions.md",
+    ROOT / "00-interview-roadmap/repository-audit.md",
+]:
+    if not required.exists():
+        errors.append(f"Missing required expansion file: {required.relative_to(ROOT)}")
 
 if errors:
     print("VALIDATION FAILED")

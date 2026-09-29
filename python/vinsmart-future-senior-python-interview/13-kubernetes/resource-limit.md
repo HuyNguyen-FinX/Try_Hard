@@ -139,3 +139,81 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Hãy xem **Resource Limit** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
+
+## 14. Internals Deep Dive
+
+Kubernetes controller reconcile desired state, nhưng application vẫn sở hữu readiness, graceful shutdown, state correctness và downstream capacity. Pod restart không sửa logical corruption.
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart TB
+            User --> LB --> Ingress --> Service
+            Service --> P1["Pod 1"]
+            Service --> P2["Pod 2"]
+            Controller["Resource Limit controller / object"] -.reconcile.-> P1
+            Controller -.reconcile.-> P2
+            P1 --> DB[(Downstream)]
+            P2 --> DB
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Pod healthy không có nghĩa dependency khỏe. Probe sai gây restart storm; HPA scale API có thể connection-storm DB. Cap theo downstream và test graceful drain/zone failure.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Describe workload/pod và đọc event.
+2. Kiểm readiness/endpoints/restart/previous logs.
+3. Xem CPU throttling, OOM, request/limit và node pressure.
+4. Trace DNS/network/service/downstream.
+5. Kiểm rollout diff, HPA metric và graceful termination.
+
+## 18. Common Misconceptions
+
+**Sai:** Kubernetes làm application high availability tự động. **Đúng:** probe, state, dependency và capacity budget sai vẫn tạo outage tự động ở quy mô lớn.
+
+## 19. When NOT to use
+
+Không chọn Kubernetes chỉ để chạy vài service ít thay đổi nếu managed container/serverless đơn giản hơn và team thiếu operational ownership.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Resource Limit provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Resource Limit** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [HPA](hpa.md)
+- [Health Checks](health-check.md)
+- [Troubleshooting](troubleshooting.md)

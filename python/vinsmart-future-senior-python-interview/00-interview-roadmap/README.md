@@ -6,4 +6,5 @@ Chọn [30-day plan](30-day-plan.md) nếu còn ít nhất bốn tuần; chọn 
 - [30-day Plan](30-day-plan.md)
 - [14-day Crash Plan](14-day-crash-plan.md)
 - [Interview Checklist](interview-checklist.md)
+- [Repository Depth Audit](repository-audit.md)
 - [Main Dashboard](../README.md)

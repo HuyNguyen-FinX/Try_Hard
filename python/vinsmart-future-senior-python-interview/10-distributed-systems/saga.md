@@ -134,3 +134,91 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Saga chia distributed transaction thành local transaction và compensation; compensation là business action mới, không phải time travel rollback.
+
+## 14. Internals Deep Dive
+
+
+Choreography để service phản ứng event, coupling runtime thấp nhưng flow khó nhìn và cycle khó kiểm soát. Orchestration có coordinator/state rõ, dễ timeout/retry/observe hơn nhưng coordinator thành critical component.
+
+Mỗi local step commit riêng; compensation như refund/release inventory cũng có thể fail và phải idempotent/retry/reconcile. Có point of no return và irreversible action; đôi khi cần forward recovery/human review thay vì compensation. Saga không cung cấp isolation: concurrent saga có thể thấy intermediate state.
+
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant C as Claim
+    participant I as Inventory
+    participant P as Payment
+    O->>C: approve claim
+    C-->>O: committed
+    O->>I: reserve part
+    I-->>O: committed
+    O->>P: pay dealer
+    P--xO: permanent failure
+    O->>I: compensate release
+    O->>C: mark manual review
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Network partition/timeout biến outcome thành unknown. Không suy diễn failure từ timeout; dùng operation identity, durable state, retry có budget, circuit/bulkhead và reconciliation.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Vẽ timeline theo correlation/message/operation ID.
+2. Phân biệt timeout, rejection, duplicate và stale observation.
+3. Xác định last durable state ở từng component.
+4. Kiểm retry/deadline/circuit/queue lag.
+5. Reconcile source of truth với projection/external effect.
+
+## 18. Common Misconceptions
+
+**Sai:** timeout chứng minh operation thất bại. **Đúng:** server có thể đã commit; timeout chỉ nói caller chưa quan sát response.
+
+## 19. When NOT to use
+
+Không dùng consensus/lock/saga nếu một local transaction hoặc unique constraint giải được invariant.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Saga provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Saga** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [Idempotency](idempotency.md)
+- [Retry](retry.md)
+- [Timeout](timeout.md)
+- [Outbox](outbox-pattern.md)

@@ -823,6 +823,31 @@ def example_for(folder: str, filename: str, title: str) -> str:
 
         Ingestion chạy riêng: parse → chunk → embed → index; online retrieval luôn filter tenant/ACL trước khi đưa evidence vào prompt.
         ''').strip()
+    if key == "sync-vs-async-endpoint":
+        return dedent('''
+        ```python
+        import time
+        from fastapi import FastAPI
+
+        app = FastAPI()
+
+        def blocking_database_call() -> list[dict[str, int]]:
+            time.sleep(2)  # Represents a synchronous driver call.
+            return [{"id": 1}]
+
+        @app.get("/users-dangerous")
+        async def users_dangerous() -> list[dict[str, int]]:
+            # This runs on the event-loop thread and blocks other connections.
+            return blocking_database_call()
+
+        @app.get("/users-sync")
+        def users_sync() -> list[dict[str, int]]:
+            # FastAPI runs a normal path operation in its external thread pool.
+            return blocking_database_call()
+        ```
+
+        Production ưu tiên async database driver trong `async def`; nếu buộc dùng sync library, bound thread-pool concurrency và đo thread-token/pool wait. CPU-heavy code vẫn nên đi process/job queue.
+        ''').strip()
     if key == "asyncio":
         return dedent('''
         ```python
@@ -1123,6 +1148,742 @@ def question_sections(
     return f"### Basic / Mid-level (10)\n\n{basics_md}\n\n### Production Scenarios (5)\n\n{scenarios_md}", seniors_md, "\n\n".join(answers), follow_md
 
 
+DEEP_DIVE_FOLDERS = {
+    "01-python-core", "02-python-concurrency", "03-fastapi",
+    "04-database-postgresql", "05-sqlalchemy", "06-redis", "07-celery",
+    "08-api-design", "10-distributed-systems", "11-system-design",
+    "13-kubernetes", "16-security", "17-performance-reliability",
+    "18-ai-integration", "20-senior-scenarios",
+}
+
+
+MENTAL_MODELS: dict[str, str] = {
+    "python-memory-model": "Variable không phải chiếc hộp chứa value. Variable là nhãn trỏ tới object; nhiều nhãn có thể trỏ cùng object, nên mutation nhìn thấy qua mọi alias.",
+    "gc-reference-counting": "Reference counting dọn object ngay khi không còn owner; cyclic GC là đội thu gom chuyên tìm các nhóm object chỉ còn trỏ lẫn nhau.",
+    "mutable-immutable": "Mutability là khả năng object giữ nguyên identity nhưng đổi observable state; rebinding một name không phải mutation.",
+    "gil": "GIL là vé vào vùng thực thi Python object/bytecode của một interpreter build có GIL. Thread chờ I/O trả vé; thread chạy Python CPU liên tục tranh cùng một vé.",
+    "asyncio": "Event loop không làm nhiều việc cùng lúc. Nó chạy coroutine đang sẵn sàng cho tới khi coroutine tự nhường tại `await`, rồi chuyển sang việc khác.",
+    "event-loop": "Event loop là dispatcher giữa ready queue, timer và OS I/O readiness; nó hiệu quả khi callback ngắn và không block.",
+    "coroutine-task-future": "Coroutine là recipe có thể suspend; Task là coroutine đã được schedule; Future là ô đại diện kết quả sẽ có sau này.",
+    "threading": "Thread chia sẻ heap/process nhưng có call stack riêng; chia sẻ giúp giao tiếp rẻ và cũng tạo race/lock risk.",
+    "multiprocessing": "Process đổi shared-memory convenience lấy isolation và multi-core parallelism; dữ liệu qua boundary phải serialize/copy hoặc dùng shared memory có synchronization.",
+    "request-lifecycle": "Mỗi request là một scope có deadline và resource ownership: tạo context, thực hiện work, trả response, rồi cleanup kể cả khi exception/cancel.",
+    "sync-vs-async-endpoint": "`async def` không tự làm code non-blocking. Chỉ những operation thật sự `await` non-blocking I/O mới nhường event loop.",
+    "index": "Index là bản đồ đã sắp xếp từ search key đến vị trí tuple; đọc ít page hơn nhưng mọi write phải duy trì thêm bản đồ.",
+    "btree-hash-gin-gist-brin": "Index type là cách tổ chức key/page và operator class. Chọn theo phép toán và distribution, không theo tên datatype.",
+    "explain-analyze": "Execution plan là cây operator; dữ liệu chảy từ node con lên node cha. `ANALYZE` thay dự đoán bằng số đo nhưng cũng thực thi query.",
+    "mvcc": "UPDATE không sửa tuple tại chỗ theo nghĩa logic; nó tạo version mới. Snapshot quyết định transaction nhìn thấy version nào.",
+    "transaction": "Transaction là ranh giới all-or-nothing và isolation cho invariant, không phải wrapper càng rộng càng an toàn.",
+    "connection-pooling": "Pool là hàng rào admission vào database. Request vượt số connection sẽ xếp hàng; tăng pool chỉ chuyển queue từ app vào database.",
+    "redis-internals": "Redis nhanh nhờ RAM, data structure chuyên dụng và phần lớn command execution được serialize; vì thế một command O(N) lớn có thể giữ cả làn đường.",
+    "caching": "Cache là derived state có thể mất và rebuild. Nếu không chỉ ra source of truth và stale policy, cache đã trở thành database thứ hai ngoài ý muốn.",
+    "task-lifecycle": "Queue giao message; worker tạo business effect. ACK chỉ nói về delivery, không chứng minh effect xảy ra đúng một lần.",
+    "exactly-once-myth": "Exactly-once phải hỏi: một lần ở đâu—broker delivery, database transition hay external effect? Mỗi boundary có failure window khác nhau.",
+    "idempotency": "Idempotency biến retry từ một request mới thành việc quan sát lại cùng một logical operation.",
+    "retry": "Retry là thêm traffic vào dependency đang lỗi; nó chỉ hữu ích khi lỗi transient, operation an toàn và còn deadline/retry budget.",
+    "timeout": "Timeout là ngân sách chờ, không phải thời gian dependency chắc chắn dừng. Cancellation phải propagate và cleanup resource.",
+    "circuit-breaker": "Circuit breaker là state machine ngăn request mới tiếp tục đập vào dependency đang suy yếu, đồng thời cho phép probe hồi phục có kiểm soát.",
+    "outbox-pattern": "Outbox đưa business write và ý định publish vào cùng một local transaction; relay có thể publish lặp nhưng không làm mất ý định.",
+    "saga": "Saga chia distributed transaction thành local transaction và compensation; compensation là business action mới, không phải time travel rollback.",
+    "rag": "RAG là search system đứng trước generation system. Nếu retrieval không lấy đúng evidence, prompt hay hơn cũng không cứu được groundedness.",
+}
+
+
+INTERNAL_DEEP_DIVES: dict[tuple[str, str], str] = {
+    ("01-python-core", "python-memory-model"): dedent('''
+        Trong CPython build có GIL, mọi object bắt đầu bằng header tương đương `PyObject`: reference count và pointer tới `PyTypeObject`; variable-size object có thêm length. `id(obj)` là identity duy nhất trong lifetime của object; trên CPython thường liên quan địa chỉ memory nhưng language specification không bắt implementation khác phải như vậy.
+
+        Assignment chỉ tăng ownership/reference phù hợp và bind name. Container giữ reference tới phần tử; function frame giữ local reference; closure cell và global/cache có thể kéo dài lifetime. Immutable không có nghĩa object “nằm trên stack”; nghĩa là state quan sát được không đổi, operation trả object khác (dù runtime có thể intern/reuse một số object).
+    '''),
+    ("01-python-core", "gc-reference-counting"): dedent('''
+        Refcount tăng khi reference mới được giữ bởi name/container/frame và giảm khi reference bị overwrite, container bỏ phần tử hoặc frame kết thúc. `del x` xóa binding `x`; nó không ra lệnh free object. Khi refcount về 0, CPython thường deallocate ngay và cascading decrement các child reference.
+
+        Cycle `a → b → a` không bao giờ tự về 0, nên cyclic GC theo dõi container object. Object mới vào generation trẻ; object sống qua collection được promote. Exact generation policy/threshold thay đổi theo Python version—đặc biệt free-threaded builds—nên dùng `gc.get_stats()`/official docs thay vì thuộc con số implementation. External resource vẫn cần `with`/`finally` vì GC timing không phải contract.
+    '''),
+    ("02-python-concurrency", "gil"): dedent('''
+        GIL thuộc CPython implementation, không phải quy tắc của ngôn ngữ Python. Ở build mặc định có GIL, thread phải giữ GIL và attached thread state để thao tác Python object/C API. Thiết kế lịch sử đơn giản hóa bảo vệ runtime state và reference count, nhưng GIL không thay thế lock cho business invariant gồm nhiều bước.
+
+        Interpreter định kỳ cho thread khác cơ hội chạy; blocking I/O và nhiều native extension detach thread state/release GIL. Vì vậy thread vẫn hữu ích cho nhiều blocking I/O. Với CPU-bound pure Python, nhiều thread chủ yếu time-slice một core cho bytecode; process/native code thường phù hợp hơn. Từ CPython 3.13 có free-threaded build tùy chọn: built-in có internal synchronization, extension phải khai báo tương thích và shared mutable state vẫn cần lock.
+    '''),
+    ("02-python-concurrency", "asyncio"): dedent('''
+        Gọi `async def` tạo coroutine object; code chưa chạy cho đến khi `await` hoặc schedule thành Task. Task gọi coroutine `.send()` cho tới khi coroutine return, raise hoặc yield một awaitable chưa hoàn tất. Event loop đăng callback để resume Task khi Future hoàn thành.
+
+        Với socket non-blocking, read chưa có data trả trạng thái “would block”; loop đăng file descriptor với selector (`epoll`, `kqueue` hoặc cơ chế tương ứng). OS báo readiness, loop đưa callback vào ready queue. `await` không sinh thread và không nhất thiết yield nếu awaitable đã hoàn tất. CPU loop không có `await` giữ event-loop thread, làm timer, socket và cancellation khác bị trễ.
+    '''),
+    ("02-python-concurrency", "event-loop"): dedent('''
+        Một iteration thường: chạy ready callbacks có budget → xử lý timer đến hạn → poll selector tới timeout gần nhất → chuyển I/O event thành callback ready. Implementation cụ thể phụ thuộc loop/platform (SelectorEventLoop, Proactor trên Windows, uvloop), nhưng contract cooperative scheduling giữ nguyên.
+
+        `call_soon`/Task continuation vào ready queue; `call_later` vào timer structure; selector theo dõi file descriptor. Loop lag là chênh lệch giữa lúc callback dự kiến và thực sự chạy. Lag cao cùng CPU một core cao thường là blocking/CPU callback; lag cao cùng thread-pool queue có thể do sync dependency saturation.
+    '''),
+    ("03-fastapi", "request-lifecycle"): dedent('''
+        ASGI server tạo `scope` mô tả HTTP/WebSocket connection và gọi application với `receive`/`send` async callable. Uvicorn sở hữu socket/event loop/protocol; FastAPI/Starlette sở hữu middleware, routing và application behavior. Gunicorn có thể làm process manager cho nhiều worker, nhưng Uvicorn cũng hỗ trợ nhiều process; deployment choice phụ thuộc platform và graceful lifecycle.
+
+        FastAPI match route, resolve dependency graph (sync dependency có thể vào thread pool), validate input qua Pydantic rồi gọi endpoint. Response serialization và middleware unwind xảy ra trước/đồng thời cleanup tùy dependency scope/version; không dựa vào thứ tự mơ hồ cho transaction correctness. Mỗi worker có event loop/pool riêng, nên tổng DB connection = replicas × workers × pool configuration.
+    '''),
+    ("03-fastapi", "sync-vs-async-endpoint"): dedent('''
+        FastAPI chạy path operation `def` trong external thread pool và `async def` trực tiếp trên event loop. Nhưng utility `def` do bạn gọi bên trong `async def` chạy ngay trên loop—framework không tự offload. Vì vậy `requests.get()`, sync DB driver hoặc CPU parse lớn trong async endpoint có thể chặn mọi connection cùng loop.
+
+        Thread pool cũng là bounded resource: nếu mọi sync endpoint chờ DB/network, queue của pool tăng và p99 xấu. Chọn async khi dependency stack có async driver; chọn sync/thread khi library chỉ blocking và concurrency đã bound; CPU-heavy chuyển process/job queue. Đo loop lag, thread tokens, pool wait và cancellation behavior.
+    '''),
+    ("04-database-postgresql", "database-fundamentals"): dedent('''
+        PostgreSQL nhận SQL rồi parse thành syntax tree, analyze/resolve name và type, rewrite rule/view, planner tạo nhiều path và chọn plan có estimated cost, executor kéo tuple qua cây operator. Buffer manager ánh xạ page từ relation vào shared buffers; WAL ghi change trước data page để crash recovery.
+
+        Cost không phải millisecond. Planner dựa statistics về row count, distinct, histogram, most-common values và correlation. Sai estimate ở node thấp khuếch đại lên join/order. Executor có thể đọc cache hoặc disk, spill sort/hash ra temp và chờ lock/I/O; vì vậy phải đọc actual rows, loops, buffers, temp và wait event cùng nhau.
+    '''),
+    ("04-database-postgresql", "index"): dedent('''
+        PostgreSQL B-tree gồm page root/internal/leaf. Leaf giữ index tuple với key và TID trỏ heap tuple (trừ khi index-only scan có visibility map đủ dùng). Split page, random insert và deleted entry tạo write amplification/bloat; VACUUM/index maintenance và fillfactor có thể ảnh hưởng workload.
+
+        Composite index sắp lexicographic; leftmost equality rồi range/order thường quyết định phần hữu dụng. INCLUDE không tham gia search order mà giúp covering. Partial index chỉ dùng khi planner chứng minh query predicate hàm ý index predicate. Index scan vẫn có thể tệ khi selectivity thấp/random heap fetch nhiều; bitmap scan gom TID để đọc heap page hiệu quả hơn.
+    '''),
+    ("04-database-postgresql", "mvcc"): dedent('''
+        Heap tuple mang transaction metadata như `xmin` (creator) và `xmax` (deleter/updater). Snapshot chứa visibility horizon để quyết định version nào visible; transaction khác có thể thấy old tuple trong khi writer đã tạo new tuple. UPDATE thường tạo tuple mới, HOT update có thể tránh index update khi indexed column không đổi và còn chỗ trên page.
+
+        Dead tuple chỉ reclaim khi không snapshot nào còn cần. Long transaction/idle-in-transaction giữ horizon cũ, làm VACUUM không dọn được, tăng table/index bloat và transaction-ID risk. Visibility map cho biết page all-visible để index-only scan tránh heap lookup; VACUUM và write có thể thay đổi bit này.
+    '''),
+    ("04-database-postgresql", "explain-analyze"): dedent('''
+        Đọc plan từ node sâu nhất nơi actual/estimate lệch mạnh hoặc time/buffer tăng, rồi đi lên. `actual time=a..b rows=n loops=m`: thời gian/rows thường per-loop; tổng work liên quan loops. `Rows Removed by Filter`, heap fetches, sort method/memory/disk, hash batches và temp blocks chỉ ra waste/spill.
+
+        `BUFFERS` tách shared hit/read/dirtied/written và temp; hit không có nghĩa miễn phí vì vẫn tốn CPU. `EXPLAIN ANALYZE` thực thi query: với DML dùng transaction rồi rollback khi phù hợp và tránh production query nguy hiểm. Generic/prepared plan, cache warmth, concurrency và realistic data distribution có thể làm test đơn lẻ sai lệch.
+    '''),
+    ("04-database-postgresql", "transaction"): dedent('''
+        `BEGIN` mở transaction; statement tạo command ID và dùng snapshot theo isolation. Change đi vào buffer/WAL; `COMMIT` làm transaction durable theo WAL flush policy, còn data page có thể được checkpoint sau. Rollback đánh dấu transaction aborted; tuple version không visible và VACUUM dọn sau, không “undo bytes” ngay.
+
+        Transaction càng dài càng giữ lock/snapshot/connection lâu. Remote call bên trong transaction tăng contention và ambiguity. Thiết kế transaction quanh invariant local; distributed workflow dùng state machine/outbox/idempotency thay vì giữ DB transaction qua network.
+    '''),
+    ("04-database-postgresql", "isolation-level"): dedent('''
+        Read Committed lấy snapshot mới mỗi statement, nên hai SELECT trong cùng transaction có thể thấy khác nhau. PostgreSQL Repeatable Read dùng transaction snapshot và ngăn nhiều anomaly nhưng concurrent write vẫn có serialization-style abort. Serializable dùng SSI theo dõi dependency nguy hiểm và có thể abort dù không lock mọi read.
+
+        Isolation level không tự bảo vệ mọi business invariant nếu read/write pattern không nằm trong cùng transaction hoặc predicate không được theo dõi như kỳ vọng. Luôn mô tả anomaly cần ngăn: lost update, write skew, duplicate allocation; dùng atomic SQL, row lock, unique constraint, optimistic version hoặc Serializable + retry whole transaction.
+    '''),
+    ("06-redis", "redis-internals"): dedent('''
+        Client gửi RESP qua socket; event loop đọc request, parse command, thực thi trên data structure rồi ghi response. Redis hiện đại có thể dùng I/O thread cho network read/write tùy version/config, nhưng phần lớn command logic vẫn serialized trên main execution path. Điều này giảm lock contention nhưng O(N), big key, Lua/function dài hoặc fork pressure có thể làm tail latency của client khác tăng.
+
+        Key trỏ object có encoding tối ưu theo size/type; memory footprint gồm allocator fragmentation và replication/AOF buffers. Expiry vừa passive khi access vừa active sampling. Eviction chạy khi vượt `maxmemory` theo policy. RDB fork snapshot và AOF append/rewrite có durability/latency trade-off; replication async tạo acknowledged-write loss window khi failover.
+    '''),
+    ("06-redis", "sentinel-cluster"): dedent('''
+        Sentinel giám sát primary/replica, đạt quorum/majority cho failover coordination và quảng bá primary mới; nó không shard data. Redis Cluster chia keyspace thành 16,384 hash slot, mỗi master sở hữu range slot và có replica. Client nhận `MOVED`/`ASK` để cập nhật topology; multi-key operation cần key cùng slot (hash tag).
+
+        Failover và reshard không loại hot key: một key vẫn thuộc một shard. Replication async nghĩa là promotion có thể thiếu write mới nhất. Client retry sau redirect/timeout phải xét idempotency. Cluster tăng capacity nhưng tăng topology, backup/restore, cross-slot và failure-mode complexity.
+    '''),
+    ("07-celery", "architecture"): dedent('''
+        Producer serialize task name/args/headers rồi publish broker exchange/queue. Worker consumer reserve message, pool child thực thi task; acknowledgement timing phụ thuộc `acks_late` và broker/transport. Result backend là optional observation store, không nên là authoritative business state.
+
+        Prefetch tạo local reserved work: cao giúp throughput task ngắn nhưng làm fairness kém cho task dài. Redis transport visibility timeout và AMQP unacked semantics khác nhau, nên nói rõ broker. Worker crash trước ack tạo redelivery; crash sau early ack có thể mất work. Business table/job state phải chịu duplicate và reconciliation.
+    '''),
+    ("07-celery", "task-lifecycle"): dedent('''
+        State logic cần tách broker state với domain state. `PENDING` từ result backend thậm chí có thể nghĩa “không biết task”, không chắc message đang queue. Domain job nên có version/attempt/lease và atomic transition; task nhận immutable job ID thay vì payload lớn hoặc ORM object.
+
+        Với late ACK: worker commit DB rồi crash trước ACK → broker redeliver. Với early ACK: worker crash sau ACK trước commit → effect mất. Visibility/consumer timeout nhỏ hơn runtime có thể redeliver song song. Giải pháp thực dụng là at-least-once, idempotent transition, unique constraint/inbox, heartbeat phù hợp và reconciliation.
+    '''),
+    ("10-distributed-systems", "outbox-pattern"): dedent('''
+        Dual write trực tiếp có hai cửa sổ: DB commit rồi publish fail làm mất event; publish thành công rồi DB rollback tạo event ma. Không có thứ tự gọi nào loại cả hai nếu DB và broker không chung atomic transaction.
+
+        Outbox insert nằm cùng transaction với business row. Relay poll bằng `FOR UPDATE SKIP LOCKED` hoặc CDC, publish rồi đánh dấu; crash quanh publish/mark có thể publish lặp nên consumer vẫn dedupe. Theo dõi oldest-unpublished age, attempt/error, retention và reconciliation giữa aggregate version với event.
+    '''),
+    ("10-distributed-systems", "circuit-breaker"): dedent('''
+        Closed cho request đi qua và ghi nhận outcome; vượt threshold mở circuit để fail fast/fallback. Sau cooldown, Half-Open chỉ cho ít probe; success đủ thì đóng, failure mở lại. Rolling window, slow-call threshold và minimum sample tránh phản ứng với noise.
+
+        Circuit breaker không thay timeout, rate limit hoặc bulkhead. Một breaker global có thể để tenant/endpoint lỗi chặn mọi traffic; đặt scope theo dependency/failure domain. Fallback phải có data-age/quality semantics và không tạo load lớn hơn lên dependency khác.
+    '''),
+    ("10-distributed-systems", "saga"): dedent('''
+        Choreography để service phản ứng event, coupling runtime thấp nhưng flow khó nhìn và cycle khó kiểm soát. Orchestration có coordinator/state rõ, dễ timeout/retry/observe hơn nhưng coordinator thành critical component.
+
+        Mỗi local step commit riêng; compensation như refund/release inventory cũng có thể fail và phải idempotent/retry/reconcile. Có point of no return và irreversible action; đôi khi cần forward recovery/human review thay vì compensation. Saga không cung cấp isolation: concurrent saga có thể thấy intermediate state.
+    '''),
+    ("18-ai-integration", "rag"): dedent('''
+        Ingestion phải version parse/chunk/embedding/index và giữ lineage từ chunk về document/page/ACL. Query path normalize/rewrite khi cần, hybrid retrieve candidate, metadata/ACL filter, rerank, pack context theo token budget rồi generate với citation/abstention.
+
+        Đánh giá retrieval bằng recall@k/MRR trên labeled queries; đánh giá answer bằng groundedness/citation correctness/task success. ANN similarity không bảo đảm fact. Document là untrusted input: prompt injection phải bị cô lập bằng instruction hierarchy, allowlisted tool, ACL enforcement ngoài model và output validation.
+    '''),
+}
+
+
+FOLDER_INTERNALS: dict[str, str] = {
+    "01-python-core": "Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.",
+    "02-python-concurrency": "Xác định ai schedule work (OS hay event loop), unit nào có stack/heap riêng, điểm preemption/yield, memory nào được chia sẻ và exception/cancellation đi đâu. Bound concurrency trước khi tối ưu throughput.",
+    "03-fastapi": "Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.",
+    "04-database-postgresql": "Reason đồng thời ở logical SQL, planner/executor tree, heap/index page, buffer/WAL và MVCC/lock. Một query nhanh đơn lẻ có thể chậm dưới concurrency vì pool, cache, I/O và lock wait.",
+    "05-sqlalchemy": "Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.",
+    "06-redis": "Xem mỗi command theo time complexity, bytes/key, main execution path, TTL/eviction và durability/failover. Cache/lock/rate-limit có correctness khác nhau khi key mất hoặc replica được promote.",
+    "07-celery": "Tách producer publish, broker delivery, worker reservation/execution/ACK và business state. Mỗi boundary có crash window; đo oldest age và business completion, không chỉ queue length.",
+    "08-api-design": "API là distributed contract: method/status/schema chỉ là bề mặt; idempotency, concurrency control, pagination stability, deadline và compatibility quyết định behavior khi retry/evolution.",
+    "10-distributed-systems": "Assume message có thể delay/drop/duplicate/reorder và node có thể pause/restart. Đặt identity, deadline, atomic boundary, durable state và reconciliation trước khi chọn middleware.",
+    "11-system-design": "Bắt đầu từ workload model và invariant. Vẽ read/write critical path, source of truth và asynchronous projection; sau đó mới thêm cache/queue/shard theo bottleneck đã định lượng.",
+    "13-kubernetes": "Kubernetes controller reconcile desired state, nhưng application vẫn sở hữu readiness, graceful shutdown, state correctness và downstream capacity. Pod restart không sửa logical corruption.",
+    "16-security": "Bắt đầu từ asset, actor và trust boundary; authentication không thay authorization. Enforce server-side, least privilege và audit, đồng thời thiết kế key/secret rotation và incident containment.",
+    "17-performance-reliability": "Latency là tổng service time + queueing. Dùng SLI/baseline, trace critical path và saturation để phân biệt symptom với bottleneck; thay đổi một biến và so before/after.",
+    "18-ai-integration": "Model là dependency xác suất có quota, token cost và quality drift. Version data/model/prompt, đo system + quality, enforce ACL ngoài model và luôn có abstention/fallback.",
+    "20-senior-scenarios": "Trong incident: stabilize trước, giữ evidence, dùng telemetry để kiểm hypothesis, rồi mới root cause. Mọi action cần owner, blast radius, rollback và verification.",
+}
+
+
+def mermaid_block(body: str) -> str:
+    return f"```mermaid\n{dedent(body).strip()}\n```"
+
+
+def concept_diagram(folder: str, filename: str, title: str) -> str:
+    key = key_for(filename)
+    special: dict[str, str] = {
+        "python-memory-model": '''
+            flowchart TD
+                Name["Python name / variable"] -->|holds| Ref["Reference"]
+                Ref --> Obj["Python object"]
+                Obj --> Header["Identity + type + refcount"]
+                Obj --> Value["Value / payload"]
+                Alias["Another name"] -->|same object| Ref
+        ''',
+        "gc-reference-counting": '''
+            flowchart TD
+                Create["Object created"] --> Gen0["Young generation"]
+                Gen0 -->|unreachable| Collect["Collect cycle"]
+                Gen0 -->|survives| Older["Older generation"]
+                Older -->|survives repeatedly| Oldest["Old generation"]
+                RefZero["Reference count becomes 0"] --> Immediate["Immediate deallocation in CPython"]
+                Cycle["Cycle keeps refcount above 0"] --> Gen0
+        ''',
+        "gil": '''
+            flowchart TD
+                T1["Thread A"] --> Gate{"GIL available?"}
+                T2["Thread B"] --> Gate
+                T3["Thread C"] --> Gate
+                Gate -->|acquired| VM["CPython bytecode / object access"]
+                VM -->|blocking I/O releases GIL| IO["Kernel waits for network / disk"]
+                IO -->|I/O ready| Gate
+                VM -->|switch opportunity| Gate
+        ''',
+        "asyncio": '''
+            flowchart TD
+                Loop["Event loop"] --> Ready["Ready queue"]
+                Ready --> A["Coroutine A"]
+                A -->|await socket| Waiting["Waiting I/O"]
+                Ready --> B["Coroutine B"]
+                B -->|await database| Waiting
+                Waiting --> OS["epoll / kqueue / IOCP"]
+                OS -->|file descriptor ready| Loop
+        ''',
+        "event-loop": '''
+            flowchart LR
+                Timers["Due timers"] --> Ready["Ready callbacks"]
+                Selector["OS selector events"] --> Ready
+                Threadsafe["Thread-safe notifications"] --> Ready
+                Ready --> Run["Run callback / Task step"]
+                Run -->|await incomplete Future| Selector
+                Run -->|complete| Result["Result / next callback"]
+        ''',
+        "coroutine-task-future": '''
+            stateDiagram-v2
+                [*] --> CoroutineCreated
+                CoroutineCreated --> Scheduled: create_task
+                Scheduled --> Running
+                Running --> Waiting: await Future
+                Waiting --> Scheduled: Future done
+                Running --> Completed: return
+                Running --> Failed: exception
+                Waiting --> Cancelled: cancel
+        ''',
+        "request-lifecycle": '''
+            flowchart LR
+                Client --> LB["Load balancer"]
+                LB --> Uvicorn
+                Uvicorn --> ASGI
+                ASGI --> Middleware
+                Middleware --> Router
+                Router --> DI["Dependency graph"]
+                DI --> Validation["Pydantic validation"]
+                Validation --> Endpoint
+                Endpoint --> Service
+                Service --> Repository
+                Repository --> DB[(PostgreSQL)]
+        ''',
+        "sync-vs-async-endpoint": '''
+            sequenceDiagram
+                participant C as Client
+                participant L as Event Loop
+                participant E as async endpoint
+                participant B as Blocking library
+                C->>L: HTTP request
+                L->>E: run coroutine
+                E->>B: synchronous call
+                Note over L,B: Event-loop thread is blocked
+                B-->>E: result after 2 seconds
+                E-->>C: response
+        ''',
+        "database-fundamentals": '''
+            flowchart LR
+                Client --> Parser
+                Parser --> Analyzer["Analyzer / Rewriter"]
+                Analyzer --> Planner
+                Planner --> Executor
+                Executor --> Buffer["Buffer manager"]
+                Buffer --> Storage["Heap / Index pages"]
+                Executor --> WAL["WAL for changes"]
+        ''',
+        "index": '''
+            flowchart TD
+                Root["Root page"] --> I1["Internal page A"]
+                Root --> I2["Internal page B"]
+                I1 --> L1["Leaf page: keys + TIDs"]
+                I1 --> L2["Leaf page: keys + TIDs"]
+                I2 --> L3["Leaf page: keys + TIDs"]
+                I2 --> L4["Leaf page: keys + TIDs"]
+                L2 --> Heap["Heap tuple via TID"]
+        ''',
+        "btree-hash-gin-gist-brin": '''
+            flowchart TD
+                Predicate["Query predicate / operator"] --> Choice{"Access pattern"}
+                Choice -->|equality / range / order| BTree
+                Choice -->|array / JSONB / text membership| GIN
+                Choice -->|range / geometry / nearest| GiST
+                Choice -->|huge physically correlated table| BRIN
+                Choice -->|equality only, niche| Hash
+        ''',
+        "explain-analyze": '''
+            flowchart BT
+                Scan["Seq / Index / Bitmap scan"] --> Join["Nested Loop / Hash / Merge"]
+                Join --> Sort["Sort / Aggregate"]
+                Sort --> Limit["Limit / Result"]
+                Estimate["Estimated rows + cost"] -.compare.-> Actual["Actual rows + time + loops"]
+                Buffers["Buffers + temp + WAL"] --> Actual
+        ''',
+        "mvcc": '''
+            sequenceDiagram
+                participant A as Transaction A
+                participant H as Heap
+                participant B as Transaction B snapshot
+                A->>H: UPDATE creates new tuple version
+                H-->>A: New version visible to A
+                B->>H: SELECT using older snapshot
+                H-->>B: Old tuple still visible
+                Note over H: VACUUM waits until no snapshot needs old tuple
+        ''',
+        "transaction": '''
+            stateDiagram-v2
+                [*] --> Idle
+                Idle --> Active: BEGIN / implicit start
+                Active --> Active: statements + WAL
+                Active --> Committed: COMMIT
+                Active --> Aborted: error / ROLLBACK
+                Aborted --> Idle: ROLLBACK complete
+                Committed --> Idle
+        ''',
+        "redis-internals": '''
+            flowchart LR
+                Client --> Socket["RESP over socket"]
+                Socket --> IO["Event loop / optional I/O threads"]
+                IO --> Execute["Main command execution path"]
+                Execute --> Structures["String / Hash / List / Set / ZSet"]
+                Execute --> Expiry["TTL + eviction"]
+                Execute --> Persist["AOF / RDB"]
+                Execute --> Replica["Replication stream"]
+        ''',
+        "sentinel-cluster": '''
+            flowchart LR
+                Client --> R1["Master: slots 0–5460"]
+                Client --> R2["Master: slots 5461–10922"]
+                Client --> R3["Master: slots 10923–16383"]
+                R1 --> RR1["Replica 1"]
+                R2 --> RR2["Replica 2"]
+                R3 --> RR3["Replica 3"]
+                R2 -.MOVED redirect.-> Client
+        ''',
+        "celery-architecture": '''
+            sequenceDiagram
+                participant API
+                participant Broker
+                participant Worker
+                participant DB
+                API->>Broker: publish task
+                Broker-->>Worker: deliver / reserve
+                Worker->>DB: idempotent state transition
+                DB-->>Worker: commit
+                Worker->>Broker: ACK
+        ''',
+        "task-lifecycle": '''
+            stateDiagram-v2
+                [*] --> Published
+                Published --> Reserved
+                Reserved --> Running
+                Running --> Succeeded
+                Running --> RetryableFailure
+                RetryableFailure --> Published: backoff + jitter
+                Running --> DeadLetter: permanent / exhausted
+                Running --> Redelivered: crash before ACK
+                Redelivered --> Running
+        ''',
+        "exactly-once-myth": '''
+            sequenceDiagram
+                participant B as Broker
+                participant W as Worker
+                participant DB
+                B->>W: deliver task
+                W->>DB: commit business effect
+                DB-->>W: committed
+                Note over W: worker crashes before ACK
+                B->>W: redelivery after lease / reconnect
+                W->>DB: same effect attempted again
+                DB-->>W: unique key returns prior result
+        ''',
+        "idempotency": '''
+            sequenceDiagram
+                participant C as Client
+                participant API
+                participant DB
+                C->>API: POST + Idempotency-Key
+                API->>DB: atomically claim key + request hash
+                alt first request
+                    DB-->>API: claimed
+                    API->>DB: business write + stored response
+                else completed duplicate
+                    DB-->>API: previous response
+                else same key, different payload
+                    DB-->>API: reject conflict
+                end
+                API-->>C: stable result
+        ''',
+        "retry": '''
+            sequenceDiagram
+                participant Caller
+                participant Dependency
+                Caller->>Dependency: attempt 1 with timeout
+                Dependency--xCaller: transient 503
+                Note over Caller: exponential backoff + full jitter
+                Caller->>Dependency: attempt 2 within deadline
+                Dependency-->>Caller: success
+        ''',
+        "timeout": '''
+            flowchart LR
+                Deadline["End-to-end deadline: 800 ms"] --> Queue["Queue budget"]
+                Queue --> DB["Database timeout"]
+                DB --> Downstream["Downstream timeout"]
+                Downstream --> Serialize["Response budget"]
+                Downstream -->|deadline exceeded| Cancel["Propagate cancellation + cleanup"]
+        ''',
+        "circuit-breaker": '''
+            stateDiagram-v2
+                [*] --> Closed
+                Closed --> Open: failure / slow-call threshold
+                Open --> HalfOpen: cooldown elapsed
+                HalfOpen --> Closed: limited probes succeed
+                HalfOpen --> Open: probe fails
+        ''',
+        "outbox-pattern": '''
+            flowchart LR
+                API --> Tx["Local DB transaction"]
+                subgraph TxBlock["Atomic boundary"]
+                    Business[(Business rows)]
+                    Outbox[(Outbox rows)]
+                end
+                Tx --> Business
+                Tx --> Outbox
+                Outbox --> Relay["Poller / CDC relay"]
+                Relay --> Broker[(Kafka / queue)]
+                Broker --> Consumer
+        ''',
+        "saga": '''
+            sequenceDiagram
+                participant O as Orchestrator
+                participant C as Claim
+                participant I as Inventory
+                participant P as Payment
+                O->>C: approve claim
+                C-->>O: committed
+                O->>I: reserve part
+                I-->>O: committed
+                O->>P: pay dealer
+                P--xO: permanent failure
+                O->>I: compensate release
+                O->>C: mark manual review
+        ''',
+        "rag": '''
+            flowchart LR
+                Query --> Embed["Query embedding"]
+                Embed --> Retrieve["Hybrid retrieval + ACL filter"]
+                Retrieve --> Rerank
+                Rerank --> Pack["Context packing"]
+                Pack --> Prompt["Versioned prompt"]
+                Prompt --> LLM
+                LLM --> Validate["Citation / policy validation"]
+                Validate --> Stream
+        ''',
+    }
+    if folder == "07-celery" and key == "architecture":
+        return mermaid_block(special["celery-architecture"])
+    if key in special:
+        return mermaid_block(special[key])
+
+    generic: dict[str, str] = {
+        "01-python-core": f'''flowchart LR
+            Source["Python source"] --> Runtime["{title} runtime behavior"]
+            Runtime --> Objects["Objects + references + types"]
+            Objects --> Result["Observable result"]
+            Runtime --> Inspect["dis / sys / gc / tests"]''',
+        "02-python-concurrency": f'''flowchart LR
+            Work["{title} workload"] --> Scheduler["OS / Python scheduler"]
+            Scheduler --> Running["Running execution unit"]
+            Running -->|wait / yield| Waiting
+            Waiting -->|ready| Scheduler
+            Running --> Shared["Shared state + synchronization"]''',
+        "03-fastapi": f'''flowchart LR
+            Client --> ASGI["ASGI server"] --> FastAPI
+            FastAPI --> Topic["{title}"]
+            Topic --> Service --> Dependency["DB / cache / downstream"]
+            Dependency --> Response --> Client''',
+        "04-database-postgresql": f'''flowchart LR
+            SQL --> Plan["Planner decision for {title}"]
+            Plan --> Executor
+            Executor --> Index[(Index pages)]
+            Executor --> Heap[(Heap pages)]
+            Executor --> Result''',
+        "05-sqlalchemy": f'''flowchart LR
+            Request --> Session["Session / unit of work"]
+            Session --> Topic["{title}"]
+            Topic --> SQL
+            SQL --> Pool --> PostgreSQL''',
+        "06-redis": f'''flowchart LR
+            Client --> Command["{title} command / pattern"]
+            Command --> EventLoop["Redis execution path"]
+            EventLoop --> Memory["In-memory data structure"]
+            Memory --> Persist["TTL / persistence / replication"]''',
+        "07-celery": f'''sequenceDiagram
+            participant P as Producer
+            participant B as Broker
+            participant W as Worker
+            participant S as Business state
+            P->>B: publish {title}
+            B->>W: at-least-once delivery
+            W->>S: idempotent transition
+            W->>B: ACK after durable outcome''',
+        "08-api-design": f'''sequenceDiagram
+            participant C as Client
+            participant API
+            participant S as Service
+            C->>API: request using {title}
+            API->>API: validate identity + contract
+            API->>S: state transition
+            S-->>API: result / typed failure
+            API-->>C: stable response''',
+        "10-distributed-systems": f'''flowchart LR
+            Caller -->|request / message| A["Service A"]
+            A --> Topic["{title} boundary"]
+            Topic -->|network may delay / duplicate / fail| B["Service B"]
+            B --> Durable[(Durable state)]
+            Durable --> Reconcile["Retry / reconcile"]''',
+        "11-system-design": f'''flowchart LR
+            Requirement --> Estimate
+            Estimate --> Simple["Simple {title} design"]
+            Simple --> Measure["Measure bottleneck"]
+            Measure --> Scale["Add capacity / partition / queue"]
+            Scale --> Operate["SLO + failure recovery"]''',
+        "13-kubernetes": f'''flowchart TB
+            User --> LB --> Ingress --> Service
+            Service --> P1["Pod 1"]
+            Service --> P2["Pod 2"]
+            Controller["{title} controller / object"] -.reconcile.-> P1
+            Controller -.reconcile.-> P2
+            P1 --> DB[(Downstream)]
+            P2 --> DB''',
+        "16-security": f'''flowchart LR
+            Actor --> Boundary["Trust boundary"]
+            Boundary --> AuthN
+            AuthN --> AuthZ
+            AuthZ --> Topic["{title} control"]
+            Topic --> Resource
+            Topic --> Audit[(Audit log)]''',
+        "17-performance-reliability": f'''flowchart LR
+            Client --> API --> Pool --> DB
+            API -.span.-> Trace["{title} telemetry"]
+            Pool -.metric.-> Trace
+            DB -.span + metric.-> Trace
+            Trace --> Alert["SLO / burn-rate alert"]''',
+        "18-ai-integration": f'''flowchart LR
+            Input --> Guard["Auth + policy"] --> Topic["{title}"]
+            Topic --> Model["Versioned model / provider"]
+            Model --> Validate["Quality + schema validation"]
+            Validate --> Output
+            Topic --> Telemetry["Latency + tokens + quality"]''',
+        "20-senior-scenarios": f'''flowchart TD
+            Detect["Detect {title}"] --> Stabilize
+            Stabilize --> Observe["Metrics + logs + traces"]
+            Observe --> Hypothesis
+            Hypothesis --> Verify
+            Verify --> Mitigate
+            Mitigate --> Prevent["Fix + guardrail + runbook"]''',
+    }
+    return mermaid_block(generic[folder])
+
+
+FAILURE_GUIDANCE: dict[str, str] = {
+    "01-python-core": "Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.",
+    "02-python-concurrency": "Dưới load, blocking call, unbounded fan-out, race hoặc lock contention làm queue/loop lag tăng. Áp deadline, semaphore/pool bound, structured cancellation và tách CPU work khỏi event loop.",
+    "03-fastapi": "Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.",
+    "04-database-postgresql": "Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.",
+    "05-sqlalchemy": "Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.",
+    "06-redis": "Redis timeout/down tạo cache miss storm hoặc mất coordination. Circuit-break nhanh, dùng stale/bounded fallback, rate-limit source of truth và warm cache dần; không retry mọi command đồng loạt.",
+    "07-celery": "Worker có thể commit rồi crash trước ACK, hoặc ACK sớm rồi crash trước effect. Thiết kế idempotent business transition, retry budget, DLQ và reconciliation thay vì dựa task ID/lock.",
+    "08-api-design": "Timeout khiến client không biết server đã commit chưa; retry có thể duplicate. Idempotency key, optimistic version, stable error semantics và request deadline phải nằm trong contract.",
+    "10-distributed-systems": "Network partition/timeout biến outcome thành unknown. Không suy diễn failure từ timeout; dùng operation identity, durable state, retry có budget, circuit/bulkhead và reconciliation.",
+    "11-system-design": "Một tier scale nhanh có thể overload tier stateful. Mỗi design cần degraded mode, global capacity budget, backpressure, multi-AZ restore test và per-tenant isolation.",
+    "13-kubernetes": "Pod healthy không có nghĩa dependency khỏe. Probe sai gây restart storm; HPA scale API có thể connection-storm DB. Cap theo downstream và test graceful drain/zone failure.",
+    "16-security": "Credential hợp lệ vẫn có thể truy cập sai tenant nếu authorization thiếu. Fail closed cho sensitive operation, rotate/revoke credential và giữ audit không lộ secret.",
+    "17-performance-reliability": "Average che tail; retry che dependency suy yếu đến khi budget cạn. Alert theo user SLI/burn rate, saturation và queue age, rồi dùng trace tìm critical-path change.",
+    "18-ai-integration": "Provider timeout, retrieval miss hoặc prompt injection có thể vẫn trả HTTP 200 nhưng answer sai. Có abstention, citation/ACL validation, fallback và evaluation/replay theo version.",
+    "20-senior-scenarios": "Mitigation không có verification có thể chỉ chuyển failure sang dependency khác. Theo dõi SLI, saturation và correctness/reconciliation cho tới khi hệ thống thực sự ổn định.",
+}
+
+
+DEBUG_STEPS: dict[str, list[str]] = {
+    "01-python-core": ["Reproduce với input/lifetime nhỏ nhất", "Đo RSS và Python heap; so snapshot `tracemalloc`", "Inspect type, identity, referrer/owner", "Kiểm global, closure, cache và container retention", "Xác nhận behavior theo Python/CPython version"],
+    "02-python-concurrency": ["Phân loại CPU-bound, blocking I/O hay async I/O", "Xem per-core CPU, event-loop lag, thread/process/queue depth", "Capture stack/profile của execution unit đang giữ CPU/lock", "Kiểm semaphore, timeout, cancellation và shared-state invariant", "Load test lại với bounded concurrency"],
+    "03-fastapi": ["So p50/p95/p99 theo route/worker/deploy", "Xem event-loop lag, thread tokens và worker saturation", "Trace middleware → dependency → endpoint → DB/cache", "Đo DB pool wait và downstream deadline/retry", "Rollback/canary fix rồi verify SLO"],
+    "04-database-postgresql": ["Kiểm DB CPU/IO/connections và application pool wait", "Dùng `pg_stat_activity` xem wait/lock/transaction age", "Dùng `pg_stat_statements` tìm total-time/calls/rows regression", "Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện", "Kiểm estimate, scan/join, loops, spill, index/statistics/bloat", "Mitigate rồi đo lại p99 và write/WAL cost"],
+    "05-sqlalchemy": ["Bật SQL timing/query count có sampling", "Xem pool checked-out/wait/timeout", "Kiểm session scope, autoflush và transaction age", "Tìm lazy load/N+1 và row amplification", "So generated SQL + plan trước/sau"],
+    "06-redis": ["Xem command p99/slowlog và client timeout", "Đo memory/RSS/fragmentation/eviction/expired", "Tìm hot/big key và O(N) command", "Kiểm replication lag/failover/topology refresh", "Circuit-break, bảo vệ source và verify warm-up"],
+    "07-celery": ["Đo oldest task age, runtime percentile, retry/failure", "So active/reserved/prefetch và worker RSS/CPU", "Trace publish → delivery → attempt → business state → ACK", "Kiểm visibility/consumer timeout và deploy termination", "Quarantine poison task; reconcile duplicate/missing effect"],
+    "08-api-design": ["Phân đoạn error/latency theo endpoint/client/version", "Trace idempotency key và state transition", "Kiểm timeout/retry classification và payload hash", "Xem rate quota/abuse và compatibility failures", "Replay contract/integration test"],
+    "10-distributed-systems": ["Vẽ timeline theo correlation/message/operation ID", "Phân biệt timeout, rejection, duplicate và stale observation", "Xác định last durable state ở từng component", "Kiểm retry/deadline/circuit/queue lag", "Reconcile source of truth với projection/external effect"],
+    "11-system-design": ["Xác nhận user-visible SLI và blast radius", "Trace critical read/write path", "Xem saturation: worker, pool, DB, cache, queue, provider", "Tìm hot tenant/key/partition và retry amplification", "Kích hoạt degraded mode/rollback", "Cập nhật capacity model và failure test"],
+    "13-kubernetes": ["Describe workload/pod và đọc event", "Kiểm readiness/endpoints/restart/previous logs", "Xem CPU throttling, OOM, request/limit và node pressure", "Trace DNS/network/service/downstream", "Kiểm rollout diff, HPA metric và graceful termination"],
+    "16-security": ["Contain credential/session và preserve audit evidence", "Xác định actor/resource/tenant/action bị ảnh hưởng", "Kiểm authN, authZ policy và trust boundary", "Rotate/revoke/fix least privilege", "Backfill detection và regression test"],
+    "17-performance-reliability": ["Xác nhận SLI/baseline và recent change", "Phân rã queue time/service time theo trace", "Kiểm RED/USE và saturation", "Profile bottleneck đã khoanh vùng", "Canary một thay đổi và so tail/cost"],
+    "18-ai-integration": ["Tách system latency khỏi retrieval/model quality", "Trace retrieval/rerank/prompt/provider/stream", "Kiểm model/prompt/index/data version và ACL", "Đo tokens/quota/retry/fallback", "Replay golden set và affected slice"],
+    "20-senior-scenarios": ["Declare severity/owner và customer impact", "Freeze recent risky change", "Mitigate bằng action reversible", "Dùng evidence kiểm từng hypothesis", "Verify recovery bằng SLI + correctness", "RCA và prevention có owner/deadline"],
+}
+
+
+RELATED_LINKS: dict[str, list[tuple[str, str]]] = {
+    "01-python-core": [("Reference Counting", "gc-reference-counting.md"), ("GIL", "../02-python-concurrency/gil.md"), ("Python Profiling", "../17-performance-reliability/profiling-python.md")],
+    "02-python-concurrency": [("AsyncIO", "asyncio.md"), ("Event Loop", "event-loop.md"), ("FastAPI Sync vs Async", "../03-fastapi/sync-vs-async-endpoint.md"), ("CPU vs I/O", "cpu-vs-io-bound.md")],
+    "03-fastapi": [("Request Lifecycle", "request-lifecycle.md"), ("Sync vs Async", "sync-vs-async-endpoint.md"), ("Connection Pooling", "../04-database-postgresql/connection-pooling.md"), ("API Security", "../16-security/api-security.md")],
+    "04-database-postgresql": [("Index", "index.md"), ("EXPLAIN ANALYZE", "explain-analyze.md"), ("MVCC", "mvcc.md"), ("Transactions", "transaction.md"), ("SQLAlchemy Session", "../05-sqlalchemy/session-lifecycle.md")],
+    "05-sqlalchemy": [("Session Lifecycle", "session-lifecycle.md"), ("Transactions", "transaction.md"), ("PostgreSQL Pooling", "../04-database-postgresql/connection-pooling.md")],
+    "06-redis": [("Redis Internals", "redis-internals.md"), ("Cache Patterns", "cache-patterns.md"), ("Redis Outage", "../20-senior-scenarios/redis-down.md"), ("Distributed Lock", "../10-distributed-systems/distributed-lock.md")],
+    "07-celery": [("Task Lifecycle", "task-lifecycle.md"), ("Idempotency", "idempotency.md"), ("Exactly-once Myth", "exactly-once-myth.md"), ("Duplicate Task Incident", "../20-senior-scenarios/celery-task-duplicate.md")],
+    "08-api-design": [("Idempotency", "idempotency.md"), ("Retry and Timeout", "retry-timeout.md"), ("API Security", "api-security.md")],
+    "10-distributed-systems": [("Idempotency", "idempotency.md"), ("Retry", "retry.md"), ("Timeout", "timeout.md"), ("Outbox", "outbox-pattern.md"), ("Failure Scenarios", "failure-scenarios.md")],
+    "11-system-design": [("Design Framework", "system-design-framework.md"), ("Capacity Estimation", "capacity-estimation.md"), ("Observability", "observability.md"), ("Production Scenarios", "../20-senior-scenarios/README.md")],
+    "13-kubernetes": [("HPA", "hpa.md"), ("Resource Limits", "resource-limit.md"), ("Health Checks", "health-check.md"), ("Troubleshooting", "troubleshooting.md")],
+    "16-security": [("API Security", "api-security.md"), ("OAuth 2.0", "oauth2.md"), ("Secrets", "secrets-management.md")],
+    "17-performance-reliability": [("Observability", "observability.md"), ("SLI/SLO/SLA", "sli-slo-sla.md"), ("Incident Debugging", "incident-debugging.md")],
+    "18-ai-integration": [("RAG", "rag.md"), ("Vector Database", "vector-database.md"), ("AI Observability", "ai-observability.md"), ("AI Chatbot Design", "../11-system-design/design-ai-chatbot.md")],
+    "20-senior-scenarios": [("Incident Debugging", "../17-performance-reliability/incident-debugging.md"), ("Observability", "../17-performance-reliability/observability.md"), ("System Design", "../11-system-design/README.md")],
+}
+
+
+def deep_dive_appendix(folder: str, filename: str, title: str) -> str:
+    if folder not in DEEP_DIVE_FOLDERS:
+        return ""
+    key = key_for(filename)
+    mental = MENTAL_MODELS.get(key, f"Hãy xem **{title}** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.")
+    internals = INTERNAL_DEEP_DIVES.get((folder, key), FOLDER_INTERNALS[folder])
+    diagram = concept_diagram(folder, filename, title)
+    failure = FAILURE_GUIDANCE[folder]
+    steps = "\n".join(f"{i}. {step}." for i, step in enumerate(DEBUG_STEPS[folder], 1))
+    misconceptions = {
+        "01-python-core": "**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.",
+        "02-python-concurrency": "**Sai:** concurrency luôn là parallelism và thêm worker luôn tăng throughput. **Đúng:** queueing, GIL, locks và downstream capacity có thể làm p99 tệ hơn.",
+        "03-fastapi": "**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.",
+        "04-database-postgresql": "**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.",
+        "05-sqlalchemy": "**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.",
+        "06-redis": "**Sai:** Redis ở RAM nên mọi command đều nhanh và có thể làm primary store mặc định. **Đúng:** complexity/big key/main execution path và durability model vẫn quan trọng.",
+        "07-celery": "**Sai:** task thành công trong log nghĩa business effect exactly once. **Đúng:** ACK, result backend và domain commit là các boundary độc lập.",
+        "08-api-design": "**Sai:** HTTP method/status đủ tạo idempotency. **Đúng:** server phải atomically dedupe logical operation và xử lý unknown outcome.",
+        "10-distributed-systems": "**Sai:** timeout chứng minh operation thất bại. **Đúng:** server có thể đã commit; timeout chỉ nói caller chưa quan sát response.",
+        "11-system-design": "**Sai:** diagram nhiều service là senior design. **Đúng:** design senior giải thích requirement, số liệu, source of truth, failure và lý do từng component xuất hiện.",
+        "13-kubernetes": "**Sai:** Kubernetes làm application high availability tự động. **Đúng:** probe, state, dependency và capacity budget sai vẫn tạo outage tự động ở quy mô lớn.",
+        "16-security": "**Sai:** JWT hợp lệ nghĩa request được phép. **Đúng:** token chỉ hỗ trợ authentication; authorization phải kiểm resource/tenant/action.",
+        "17-performance-reliability": "**Sai:** average latency tốt nghĩa system khỏe. **Đúng:** tail, saturation, error semantics và user journey mới phản ánh SLO.",
+        "18-ai-integration": "**Sai:** HTTP 200 và answer trôi chảy nghĩa AI đúng. **Đúng:** phải đo retrieval, groundedness, citation, safety, cost và task success.",
+        "20-senior-scenarios": "**Sai:** restart service là root-cause fix. **Đúng:** restart có thể giảm impact nhưng phải giữ evidence, tìm mechanism và thêm prevention.",
+    }[folder]
+    not_use = {
+        "01-python-core": "Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.",
+        "02-python-concurrency": "Không thêm concurrency khi workload nhỏ hoặc downstream đã saturated; model tuần tự đơn giản có thể đúng và dễ vận hành hơn.",
+        "03-fastapi": "Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.",
+        "04-database-postgresql": "Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.",
+        "05-sqlalchemy": "Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.",
+        "06-redis": "Không thêm cache nếu query đã nhanh, traffic thấp hoặc invalidation cost vượt lợi ích; không dùng lock Redis thay DB invariant.",
+        "07-celery": "Không đưa work cần response tức thì hoặc transaction atomic đơn giản qua queue; queue thêm lag, duplicate và operational surface.",
+        "08-api-design": "Không tạo version/abstraction mới khi chưa có compatibility need; contract nhỏ, explicit thường tốt hơn generic framework.",
+        "10-distributed-systems": "Không dùng consensus/lock/saga nếu một local transaction hoặc unique constraint giải được invariant.",
+        "11-system-design": "Ở 100 RPS, tránh Kafka, sharding và nhiều microservice nếu 2 API instance + PostgreSQL đáp ứng SLO và recovery.",
+        "13-kubernetes": "Không chọn Kubernetes chỉ để chạy vài service ít thay đổi nếu managed container/serverless đơn giản hơn và team thiếu operational ownership.",
+        "16-security": "Không tự thiết kế crypto/token protocol khi chuẩn và managed identity đáp ứng; custom security mở thêm attack surface.",
+        "17-performance-reliability": "Không optimize từ intuition hoặc microbenchmark không đại diện; đo user SLI và bottleneck trước.",
+        "18-ai-integration": "Không dùng LLM khi rule/search/deterministic parser đáp ứng accuracy, latency và cost tốt hơn.",
+        "20-senior-scenarios": "Không thực hiện thay đổi irreversible/high-blast-radius trong incident nếu còn mitigation an toàn và evidence chưa đủ.",
+    }[folder]
+    links = []
+    for label, target in RELATED_LINKS[folder]:
+        if target == filename:
+            continue
+        links.append(f"- [{label}]({target})")
+    link_text = "\n".join(links[:4])
+    return dedent(f'''\
+
+    ## 13. Mental Model
+
+    {mental}
+
+    ## 14. Internals Deep Dive
+
+    {internals}
+
+    Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+    ## 15. Request / Data Flow
+
+    {diagram}
+
+    Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+    ## 16. Failure Scenario
+
+    {failure}
+
+    Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+    ## 17. How I would debug this in production
+
+    {steps}
+
+    ## 18. Common Misconceptions
+
+    {misconceptions}
+
+    ## 19. When NOT to use
+
+    {not_use}
+
+    ## 20. What interviewer may ask next
+
+    1. **What guarantee does {title} provide, and what does it explicitly not guarantee?**
+    2. **Which implementation detail changes across versions or runtimes?**
+    3. **Where is the first queue or contention point under high load?**
+    4. **What happens if the dependency times out after committing state?**
+    5. **How would you observe, degrade, and recover this in production?**
+    6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+    ## 21. Check Your Understanding
+
+    1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **{title}** sẽ tạo queue/backpressure ở đâu?
+    2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+    3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+    <details>
+    <summary>Answer</summary>
+
+    1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+    2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+    3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+    </details>
+
+    ## 22. See also
+
+    {link_text}
+    ''')
+
+
 def knowledge_doc(folder: str, filename: str) -> str:
     title = title_from_name(filename)
     c = CATEGORY[folder]
@@ -1199,6 +1960,8 @@ def knowledge_doc(folder: str, filename: str) -> str:
     - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
     - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
     - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+    {deep_dive_appendix(folder, filename, title)}
     ''')
 
 
@@ -1243,7 +2006,7 @@ DESIGNS: dict[str, dict[str, str]] = {
         "cache": "Redis cache session/config, semantic cache có tenant/model/prompt version và TTL ngắn",
         "queue": "Kafka/SQS cho ingestion, embedding, evaluation và usage accounting; online generation không đi queue nếu cần interactive latency",
         "special": "Prompt injection, hallucination, token budget, model rate limit, citation correctness và data residency",
-        "nodes": 'Client --> Gateway --> ChatAPI["Chat API"]\n    ChatAPI --> Orchestrator\n    Orchestrator --> Retriever\n    Retriever --> VectorDB[(Vector DB)]\n    Retriever --> Reranker\n    Orchestrator --> LLM["LLM Provider"]\n    LLM --> Stream["SSE Stream"]\n    ChatAPI --> PG[(PostgreSQL)]\n    Ingestion --> Queue[(Queue)]\n    Queue --> Embedder --> VectorDB',
+        "nodes": 'Client --> Gateway --> Auth\n    Auth --> ChatAPI["Chat API"]\n    ChatAPI --> Redis[(Redis)]\n    ChatAPI --> Orchestrator\n    Orchestrator --> Retriever\n    Retriever --> VectorDB[(Vector DB)]\n    Orchestrator --> LLM["LLM Provider"]\n    LLM --> Stream["SSE Stream"]\n    ChatAPI --> PG[(PostgreSQL)]\n    Object[(Object Storage)] --> Ingestion\n    Ingestion --> Queue[(Queue)] --> Embedder --> VectorDB\n    Orchestrator --> Telemetry["Metrics / Traces"]',
     },
     "design-document-processing.md": {
         "title": "Intelligent Document Processing System",
@@ -1255,7 +2018,7 @@ DESIGNS: dict[str, dict[str, str]] = {
         "cache": "Redis cho job status ngắn hạn và tenant configuration; source of truth vẫn ở database",
         "queue": "Queue tách scan → OCR → classify → extract → validate; DLQ và replay theo stage",
         "special": "PII, malware, corrupt file, model confidence, page-level retry, retention/legal hold và human-in-the-loop",
-        "nodes": 'Client --> UploadAPI["Upload API"] --> ObjectStore[(Object Storage)]\n    UploadAPI --> PG[(PostgreSQL)]\n    UploadAPI --> Queue[(Workflow Queue)]\n    Queue --> Scan["AV Scan"] --> OCR\n    OCR --> Classifier --> Extractor\n    Extractor --> Review["Human Review"]\n    Review --> Exporter',
+        "nodes": 'Client --> UploadAPI["Upload API"] --> ObjectStore[(Object Storage)]\n    UploadAPI --> PG[(PostgreSQL)]\n    UploadAPI --> Queue[(Workflow Queue)]\n    Queue --> Scan["AV Scan"] --> OCR\n    OCR --> Parser --> Classifier --> Extractor\n    Parser --> Chunking --> Embedder --> VectorDB[(Vector DB)]\n    Extractor --> Review["Human Review"] --> Exporter',
     },
     "design-vehicle-inspection.md": {
         "title": "Vehicle Inspection Platform",
@@ -1291,7 +2054,7 @@ DESIGNS: dict[str, dict[str, str]] = {
         "cache": "Redis cho reference data/version manifest; không cache mutable plan draft không có version",
         "queue": "Workflow queue cho snapshot, solve, validate, publish; event bus nhận supply/machine disruption",
         "special": "Deterministic snapshot, solver timeout, stale input, manual override, plan versioning và ERP/MES integration",
-        "nodes": 'Planner --> PlanningAPI["Planning API"] --> PG[(Plan Metadata)]\n    ERP["ERP / MES"] --> CDC["CDC / Events"] --> Lake[(Data Lake)]\n    PlanningAPI --> Workflow[(Workflow Queue)]\n    Workflow --> Snapshot --> Solver\n    Solver --> Validator --> PlanStore[(Versioned Plans)]\n    PlanStore --> Publisher --> ERP',
+        "nodes": 'Sensor --> Machine --> Line["Production Line"] --> IoT["IoT Gateway"]\n    IoT --> Bus[(Event Bus)] --> Lake[(Data Lake)]\n    ERP["ERP / Inventory / Orders"] --> Bus\n    Planner --> PlanningAPI["Planning API"] --> PG[(Plan Metadata)]\n    PlanningAPI --> Workflow[(Workflow Queue)] --> Snapshot --> Solver\n    Solver --> PlanStore[(Versioned Plans)] --> MES["Factory MES"]',
     },
     "design-video-processing.md": {
         "title": "Video Analytics Platform",
@@ -1368,10 +2131,349 @@ DESIGNS: dict[str, dict[str, str]] = {
 }
 
 
+def design_profile(filename: str) -> str:
+    return {
+        "design-ai-chatbot.md": "rag",
+        "design-document-processing.md": "pipeline",
+        "design-file-processing.md": "pipeline",
+        "design-video-processing.md": "video",
+        "design-vehicle-inspection.md": "workflow",
+        "design-vehicle-warranty.md": "workflow",
+        "design-production-planning.md": "planning",
+        "design-notification-system.md": "notification",
+        "design-task-processing.md": "task",
+        "design-chat-system.md": "realtime",
+        "design-realtime-websocket.md": "realtime",
+    }[filename]
+
+
+def system_design_deep_dive(filename: str, d: dict[str, str]) -> str:
+    profile = design_profile(filename)
+    sequences: dict[str, str] = {
+        "rag": '''
+            sequenceDiagram
+                participant U as User
+                participant API as Chat API
+                participant A as Auth / ACL
+                participant R as Retriever
+                participant O as LLM Orchestrator
+                participant L as LLM Provider
+                U->>API: Send message
+                API->>A: Authenticate + tenant policy
+                A-->>API: Principal + allowed documents
+                API->>R: Query + ACL + index version
+                R-->>API: Reranked chunks + citations
+                API->>O: Prompt + token/deadline budget
+                O->>L: Stream generation
+                L-->>U: Tokens through API with citations
+        ''',
+        "pipeline": '''
+            sequenceDiagram
+                participant C as Client
+                participant API as Upload API
+                participant O as Object Storage
+                participant Q as Stage Queue
+                participant W as Worker
+                participant DB as Job Database
+                C->>API: Create upload / job
+                API-->>C: Pre-signed multipart URL
+                C->>O: Upload bytes + checksum
+                C->>API: Complete upload
+                API->>DB: Atomic job + outbox
+                API->>Q: Publish stage pointer
+                Q->>W: At-least-once delivery
+                W->>DB: Idempotent stage transition
+        ''',
+        "video": '''
+            sequenceDiagram
+                participant C as Camera
+                participant E as Edge Gateway
+                participant K as Kafka / Stream
+                participant G as GPU Worker
+                participant S as Event Store
+                participant D as Dashboard
+                C->>E: Encoded stream
+                E->>K: Timestamped segment reference
+                K->>G: Partition by camera / site
+                G->>G: Decode + sample + inference
+                G->>S: Detection + evidence pointer
+                S-->>D: Alert / searchable event
+        ''',
+        "workflow": '''
+            sequenceDiagram
+                participant C as Client / Station
+                participant API
+                participant DB as PostgreSQL
+                participant O as Outbox
+                participant W as Rule / AI Worker
+                participant H as Human / Enterprise System
+                C->>API: Versioned idempotent command
+                API->>DB: State transition + outbox
+                DB-->>C: Resource / job ID
+                O->>W: At-least-once event
+                W->>DB: Conditional result update
+                DB->>H: Review / integration event
+        ''',
+        "planning": '''
+            sequenceDiagram
+                participant ERP
+                participant API as Planning API
+                participant S as Snapshot Builder
+                participant V as Solver
+                participant P as Plan Store
+                participant F as Factory / MES
+                ERP->>S: Demand + inventory + capacity events
+                API->>S: Freeze versioned planning snapshot
+                S->>V: Immutable input URI + constraints
+                V->>P: Candidate plan + diagnostics
+                API->>P: Validate / approve version
+                P->>F: Publish schedule with effective version
+        ''',
+        "notification": '''
+            sequenceDiagram
+                participant P as Producer
+                participant API
+                participant DB as Notification DB
+                participant Q as Priority Queue
+                participant V as Channel Provider
+                participant R as Receipt Processor
+                P->>API: Idempotent notification command
+                API->>DB: Notification + outbox
+                DB->>Q: Route by channel / priority
+                Q->>V: Send with provider idempotency key
+                V-->>R: Delivery callback
+                R->>DB: Verify and append attempt status
+        ''',
+        "task": '''
+            sequenceDiagram
+                participant C as Client
+                participant API as Task API
+                participant DB as Task State
+                participant S as Scheduler
+                participant W as Worker
+                participant O as Result Store
+                C->>API: Submit task + idempotency key
+                API->>DB: Persist task + outbox
+                DB->>S: Runnable task event
+                S->>W: Lease by resource class
+                W->>DB: Heartbeat / attempt state
+                W->>O: Store large result
+                W->>DB: Conditional completion
+        ''',
+        "realtime": '''
+            sequenceDiagram
+                participant C as Sender
+                participant G as WebSocket Gateway
+                participant L as Durable Log
+                participant B as Regional Broker
+                participant R as Recipient Gateway
+                participant D as Recipient Device
+                C->>G: Message + client operation ID
+                G->>L: Append in conversation order
+                L-->>G: Durable sequence number
+                G->>B: Fan-out envelope
+                B->>R: Route to active connection
+                R-->>D: Deliver message
+                D-->>L: Advance durable cursor / receipt
+        ''',
+    }
+    data_flows: dict[str, str] = {
+        "rag": '''flowchart LR
+            Docs["Documents"] --> Object[(Object storage: binary truth)]
+            Object --> Ingest["Parse + chunk + embed"]
+            Ingest --> Vector[(Vector DB: derived index)]
+            Ingest --> Meta[(PostgreSQL: metadata + ACL truth)]
+            Query --> Vector --> Context
+            Meta -->|ACL filter| Context
+            Context --> LLM --> Answer''',
+        "pipeline": '''flowchart LR
+            Upload --> Object[(Object storage: byte truth)]
+            Object --> Queue[(Stage transport)]
+            Queue --> Process["Scan / parse / transform"]
+            Process --> Artifact[(Versioned artifacts)]
+            Process --> Meta[(PostgreSQL: job truth)]
+            Meta --> Status["Redis: rebuildable status projection"]''',
+        "video": '''flowchart LR
+            Camera --> Segment[(Object storage: video segments)]
+            Camera --> Stream[(Partitioned event stream)]
+            Stream --> Inference
+            Inference --> Events[(Event store: detections)]
+            Inference --> Clip[(Evidence clips)]
+            Events --> Search["Search / dashboard projection"]''',
+        "workflow": '''flowchart LR
+            Command --> PG[(PostgreSQL: workflow truth)]
+            Media --> Object[(Object storage: evidence truth)]
+            PG --> Outbox[(Outbox)] --> Bus[(Event transport)]
+            Bus --> Workers
+            Workers --> PG
+            PG --> Warehouse["Analytics: derived history"]''',
+        "planning": '''flowchart LR
+            ERP["ERP / MES / IoT"] --> Lake[(Raw event / snapshot history)]
+            Lake --> Snapshot["Immutable planning snapshot"]
+            Snapshot --> Solver
+            Solver --> Plans[(Versioned plan truth)]
+            Plans --> Publisher --> Factory
+            Plans --> Analytics["Derived KPI projection"]''',
+        "notification": '''flowchart LR
+            Command --> PG[(PostgreSQL: notification intent)]
+            PG --> Outbox --> Queue[(Delivery transport)]
+            Queue --> Provider
+            Provider --> Receipts[(Attempt / receipt history)]
+            PG --> Redis["Redis: preference + quota cache"]
+            Receipts --> Analytics["Derived delivery analytics"]''',
+        "task": '''flowchart LR
+            Submit --> PG[(PostgreSQL: task state truth)]
+            PG --> Outbox --> Queues[(Resource queues)]
+            Queues --> Worker
+            Payload[(Object storage: large payload)] --> Worker
+            Worker --> Result[(Object storage: result)]
+            Worker --> PG''',
+        "realtime": '''flowchart LR
+            Send --> Log[(Durable message log)]
+            Log --> Broker[(Regional fan-out transport)]
+            Broker --> Connections["Ephemeral connections"]
+            Connections --> Devices
+            Log --> History["History projection / API"]
+            Attachment --> Object[(Object storage)]''',
+    }
+    source_rows: dict[str, str] = {
+        "rag": "| Conversation/message/ACL | PostgreSQL | Transactional metadata |\n| Original document | Object storage | Immutable binary/version |\n| Embedding index | Vector DB | Derived; rebuild from document + model version |\n| Session/config cache | Redis | Derived, TTL-bound |\n| Ingestion event | Queue/log | Transport and replay cursor, not document truth |",
+        "pipeline": "| Job/stage state | PostgreSQL | Conditional transition and audit |\n| Uploaded bytes/artifacts | Object storage | Checksum + versioned binary truth |\n| Stage message | Queue | Delivery transport; may duplicate |\n| Fast status | Redis | Rebuildable projection |",
+        "video": "| Raw segment/evidence clip | Object storage | Retention/lifecycle binary truth |\n| Detection event | Event store | Searchable event truth |\n| Camera/config/model version | PostgreSQL | Control-plane truth |\n| Kafka record | Stream | Ordered transport within partition |",
+        "workflow": "| Business workflow + decision | PostgreSQL | Invariant and audit truth |\n| Image/document evidence | Object storage | Immutable content truth |\n| Integration event | Outbox + bus | Reliable intent/transport |\n| Cache/analytics | Redis/warehouse | Derived and rebuildable |",
+        "planning": "| Input snapshot | Object/lake storage | Immutable solver input |\n| Approved plan version | Plan store/PostgreSQL | Published schedule truth |\n| Disruption event | Event log | Ordered integration history |\n| KPI/dashboard | Warehouse/cache | Derived projection |",
+        "notification": "| Notification intent/preference | PostgreSQL | Command and compliance truth |\n| Delivery attempt/receipt | Append history | Provider outcome evidence |\n| Queue message | Queue | Transport; may redeliver |\n| Template/quota cache | Redis | Derived versioned state |",
+        "task": "| Task/attempt state | PostgreSQL | Authoritative state machine |\n| Payload/result bytes | Object storage | Versioned large data |\n| Queue message/lease | Queue | Scheduling transport |\n| Status cache | Redis | Rebuildable projection |",
+        "realtime": "| Message + sequence | Durable log | Conversation history truth |\n| Membership/ACL | PostgreSQL | Authorization truth |\n| Presence/connection route | Redis/registry | Ephemeral lease |\n| Attachment | Object storage | Binary truth |",
+    }
+    return dedent(f'''\
+    ### Diagram 2 — Request / Sequence Flow
+
+    {mermaid_block(sequences[profile])}
+
+    Flow đồng bộ chỉ giữ các bước cần cho user-visible result. Work dài, fan-out hoặc có thể replay đi qua durable queue/log. Mỗi command có operation ID; state transition dùng unique constraint hoặc expected version.
+
+    ### Diagram 3 — Data Flow and Source of Truth
+
+    {mermaid_block(data_flows[profile])}
+
+    | Data | Source of Truth | Lý do |
+    |---|---|---|
+    {source_rows[profile]}
+
+    “Source of truth” nghĩa là nơi quyết định authoritative state sau recovery. Cache, search/vector index và analytics là projection: có thể stale và phải rebuild được từ durable source + version metadata.
+
+    ### Diagram 4 — Scaling Architecture
+
+    ```mermaid
+    flowchart TB
+        Client --> GlobalLB["Global / regional load balancer"]
+        GlobalLB --> CellA
+        GlobalLB --> CellB
+        subgraph CellA["Cell A: tenant / partition group"]
+            APIA["API replicas"] --> CacheA[(Cache)]
+            APIA --> DBA[(Primary + replicas)]
+            APIA --> QueueA[(Partitioned queue)]
+            QueueA --> WorkerA["Specialized workers"]
+        end
+        subgraph CellB["Cell B: independent blast radius"]
+            APIB["API replicas"] --> DBB[(Primary + replicas)]
+            APIB --> QueueB[(Partitioned queue)]
+        end
+    ```
+
+    Cell/partition chỉ xuất hiện khi tenant/data/traffic đủ lớn hoặc cần blast-radius isolation. HPA/autoscaling bị cap bởi DB connection, provider quota, storage bandwidth và worker resource; queue age tốt hơn queue length khi task runtime khác nhau.
+
+    ### Diagram 5 — Failure and Recovery Flow
+
+    ```mermaid
+    flowchart TD
+        Request --> Dependency
+        Dependency -->|timeout / unavailable| Timeout
+        Timeout --> Classify{{"Safe and retryable?"}}
+        Classify -->|yes, budget remains| Backoff["Backoff + full jitter"]
+        Backoff --> Dependency
+        Classify -->|no / circuit open| Degrade["Fallback / queue / fail fast"]
+        Degrade --> Durable[(Record durable status)]
+        Durable --> Reconcile["Replay / reconciliation"]
+        Reconcile --> Verify["Verify user state and SLO"]
+    ```
+
+    Retry không được vượt end-to-end deadline hoặc tạo duplicate effect. Circuit breaker, bulkhead và rate limit giới hạn propagation; reconciliation xử lý outcome “unknown” mà synchronous retry không thể chứng minh.
+
+    ### Diagram 6 — Observability Trace
+
+    ```mermaid
+    sequenceDiagram
+        participant C as Client
+        participant G as Gateway
+        participant A as API
+        participant D as Database / Cache
+        participant Q as Queue
+        participant W as Worker
+        C->>G: traceparent + request
+        G->>A: gateway span
+        A->>D: dependency span + pool wait
+        A->>Q: event with trace / operation ID
+        Q->>W: async continuation span
+        W->>D: state transition span
+        Note over A,W: Metrics: RPS, p50/p95/p99, errors, saturation, queue age
+    ```
+
+    Log có `trace_id`, `operation_id`, tenant đã hash, version và typed error; không log token/PII/raw document mặc định. Alert dựa user SLI và multi-window burn rate, kết hợp queue age, pool wait, cache hit, DB/resource saturation.
+
+    ### Architecture Evolution — Start Simple, Add Only for Measured Pain
+
+    | Stage | Architecture | Khi nào đủ / vấn đề buộc thay đổi |
+    |---|---|---|
+    | **V1 — ~100 RPS** | 2 API instance, PostgreSQL, object storage nếu có binary; background worker đơn giản | Dễ deploy/debug. **Không** dùng Kafka, sharding hay nhiều microservice nếu vẫn đạt SLO/RTO. |
+    | **V2 — ~5,000 RPS** | Load balancer, API scale ngang, Redis cho hot derived read, durable queue, worker pool, read replica cho stale read | Thêm vì cacheable read, burst/long work và deployment isolation đã được đo. Giữ global DB/pool budget. |
+    | **V3 — 20,000+ RPS / large data** | Partition/cell theo tenant/key, specialized workers, event-driven projection, tiered storage và isolation quota | Chỉ thêm khi hot partition, write/connection/storage ceiling hoặc blast radius không còn đáp ứng SLO. |
+
+    **Bottleneck gates:** trước mỗi bước, ghi metric trigger cụ thể—DB CPU/pool wait, cache hit, queue age, partition skew, provider quota hoặc cost/success. “Có thể scale” không phải lý do đủ để thêm component.
+
+    ## Failure Scenarios
+
+    | Failure | Detection | Immediate mitigation | Durable design |
+    |---|---|---|---|
+    | API instance down | readiness, 5xx, connection reset | LB loại instance, drain/restart | ≥2 AZ, stateless API, graceful shutdown |
+    | Database down/failover | connect errors, replica/HA event | shed write, read-only/degraded mode | tested failover, backup restore, RPO/RTO |
+    | Redis down | timeout, hit ratio collapse | circuit-open, stale/bounded fallback | DB protection, TTL jitter, cache warm plan |
+    | Queue unavailable | publish error/outbox age | persist intent, pause noncritical producer | outbox, HA broker, replay runbook |
+    | Worker down | oldest age/lease expiry | autoscale/restart, requeue safely | heartbeat, idempotency, DLQ |
+    | Network timeout | dependency span/deadline | fail fast or bounded retry | propagated deadline, operation status |
+    | Duplicate request | same idempotency key | return prior/in-progress result | atomic dedupe + payload hash |
+    | Duplicate event | inbox unique conflict | ACK duplicate after verifying result | idempotent consumer + reconciliation |
+    | Slow dependency | p99, saturation, circuit state | bulkhead, fallback, rate limit | capacity contract and load/fault tests |
+    | Traffic spike / partial failure | SLO burn, queue/pool age | load shed, priority, degrade features | quota, cell isolation, pre-scale plan |
+
+    ## Security Deep Dive
+
+    - **Authentication:** OIDC/OAuth2 at edge; short-lived credential, issuer/audience validation and revocation/rotation plan.
+    - **Authorization:** resource + action + tenant/ACL enforced server-side; admin/human override requires step-up and immutable audit.
+    - **Input boundary:** schema/size/content-type validation, malware/archive-bomb protection and signed upload URL with narrow scope.
+    - **Transport/storage:** TLS/mTLS where trust boundary requires, KMS-backed encryption, per-service IAM and secret manager—not secrets in image/log.
+    - **Privacy:** data classification, PII redaction, retention/legal hold, regional residency and deletion propagated to derived indexes/backups policy.
+    - **Abuse:** per-user/tenant/provider rate limit, quota, cost ceiling and anomaly signal; deny-by-default for cross-tenant access.
+
+    ## How to explain this design in an interview
+
+    1. **Clarify requirements:** core user journey, tenant/geography, correctness, latency/availability, retention/compliance và out-of-scope.
+    2. **Estimate scale:** average/peak RPS, concurrency (`RPS × latency`), bytes/day, retention, worker/provider/GPU demand.
+    3. **Start simple:** V1 với ít component nhất; chỉ rõ PostgreSQL/object store nào là source of truth.
+    4. **Identify bottleneck:** dùng con số để chọn DB/cache/queue/partition deep dive; không liệt kê tool.
+    5. **Evolve architecture:** V2/V3 giải quyết bottleneck cụ thể và nêu cost/coupling mới.
+    6. **Discuss failure:** timeout, retry budget, idempotency, circuit/bulkhead, DLQ, degraded mode và reconciliation.
+    7. **Discuss security/observability:** identity/tenant/PII, SLI, trace async và alert burn-rate.
+    8. **Close with trade-offs:** assumption nào rủi ro nhất, metric nào khiến đổi design và bước tương lai nào chưa cần hôm nay.
+    ''')
+
+
 def system_design_doc(filename: str, d: dict[str, str]) -> str:
     q_basic, q_senior, answers, followups = question_sections(
         "11-system-design", filename, d["title"], f"{d['title']} là hệ thống để {d['goal']}."
     )
+    deep_section = "\n" + system_design_deep_dive(filename, d)
     return dedent(f'''\
     # Design: {d["title"]}
 
@@ -1421,7 +2523,7 @@ def system_design_doc(filename: str, d: dict[str, str]) -> str:
 
     ```mermaid
     flowchart LR
-        {d["nodes"]}
+    {d["nodes"]}
     ```
 
     ### Database
@@ -1508,6 +2610,8 @@ def system_design_doc(filename: str, d: dict[str, str]) -> str:
     ### Future Improvements
 
     Cell-based isolation, per-tenant quota, adaptive load shedding, tiered storage, automated reconciliation, chaos drill và cost-per-success dashboard. Chỉ thêm multi-region/sharding khi metric chứng minh giới hạn.
+
+    {deep_section}
 
     ## 8. Interview Questions
 
@@ -1601,6 +2705,32 @@ def main_readme() -> str:
     |---|---|
     {rows}
 
+    ## Architecture Diagrams
+
+    Các P0/P1 topic có concept/request/data/failure diagram phù hợp; 11 System Design Lab có ít nhất 6 diagram/bài: high-level, sequence, source-of-truth data flow, scaling, failure/recovery và observability trace. Bắt đầu từ [System Design Dashboard](11-system-design/README.md).
+
+    ## Deep Dive Topics
+
+    - [Python memory model](01-python-core/python-memory-model.md), [GIL](02-python-concurrency/gil.md), [AsyncIO](02-python-concurrency/asyncio.md), [Event Loop](02-python-concurrency/event-loop.md).
+    - [FastAPI request lifecycle](03-fastapi/request-lifecycle.md) và [sync vs async endpoint](03-fastapi/sync-vs-async-endpoint.md).
+    - [PostgreSQL Index](04-database-postgresql/index.md), [EXPLAIN ANALYZE](04-database-postgresql/explain-analyze.md), [MVCC](04-database-postgresql/mvcc.md) và [Transactions](04-database-postgresql/transaction.md).
+    - [Redis Internals](06-redis/redis-internals.md), [Celery Task Lifecycle](07-celery/task-lifecycle.md), [Outbox Pattern](10-distributed-systems/outbox-pattern.md).
+    - [RAG](18-ai-integration/rag.md) và [Production AI System](18-ai-integration/production-ai-system.md).
+
+    ## System Design Labs
+
+    Các lab dạy cách nói trong interview theo flow **clarify → estimate → V1 → bottleneck → evolution → failure → security/observability → trade-off**. Ưu tiên: [AI Chatbot](11-system-design/design-ai-chatbot.md), [Vehicle Warranty](11-system-design/design-vehicle-warranty.md), [Document Processing](11-system-design/design-document-processing.md), [Video Analytics](11-system-design/design-video-processing.md) và [Production Planning](11-system-design/design-production-planning.md).
+
+    ## Production Failure Scenarios
+
+    Drill [API latency regression](20-senior-scenarios/api-slow.md), [PostgreSQL high CPU](20-senior-scenarios/database-high-cpu.md), [Redis outage](20-senior-scenarios/redis-down.md), [duplicate Celery task](20-senior-scenarios/celery-task-duplicate.md), [memory leak](20-senior-scenarios/memory-leak.md) và [scale 1k→20k RPS](20-senior-scenarios/high-traffic.md).
+
+    ## Interview Question Bank
+
+    - [Top 50 Senior Backend Questions](22-mock-interview/top-50-senior-backend-questions.md)
+    - [Top 30 System Design Questions](22-mock-interview/top-30-system-design-questions.md)
+    - [Full Mock Interview — 110 minutes](22-mock-interview/full-mock-interview.md)
+
     ## Progress Tracker
 
     - [ ] Python Core
@@ -1652,6 +2782,7 @@ def roadmap_files() -> dict[str, str]:
         - [30-day Plan](30-day-plan.md)
         - [14-day Crash Plan](14-day-crash-plan.md)
         - [Interview Checklist](interview-checklist.md)
+        - [Repository Depth Audit](repository-audit.md)
         - [Main Dashboard](../README.md)
         '''),
         "priority-topics.md": dedent('''
@@ -1789,11 +2920,54 @@ def make_plan(days: int) -> str:
 
 def index_readme(folder: str) -> str:
     label = CATEGORY[folder]["label"]
-    links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in STRUCTURE[folder] if name != "README.md")
+    names = [name for name in STRUCTURE[folder] if name != "README.md"]
+    links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in names)
+    must_map: dict[str, list[str]] = {
+        "01-python-core": ["python-memory-model.md", "gc-reference-counting.md", "mutable-immutable.md", "generators-iterators.md", "context-manager.md"],
+        "02-python-concurrency": ["gil.md", "asyncio.md", "event-loop.md", "coroutine-task-future.md", "cpu-vs-io-bound.md"],
+        "03-fastapi": ["architecture.md", "request-lifecycle.md", "sync-vs-async-endpoint.md", "dependency-injection.md", "performance.md"],
+        "04-database-postgresql": ["index.md", "explain-analyze.md", "transaction.md", "isolation-level.md", "mvcc.md", "connection-pooling.md"],
+        "05-sqlalchemy": ["session-lifecycle.md", "transaction.md", "n-plus-one.md", "relationship-loading.md", "async-sqlalchemy.md"],
+        "06-redis": ["redis-internals.md", "caching.md", "cache-patterns.md", "persistence.md", "sentinel-cluster.md", "failure-scenarios.md"],
+        "07-celery": ["architecture.md", "task-lifecycle.md", "retry.md", "idempotency.md", "exactly-once-myth.md", "production-problems.md"],
+        "08-api-design": ["rest-api.md", "idempotency.md", "retry-timeout.md", "authentication-authorization.md", "api-security.md"],
+        "10-distributed-systems": ["fundamentals.md", "idempotency.md", "retry.md", "timeout.md", "circuit-breaker.md", "outbox-pattern.md"],
+        "11-system-design": ["system-design-framework.md", "capacity-estimation.md", "caching.md", "database-scaling.md", "observability.md"],
+        "13-kubernetes": ["architecture.md", "resource-limit.md", "health-check.md", "hpa.md", "rolling-update.md", "troubleshooting.md"],
+        "16-security": ["web-security.md", "owasp-top-10.md", "oauth2.md", "secrets-management.md", "api-security.md"],
+        "17-performance-reliability": ["performance-debugging.md", "load-testing.md", "observability.md", "metrics-logging-tracing.md", "sli-slo-sla.md", "incident-debugging.md"],
+        "18-ai-integration": ["ai-system-overview.md", "llm-basics-for-backend.md", "rag.md", "embeddings.md", "vector-database.md", "production-ai-system.md"],
+    }
+    must = [name for name in must_map.get(folder, names[: min(5, len(names))]) if name in names]
+    nice = [name for name in names if name not in must]
+    learning = " → ".join(f"[{title_from_name(name)}]({name})" for name in must)
+    must_links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in must)
+    nice_links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in nice[:8]) or "- Hoàn thiện các topic còn lại sau khi tự trả lời được P0."
     return dedent(f'''\
     # {label}
 
-    Module này được học theo **Why → How → Trade-off → Production**. Mỗi topic có 10 Basic, 10 Senior, 5 Scenario, 5 Follow-up và short-answer rubric.
+    Module này được học theo **Why → How → Internals → Flow → Failure → Trade-off → Production**. Không đọc alphabet; đi theo dependency dưới đây và tự vẽ lại diagram trước khi xem.
+
+    ## Learning order
+
+    {learning}
+
+    ## Must know
+
+    {must_links}
+
+    ## Nice to know / second pass
+
+    {nice_links}
+
+    ## Recommended exercises
+
+    1. Giải thích mỗi Must-know topic trong 2 phút, không nhìn note; interviewer hỏi “why?” ít nhất ba lần.
+    2. Vẽ request/data/failure flow từ trí nhớ và đánh dấu source of truth, queue, timeout, retry, metric.
+    3. Chọn một production incident liên quan **{label}**, trình bày mitigation trước root cause và long-term prevention.
+    4. Load/fault test một assumption: bottleneck, duplicate, stale state hoặc dependency outage.
+
+    ## All topics
 
     {links}
 
@@ -2110,8 +3284,154 @@ def full_mock() -> str:
     ''')
 
 
+TOP_50_QUESTIONS: list[tuple[str, str, str]] = [
+    ("Why does CPython have a GIL, and what changes in a free-threaded build?", "Phân biệt language với CPython; runtime state/refcount, I/O release, C extension compatibility và synchronization vẫn cần.", "Does the GIL make compound operations thread-safe? When do threads still help?"),
+    ("What actually happens when a Python reference count reaches zero?", "Deallocation/refcount cascading trong CPython; cycle cần GC; `del` chỉ bỏ binding; external resource dùng deterministic cleanup.", "What retains an object after a request ends? Why can RSS stay high after objects are freed?"),
+    ("Why does CPython need a cyclic garbage collector in addition to reference counting?", "Cycle giữ refcount > 0; tracked containers/generational collection; version-dependent policy và GC pause/retention trade-off.", "What objects are tracked? When would disabling GC be reasonable?"),
+    ("What does `await` do internally?", "Coroutine yields awaitable/Future; Task registers continuation; loop resumes on completion. `await` không tạo thread và có thể không yield.", "How does cancellation enter a coroutine? What if the awaited function blocks?"),
+    ("How does an event loop know that a socket is ready?", "Non-blocking FD + OS readiness mechanism như epoll/kqueue/IOCP; callback vào ready queue; implementation depends on platform/loop.", "What is event-loop lag? How would you measure it?"),
+    ("Why is CPU-heavy work dangerous inside an async endpoint?", "Giữ event-loop thread/GIL-enabled bytecode, trì hoãn socket/timer/cancellation; process/native/queue và bounded concurrency.", "Would adding more Uvicorn workers fix it? What happens to DB connections?"),
+    ("When would threads outperform AsyncIO, and when would processes outperform threads?", "Blocking library/I/O với thread; high fan-out async-compatible I/O với AsyncIO; pure Python CPU với process, cân nhắc IPC/memory/startup.", "How would you benchmark using production-like workload?"),
+    ("How can a race condition happen even with the GIL?", "Invariant nhiều bytecode/read-modify-write, C calls release GIL, I/O interleaving; lock/atomic DB operation/immutability.", "Which built-in operations are implementation details rather than guarantees?"),
+    ("Walk me through a FastAPI request from the socket to the response.", "Uvicorn → ASGI scope/receive/send → middleware → routing → DI → Pydantic → endpoint → serialization/cleanup.", "Where are sync dependencies executed? When is a yielded dependency cleaned up?"),
+    ("What happens if a FastAPI `async def` endpoint calls `requests.get()`?", "Utility sync call chạy ngay trên loop; blocking stalls all connections in that worker; use async client or bounded offload.", "How would traces and loop-lag metrics prove this?"),
+    ("How do worker count, thread pool, and DB pool interact in FastAPI?", "Mỗi process có loop/thread/pool; total connection multiplication; pool wait/admission; scaling API có thể overload DB.", "Build a connection budget for 100 pods and a 500-connection database."),
+    ("Why can dependency injection create hidden production cost?", "Graph resolution, sync dependency offload, resource scope, duplicate network calls và over-broad transaction; explicit boundary/telemetry.", "Which dependencies should be cached per request?"),
+    ("Why can adding a PostgreSQL index make writes slower?", "B-tree maintenance, page split, WAL, cache footprint, vacuum/bloat; every INSERT/UPDATE/DELETE touches relevant indexes.", "When is a partial or covering index worth the cost?"),
+    ("How does a PostgreSQL B-tree find a heap row?", "Root/internal/leaf pages, index tuple/key/TID, heap visibility check; index-only scan + visibility map.", "Why might a B-tree index still not be chosen?"),
+    ("How does MVCC avoid blocking readers and writers?", "Tuple versions, xmin/xmax, snapshot visibility; writer creates new version, reader sees snapshot; conflict vẫn có ở writer/lock.", "How do long transactions cause bloat and vacuum problems?"),
+    ("What is the difference between Read Committed, Repeatable Read, and Serializable in PostgreSQL?", "Snapshot scope/anomalies, PostgreSQL SSI và whole-transaction retry; chọn theo invariant.", "Show a write-skew or lost-update example and fix it."),
+    ("How do you read `EXPLAIN (ANALYZE, BUFFERS)`?", "Node deepest mismatch, estimate vs actual, loops, rows removed, join/scan, spill/temp, shared hit/read và DML safety.", "Why can a locally fast plan be slow under production concurrency?"),
+    ("When does PostgreSQL choose Seq Scan, Index Scan, Index Only Scan, or Bitmap Heap Scan?", "Selectivity, heap/page locality, visibility map, random vs sequential cost, multiple predicates.", "How would stale statistics change the choice?"),
+    ("Compare Nested Loop, Hash Join, and Merge Join.", "Input size/order/index/memory; row-estimate error; spill/batch; nested loop amplification.", "Which plan symptom suggests the join type is wrong because of misestimation?"),
+    ("Why can a database connection pool become a bottleneck?", "Bounded admission; request waits; long transaction/query holds slot. Oversized pool shifts queue to DB and adds contention.", "Which metrics separate query latency from pool wait?"),
+    ("How would you index a 500-million-row warranty table?", "Access patterns/selectivity/composite order/partial/covering/partition, write/WAL/storage cost; representative EXPLAIN.", "How do data skew and retention change the design?"),
+    ("What causes a PostgreSQL deadlock and how do you fix it?", "Cycle in wait graph, victim abort; consistent lock order, shorter transaction, index fewer rows, retry whole tx with jitter.", "How is a deadlock different from a long lock wait?"),
+    ("Why is Redis fast beyond simply storing data in RAM?", "Specialized encodings/data structures, mostly serialized command execution, event loop và low round trips; O(N)/big key blocks others.", "How do I/O threads change—and not change—the model?"),
+    ("What happens when Redis disappears during a traffic spike?", "Circuit, cache miss storm, DB overload, bounded stale fallback, rate limit/coalescing, jittered reconnect/warm-up.", "Which endpoints fail open versus fail closed?"),
+    ("How do TTL, eviction, and expiration differ in Redis?", "TTL semantic lifetime; passive/active expiry; eviction under maxmemory policy; none guarantee business invalidation.", "How do synchronized expirations create an outage?"),
+    ("When is a Redis distributed lock unsafe?", "Lease expiry/pause/partition/failover; stale owner writes. Owner token compare-delete, fencing, DB constraint; safety vs liveness.", "Would Redlock protect a financial invariant? What remains at the storage boundary?"),
+    ("How do Redis Sentinel and Redis Cluster differ?", "Sentinel HA non-sharded; Cluster 16,384 slots/sharding/failover; redirects, cross-slot, hot key, async replication loss window.", "How does a client behave during reshard/failover?"),
+    ("Why can a Celery task run twice?", "Worker commit then crash before ACK, lease/visibility timeout, producer retry/failover; delivery/effect scopes.", "Compare early ACK and late ACK failure windows."),
+    ("How do you make a Celery task idempotent?", "Business key, unique constraint/inbox, conditional transition, provider idempotency/ledger, return prior result, reconcile.", "Why is a Redis lock not sufficient?"),
+    ("How do prefetch and task routing affect Celery fairness?", "Reserved local tasks, long-vs-short head-of-line, queue/resource/SLO isolation, throughput vs fairness.", "Which metric is better than queue length for variable runtime tasks?"),
+    ("Why is exactly-once processing difficult?", "Ack/commit crash window, external effect outside broker transaction; define scope; at-least-once + idempotency + reconciliation.", "Can Kafka exactly-once semantics make an email send exactly once?"),
+    ("Why is retry dangerous?", "Load amplification, synchronized retry, deadline exhaustion, duplicate non-idempotent effect; classify transient, backoff/full jitter/budget/circuit.", "Which HTTP/DB errors are retryable and at what layer?"),
+    ("How should timeouts be budgeted across a service call chain?", "End-to-end deadline minus queue/serialization, connect/read/pool timeouts, child shorter than parent, cancellation propagation.", "What if the server commits after the caller times out?"),
+    ("How does a circuit breaker work internally?", "Closed/Open/Half-Open, rolling failure/slow-call threshold, cooldown/probes; scope/bulkhead/fallback.", "How can a badly scoped breaker increase blast radius?"),
+    ("How does the transactional outbox solve the dual-write problem?", "Business row + outbox same DB tx; relay poll/CDC; publish duplicate possible; consumer dedupe/monitor outbox age.", "What if the relay publishes and crashes before marking the row?"),
+    ("Compare choreography and orchestration for a Saga.", "Visibility/coupling/coordinator; compensation failure/idempotency, no isolation, irreversible step/human review.", "When is a local transaction better than a Saga?"),
+    ("How would you prevent duplicate payment or warranty claim requests?", "Tenant-scoped idempotency key + canonical payload hash + atomic business write/response; external provider key and ledger.", "What TTL is safe, and what if the duplicate arrives after TTL?"),
+    ("What is eventual consistency, and how do you make it acceptable to users?", "Staleness window, version/cursor/read-your-write/session semantics, status projection, reconciliation and transparent UI.", "How do you measure convergence time?"),
+    ("What does CAP theorem actually say during a network partition?", "For replicated operation under partition choose availability response vs consistency/linearizability; not a database ranking and not normal-state latency.", "Can different operations choose differently?"),
+    ("How would you identify whether latency comes from application, database, or network?", "End-to-end trace + queue/service time, loop/pool wait, DB wait/plan, DNS/connect/TLS, RED/USE baseline.", "What evidence would make you stop scaling application pods?"),
+    ("How do you design graceful degradation?", "Prioritize critical journey, stale/read-only/queued/fail-fast semantics, circuit/bulkhead/load shed, explicit user status and recovery reconciliation.", "Which data may be stale, and for how long?"),
+    ("How do SLI, SLO, SLA, and error budgets change engineering decisions?", "User-visible good/valid events, internal target vs contract, burn-rate, release/risk trade-off.", "Why is average availability or latency insufficient?"),
+    ("What should a production trace contain across an async queue?", "Trace context/links, operation/message ID, producer/consumer spans, queue delay vs processing, version/tenant safe tags.", "How do you avoid high-cardinality telemetry?"),
+    ("Why can Kubernetes HPA make an outage worse?", "Scale API based CPU while DB/provider saturated; startup lag, request denominator, reconnect storm. Custom queue age and downstream cap.", "How do stabilization and readiness affect scaling?"),
+    ("Explain Kubernetes CPU requests, CPU limits, and memory limits under load.", "Scheduler uses requests; CPU limit throttles; memory limit may OOM; HPA utilization denominator; workload-dependent limit policy.", "Why can p99 be bad when node CPU looks free?"),
+    ("How do you deploy a database-dependent change without downtime?", "Expand/contract schema, backward-compatible app, online index/backfill throttle/checkpoint, dual-read compare, canary and rollback.", "What makes a migration irreversible?"),
+    ("How would you secure a multi-tenant backend beyond validating JWTs?", "Resource-level authorization, tenant context isolation, DB/query guard, IAM/secret, rate quota, audit, PII encryption/redaction.", "How would you test cross-tenant access systematically?"),
+    ("How does a RAG request flow from user query to cited answer?", "Auth/ACL, embed/hybrid retrieve, rerank, token pack, prompt/model, citation/abstention; version and metrics.", "How do you distinguish retrieval failure from generation failure?"),
+    ("What is the source of truth in an AI system with PostgreSQL, S3, a vector DB, and Redis?", "S3 binary, PG metadata/ACL/workflow, vector derived index, Redis cache; rebuild/version/delete propagation.", "What happens during an embedding model migration?"),
+    ("How do you scale an API from 1,000 to 20,000 RPS without overloading PostgreSQL?", "Measure sustainable worker, async/nonblocking, LB/pods, global pool budget, cache, replicas for stale read, queue, HPA cap, rate limit/load shed.", "Which component would you add first at 100 RPS, and which would you explicitly avoid?"),
+]
+
+
+def top_50_questions_doc() -> str:
+    sections = []
+    for number, (question, focus, followup) in enumerate(TOP_50_QUESTIONS, 1):
+        sections.append(dedent(f'''
+        ### {number}. {question}
+
+        **What a senior answer should cover:** {focus}
+
+        **Likely follow-up:** {followup}
+        '''))
+    return dedent(f'''\
+    # Top 50 Senior Backend Interview Questions
+
+    Dùng như active-recall bank. Trả lời câu chính trong 90–120 giây theo **definition → mechanism → trade-off → production evidence**; sau đó trả lời follow-up mà không nhìn note.
+
+    {''.join(sections)}
+
+    ## Self-scoring
+
+    - **0:** chỉ biết keyword hoặc sai mechanism.
+    - **1:** definition đúng nhưng thiếu internals/failure.
+    - **2:** có mechanism, trade-off và ví dụ production.
+    - **3:** định lượng, nói rõ assumption/version, degraded mode, observability và alternative đơn giản hơn.
+    ''')
+
+
+SYSTEM_DESIGN_30: list[tuple[str, str, str, str, str, str]] = [
+    ("AI Chatbot Platform", "tenant, private docs, citations, streaming, quality SLO", "ACL-aware RAG and probabilistic quality", "LLM quota/TTFT and vector recall", "PG metadata + object/vector derived index + orchestrator", "How do you survive provider outage and prompt injection?"),
+    ("Intelligent Document Processing", "file types/size, OCR accuracy, review, retention", "versioned multi-stage workflow", "large file/GPU/OCR queue age", "pre-signed upload + object truth + idempotent stage queue", "How do you retry one failed page without duplicating the job?"),
+    ("Video Analytics Platform", "camera count/bitrate, alert latency, retention", "continuous ingest and GPU backpressure", "network/GPU/partition skew/storage", "edge segment + Kafka by camera + GPU pools + event store", "When do you sample/drop frames, and how is evidence preserved?"),
+    ("Vehicle Inspection Platform", "station/offline mode, media, AI + human decision", "evidence immutability and auditable workflow", "upload bandwidth/AI queue/human review", "PG workflow + object evidence + outbox + review", "How do you handle model disagreement or station reconnect?"),
+    ("Vehicle Warranty System", "eligibility, claim, settlement, policy versions", "money invariant and temporal rules", "500M history/query/enterprise integration", "PG claim truth + versioned rules + ledger + outbox", "How do you prevent duplicate claims and reconcile payment?"),
+    ("Manufacturing Production Planning", "plants/lines/BOM/demand/solver latency", "consistent immutable planning snapshot", "solver compute/stale inputs/hot plant", "lake snapshot + workflow + solver + versioned plan publish", "What happens if ERP changes while solving?"),
+    ("Real-time Chat", "DM/group, ordering, presence, offline sync", "ordering scope and multi-device fan-out", "hot group/connections/fan-out", "WebSocket gateway + partitioned log + broker + history", "How do clients resume without missing or duplicating messages?"),
+    ("Notification System", "channels, priority, preference, campaign", "fan-out with provider quota/compliance", "provider throttling/large campaign", "intent DB + outbox + channel queues + receipt ledger", "How do transactional alerts bypass marketing backlog?"),
+    ("Distributed File Processing", "file size/stages/progress/replay", "resumable upload and stage idempotency", "bandwidth/transform workers/orphan artifact", "object bytes + job DB + stage queues + checksums", "How do you detect and clean partial artifacts?"),
+    ("Task Processing Platform", "runtime/resource class/priority/cancel", "lease, fairness, at-least-once state", "long task/starvation/noisy tenant", "task DB + outbox + scheduler + resource queues + result store", "What does cancel mean during an external side effect?"),
+    ("API Rate Limiter", "identity/scope/burst/global accuracy", "distributed counters and fail-open/closed", "hot identity/Redis outage/clock", "gateway token bucket + local shield + Redis atomic update", "How do login and catalog use different failure policy?"),
+    ("URL Shortener", "read/write ratio, custom alias, expiry", "unique ID and hot redirects", "cache miss/abuse/hot key", "ID service + PG/KV truth + CDN/cache", "How do you prevent enumeration and malicious links?"),
+    ("Search Autocomplete", "language/prefix/freshness/personalization", "low-latency ranking and index refresh", "hot prefix/index memory", "offline trie/index build + online cache/ranker", "How do you publish a new index atomically?"),
+    ("Metrics Monitoring Platform", "cardinality, scrape/push, retention, query", "high-volume time-series ingest", "cardinality/storage/query fan-out", "ingest shards + WAL + TSDB + downsampling", "How do you prevent one tenant from exploding cardinality?"),
+    ("Distributed Log Service", "ordering/durability/retention/consumer", "partition leadership and replication", "hot partition/disk/network", "partitioned append log + replicas + consumer offsets", "What acknowledgement level meets the durability SLO?"),
+    ("Payment Processing", "authorize/capture/refund/currency/ledger", "idempotent money movement and audit", "provider timeout/ledger contention", "API + double-entry ledger + outbox + provider adapter", "What if provider succeeds but your response times out?"),
+    ("Inventory Reservation", "stock unit/warehouse/expiry/oversell", "concurrent reservation invariant", "hot SKU/lock contention", "atomic DB counter/reservation + expiry events", "How do you release expired reservations exactly enough?"),
+    ("Order Management", "cart/order/payment/shipment/cancel", "cross-domain Saga and user-visible state", "payment/inventory partial failure", "order state machine + outbox + orchestrated Saga", "Which step is irreversible and how do you compensate?"),
+    ("Audit Logging", "events/tamper/retention/search/privacy", "immutable complete evidence", "write volume/index/retention", "append log + immutable object archive + search projection", "How do you prove logs were not altered?"),
+    ("Feature Flag Service", "targeting/consistency/SDK/offline", "safe low-latency evaluation", "config fan-out/stale SDK/cache", "versioned config truth + streaming distribution + local evaluation", "How do you prevent a flag service outage from taking down apps?"),
+    ("Configuration Service", "secret/non-secret, version, rollout, scope", "consistent versioned distribution", "watch fan-out/bad config", "config DB + signed version + watch/cache + rollback", "How do you canary a configuration, not just code?"),
+    ("Webhook Delivery", "endpoint, signing, retry, ordering", "untrusted slow consumers", "retry backlog/one bad tenant", "event DB + tenant queues + signed sender + attempt ledger", "How do consumers dedupe and verify authenticity?"),
+    ("IoT Telemetry Platform", "device count/frequency/commands/offline", "device identity and high-volume ingest", "connection/partition/storage", "MQTT gateway + stream + time-series/lake + command service", "How do you handle out-of-order device timestamps?"),
+    ("Fraud Detection Pipeline", "online decision/feature freshness/review", "low latency with explainable evidence", "feature store/model quota/false positive", "event stream + online features + model + case workflow", "How do you fall back when the model service is unavailable?"),
+    ("Report Generation", "template/data size/schedule/download", "consistent snapshot and long-running work", "DB impact/render CPU/storage", "job DB + query snapshot + worker + object artifact", "How do you avoid reports overloading the primary DB?"),
+    ("Data Export / GDPR Deletion", "scope/format/deadline/derived copies", "complete lineage across systems", "large scan/downstream deletion", "request workflow + inventory + per-store workers + audit", "How do you verify vector/cache/backup handling?"),
+    ("Distributed Scheduler", "cron/one-off/timezone/misfire", "single logical firing under failover", "clock/leader/hot schedule", "schedule DB + lease/leader + due-time index + task queue", "What does exactly-once schedule execution mean?"),
+    ("Multi-tenant SaaS Backend", "isolation/customization/quota/region", "tenant boundary and noisy-neighbor control", "hot tenant/pool/storage", "tenant context + shared/cell data plane + quota + audit", "When do you move from shared schema to cell/database isolation?"),
+    ("Content Moderation Pipeline", "modalities/latency/appeal/policy version", "policy/model/human consistency", "burst/GPU/review queue", "upload + scan/model queue + decision state + review", "How do you re-evaluate old content after policy changes?"),
+    ("Experimentation Platform", "assignment/metrics/guardrail/exposure", "stable bucketing and unbiased events", "event quality/late data/cardinality", "config truth + local assignment + exposure log + analytics", "How do you prevent sample-ratio mismatch and peeking bias?"),
+]
+
+
+def top_30_system_design_doc() -> str:
+    sections = []
+    for number, (name, clarify, challenge, bottleneck, direction, followup) in enumerate(SYSTEM_DESIGN_30, 1):
+        sections.append(dedent(f'''
+        ## {number}. Design {name}
+
+        - **Requirements to clarify:** {clarify}.
+        - **Main challenge:** {challenge}.
+        - **Likely bottleneck:** {bottleneck}.
+        - **Architecture direction:** {direction}.
+        - **Follow-up interviewer may ask:** *{followup}*
+        '''))
+    return dedent(f'''\
+    # Top 30 System Design Questions
+
+    Không học thuộc component list. Với mỗi đề, dành 5 phút clarify/estimate, 10 phút V1, 10 phút bottleneck/evolution và 10 phút failure/security/observability/trade-off.
+
+    {''.join(sections)}
+
+    ## Universal closing questions
+
+    - Which component is the source of truth, and which data is derived?
+    - What is the first bottleneck at 10× traffic, and which metric proves it?
+    - What fails during a timeout after commit, and how is it reconciled?
+    - What would you deliberately avoid at 100 RPS?
+    - How do you test restore, failover, duplicate delivery, and graceful degradation?
+    ''')
+
+
 def support_readmes() -> dict[str, str]:
-    mock_links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in [*MOCK_DOMAINS, "full-mock-interview.md"])
+    mock_links = "\n".join(
+        f"- [{title_from_name(name)}]({name})"
+        for name in [*MOCK_DOMAINS, "top-50-senior-backend-questions.md", "top-30-system-design-questions.md", "full-mock-interview.md"]
+    )
     cheat_links = "\n".join(f"- [{title_from_name(name)}]({name})" for name in CHEATSHEETS)
     design_links = "\n".join(f"- [{d['title']}]({name})" for name, d in DESIGNS.items())
     return {
@@ -2120,7 +3440,21 @@ def support_readmes() -> dict[str, str]:
         "11-system-design/README.md": dedent(f'''
         # System Design
 
-        Bắt đầu với [Framework](system-design-framework.md) và [Capacity Estimation](capacity-estimation.md), sau đó làm bài có timer 30–40 phút.
+        ## Learning order
+
+        [Framework](system-design-framework.md) → [Capacity Estimation](capacity-estimation.md) → [Caching](caching.md) → [Database Scaling](database-scaling.md) → [Message Queue](message-queue.md) → [Observability](observability.md).
+
+        ## Must know
+
+        - Requirement/SLO/consistency và capacity estimate có đơn vị.
+        - API/data model/source of truth trước component list.
+        - V1 đơn giản → bottleneck đo được → V2/V3 có trade-off.
+        - Timeout/retry/idempotency/backpressure/degraded mode/reconciliation.
+        - Security, observability, RPO/RTO, cost và interview narrative.
+
+        ## Recommended exercise
+
+        Làm mỗi bài có timer 35 phút: 5 phút clarify/estimate, 20 phút architecture + deep dive, 10 phút failure/security/trade-off. Tự vẽ đủ high-level, sequence, data/source-of-truth, scaling và failure flow.
 
         ## Design Drills
 
@@ -2166,9 +3500,74 @@ def support_readmes() -> dict[str, str]:
     }
 
 
+def repository_audit_doc() -> str:
+    audit_path = ROOT / "00-interview-roadmap/repository-audit.md"
+    markdown_files = sorted(p for p in ROOT.rglob("*.md") if p != audit_path)
+    p0_dirs = {
+        "01-python-core", "02-python-concurrency", "03-fastapi",
+        "04-database-postgresql", "06-redis", "07-celery",
+        "10-distributed-systems", "11-system-design",
+    }
+    p0_files = [p for p in markdown_files if p.relative_to(ROOT).parts[0] in p0_dirs and p.name != "README.md"]
+    shallow = []
+    no_diagram = []
+    for path in p0_files:
+        text = path.read_text(encoding="utf-8")
+        words = len(re.findall(r"\b\w+\b", text, flags=re.UNICODE))
+        if words < 800:
+            shallow.append(str(path.relative_to(ROOT)))
+        if "```mermaid" not in text:
+            no_diagram.append(str(path.relative_to(ROOT)))
+    designs = sorted((ROOT / "11-system-design").glob("design-*.md"))
+    design_counts = {p.name: p.read_text(encoding="utf-8").count("```mermaid") for p in designs}
+    mermaid_total = sum(p.read_text(encoding="utf-8").count("```mermaid") for p in markdown_files)
+    deep_count = sum("## 13. Mental Model" in p.read_text(encoding="utf-8") for p in markdown_files)
+    shallow_text = "- " + "\n- ".join(shallow) if shallow else "Không còn P0 file dưới 800 words."
+    no_diagram_text = "- " + "\n- ".join(no_diagram) if no_diagram else "Không còn P0 file thiếu Mermaid diagram."
+    return dedent(f'''\
+    # Repository Depth Audit
+
+    ## Audit baseline before this expansion
+
+    - Markdown files audited: **270**.
+    - P0/P1 technical files sampled systematically: **103**.
+    - P0/P1 files under 800 words: **0**, nhưng chiều dài chủ yếu đến từ question template.
+    - P0/P1 files without Mermaid: **92**.
+    - System Design labs with fewer than five diagrams: **11/11**.
+    - Main issue: definition/checklist có nhưng internals, data flow, failure propagation, debugging và architecture evolution chưa đủ sâu.
+
+    ## Audit after expansion
+
+    - Total Markdown files: **{len(markdown_files) + 1}** (bao gồm audit này).
+    - Deep-dive files with Mental Model/Internals/Flow/Failure/Debugging: **{deep_count}**.
+    - Mermaid diagrams: **{mermaid_total}** trước khi cộng audit (audit không thêm diagram).
+    - P0 files under 800 words: **{len(shallow)}**.
+    - P0 files without Mermaid: **{len(no_diagram)}**.
+    - System Design labs: **{len(designs)}**, diagram count mỗi bài: **{min(design_counts.values(), default=0)}–{max(design_counts.values(), default=0)}**.
+
+    ## Checks performed
+
+    - Mandatory 12-section structure và question counts.
+    - P0 depth sections: Mental Model, Internals, flow diagram, failure, debugging, misconceptions, when-not-to-use, interview chain, exercises, cross-links.
+    - System Design: high-level, sequence, data/source-of-truth, scaling, failure/recovery, observability, evolution, security và walkthrough.
+    - Local Markdown links, empty files, placeholder marker, exact duplicate file, Python fenced-code syntax và Mermaid structure/render.
+
+    ## Remaining shallow files
+
+    {shallow_text}
+
+    ## Remaining P0 files without diagrams
+
+    {no_diagram_text}
+
+    Audit script tái chạy tại [`scripts/validate.py`](../scripts/validate.py). Báo cáo này mô tả structural/depth coverage; technical accuracy vẫn phải được kiểm theo version-specific official references trong [Technical References](../24-references/README.md).
+    ''')
+
+
 VALIDATOR = r'''from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -2182,10 +3581,23 @@ MANDATORY = [
     "## 10. Short Answers", "## 11. Follow-up Questions", "## 12. Key Takeaways",
 ]
 EXEMPT_DIRS = {"00-interview-roadmap", "22-mock-interview", "23-cheatsheets"}
+DEEP_DIRS = {
+    "01-python-core", "02-python-concurrency", "03-fastapi", "04-database-postgresql",
+    "05-sqlalchemy", "06-redis", "07-celery", "08-api-design", "10-distributed-systems",
+    "11-system-design", "13-kubernetes", "16-security", "17-performance-reliability",
+    "18-ai-integration", "20-senior-scenarios",
+}
+DEEP_HEADINGS = [
+    "## 13. Mental Model", "## 14. Internals Deep Dive", "## 15. Request / Data Flow",
+    "## 16. Failure Scenario", "## 17. How I would debug this in production",
+    "## 18. Common Misconceptions", "## 19. When NOT to use",
+    "## 20. What interviewer may ask next", "## 21. Check Your Understanding", "## 22. See also",
+]
 errors: list[str] = []
 files = sorted(ROOT.rglob("*.md"))
 python_blocks = 0
 mermaid_blocks = 0
+hashes: dict[str, list[Path]] = {}
 
 if not files:
     errors.append("No Markdown files found")
@@ -2193,6 +3605,8 @@ if not files:
 for path in files:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(ROOT)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    hashes.setdefault(digest, []).append(rel)
     if not text.strip():
         errors.append(f"Empty file: {rel}")
     if re.search(r"\b(?:TODO|TBD|FIXME)\b", text, flags=re.I):
@@ -2206,6 +3620,15 @@ for path in files:
         for kind, minimum in expected.items():
             if counts[kind] < minimum:
                 errors.append(f"Too few {kind} questions in {rel}: {counts[kind]} < {minimum}")
+    if path.name != "README.md" and rel.parts[0] in DEEP_DIRS and not path.name.startswith("design-"):
+        words = len(re.findall(r"\b\w+\b", text, flags=re.UNICODE))
+        if words < 800:
+            errors.append(f"Deep-dive file below 800 words: {rel} ({words})")
+        if "```mermaid" not in text:
+            errors.append(f"Deep-dive file has no Mermaid diagram: {rel}")
+        missing_deep = [heading for heading in DEEP_HEADINGS if heading not in text]
+        if missing_deep:
+            errors.append(f"Missing deep-dive sections in {rel}: {', '.join(missing_deep)}")
     if text.count("```mermaid") > text.count("```") // 2:
         errors.append(f"Unbalanced Mermaid fence: {rel}")
 
@@ -2235,7 +3658,8 @@ design_requirements = [
     "### Scale Estimation", "### API", "### Data Model", "### High-level Architecture",
     "### Database", "### Cache", "### Message Queue", "### Storage", "### Scaling",
     "### Failure Handling", "### Security", "### Observability", "### Bottlenecks",
-    "### Future Improvements", "```mermaid",
+    "### Future Improvements", "### Architecture Evolution", "## Failure Scenarios",
+    "## Security Deep Dive", "## How to explain this design in an interview", "```mermaid",
 ]
 design_files = sorted((ROOT / "11-system-design").glob("design-*.md"))
 if len(design_files) < 10:
@@ -2245,6 +3669,22 @@ for path in design_files:
     missing = [item for item in design_requirements if item not in text]
     if missing:
         errors.append(f"Incomplete system design {path.name}: {', '.join(missing)}")
+    if text.count("```mermaid") < 5:
+        errors.append(f"System design has fewer than 5 diagrams: {path.name}")
+    if "sequenceDiagram" not in text:
+        errors.append(f"System design has no sequence diagram: {path.name}")
+
+for digest, duplicate_paths in hashes.items():
+    if len(duplicate_paths) > 1:
+        errors.append("Exact duplicate Markdown files: " + ", ".join(map(str, duplicate_paths)))
+
+for required in [
+    ROOT / "22-mock-interview/top-50-senior-backend-questions.md",
+    ROOT / "22-mock-interview/top-30-system-design-questions.md",
+    ROOT / "00-interview-roadmap/repository-audit.md",
+]:
+    if not required.exists():
+        errors.append(f"Missing required expansion file: {required.relative_to(ROOT)}")
 
 if errors:
     print("VALIDATION FAILED")
@@ -2278,12 +3718,15 @@ if __name__ == "__main__":
     for filename, topics in MOCK_DOMAINS.items():
         write(ROOT / "22-mock-interview" / filename, mock_pack(filename, topics))
     write(ROOT / "22-mock-interview" / "full-mock-interview.md", full_mock())
+    write(ROOT / "22-mock-interview" / "top-50-senior-backend-questions.md", top_50_questions_doc())
+    write(ROOT / "22-mock-interview" / "top-30-system-design-questions.md", top_30_system_design_doc())
     for filename, content in CHEATSHEETS.items():
         write(ROOT / "23-cheatsheets" / filename, content)
     for relative_path, content in support_readmes().items():
         write(ROOT / relative_path, content)
     write(ROOT / "README.md", main_readme())
     write(ROOT / "scripts" / "validate.py", VALIDATOR)
+    write(ROOT / "00-interview-roadmap" / "repository-audit.md", repository_audit_doc())
     markdown_count = len(list(ROOT.rglob("*.md")))
     print(f"Generated files under {ROOT}")
     print(f"Total markdown files: {markdown_count}")

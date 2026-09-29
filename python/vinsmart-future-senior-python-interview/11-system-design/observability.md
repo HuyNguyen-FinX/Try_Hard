@@ -134,3 +134,80 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Hãy xem **Observability** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
+
+## 14. Internals Deep Dive
+
+Bắt đầu từ workload model và invariant. Vẽ read/write critical path, source of truth và asynchronous projection; sau đó mới thêm cache/queue/shard theo bottleneck đã định lượng.
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart LR
+            Requirement --> Estimate
+            Estimate --> Simple["Simple Observability design"]
+            Simple --> Measure["Measure bottleneck"]
+            Measure --> Scale["Add capacity / partition / queue"]
+            Scale --> Operate["SLO + failure recovery"]
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Một tier scale nhanh có thể overload tier stateful. Mỗi design cần degraded mode, global capacity budget, backpressure, multi-AZ restore test và per-tenant isolation.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Xác nhận user-visible SLI và blast radius.
+2. Trace critical read/write path.
+3. Xem saturation: worker, pool, DB, cache, queue, provider.
+4. Tìm hot tenant/key/partition và retry amplification.
+5. Kích hoạt degraded mode/rollback.
+6. Cập nhật capacity model và failure test.
+
+## 18. Common Misconceptions
+
+**Sai:** diagram nhiều service là senior design. **Đúng:** design senior giải thích requirement, số liệu, source of truth, failure và lý do từng component xuất hiện.
+
+## 19. When NOT to use
+
+Ở 100 RPS, tránh Kafka, sharding và nhiều microservice nếu 2 API instance + PostgreSQL đáp ứng SLO và recovery.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Observability provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Observability** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [Design Framework](system-design-framework.md)
+- [Capacity Estimation](capacity-estimation.md)
+- [Production Scenarios](../20-senior-scenarios/README.md)

@@ -1,6 +1,20 @@
 # System Design
 
-    Bắt đầu với [Framework](system-design-framework.md) và [Capacity Estimation](capacity-estimation.md), sau đó làm bài có timer 30–40 phút.
+    ## Learning order
+
+    [Framework](system-design-framework.md) → [Capacity Estimation](capacity-estimation.md) → [Caching](caching.md) → [Database Scaling](database-scaling.md) → [Message Queue](message-queue.md) → [Observability](observability.md).
+
+    ## Must know
+
+    - Requirement/SLO/consistency và capacity estimate có đơn vị.
+    - API/data model/source of truth trước component list.
+    - V1 đơn giản → bottleneck đo được → V2/V3 có trade-off.
+    - Timeout/retry/idempotency/backpressure/degraded mode/reconciliation.
+    - Security, observability, RPO/RTO, cost và interview narrative.
+
+    ## Recommended exercise
+
+    Làm mỗi bài có timer 35 phút: 5 phút clarify/estimate, 20 phút architecture + deep dive, 10 phút failure/security/trade-off. Tự vẽ đủ high-level, sequence, data/source-of-truth, scaling và failure flow.
 
     ## Design Drills
 

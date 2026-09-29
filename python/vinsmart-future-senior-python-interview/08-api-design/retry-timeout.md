@@ -134,3 +134,81 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Hãy xem **Retry Timeout** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
+
+## 14. Internals Deep Dive
+
+API là distributed contract: method/status/schema chỉ là bề mặt; idempotency, concurrency control, pagination stability, deadline và compatibility quyết định behavior khi retry/evolution.
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+sequenceDiagram
+            participant C as Client
+            participant API
+            participant S as Service
+            C->>API: request using Retry Timeout
+            API->>API: validate identity + contract
+            API->>S: state transition
+            S-->>API: result / typed failure
+            API-->>C: stable response
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Timeout khiến client không biết server đã commit chưa; retry có thể duplicate. Idempotency key, optimistic version, stable error semantics và request deadline phải nằm trong contract.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Phân đoạn error/latency theo endpoint/client/version.
+2. Trace idempotency key và state transition.
+3. Kiểm timeout/retry classification và payload hash.
+4. Xem rate quota/abuse và compatibility failures.
+5. Replay contract/integration test.
+
+## 18. Common Misconceptions
+
+**Sai:** HTTP method/status đủ tạo idempotency. **Đúng:** server phải atomically dedupe logical operation và xử lý unknown outcome.
+
+## 19. When NOT to use
+
+Không tạo version/abstraction mới khi chưa có compatibility need; contract nhỏ, explicit thường tốt hơn generic framework.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Retry Timeout provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Retry Timeout** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [Idempotency](idempotency.md)
+- [API Security](api-security.md)

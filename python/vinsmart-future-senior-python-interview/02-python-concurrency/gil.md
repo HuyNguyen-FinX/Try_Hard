@@ -134,3 +134,86 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+GIL là vé vào vùng thực thi Python object/bytecode của một interpreter build có GIL. Thread chờ I/O trả vé; thread chạy Python CPU liên tục tranh cùng một vé.
+
+## 14. Internals Deep Dive
+
+
+GIL thuộc CPython implementation, không phải quy tắc của ngôn ngữ Python. Ở build mặc định có GIL, thread phải giữ GIL và attached thread state để thao tác Python object/C API. Thiết kế lịch sử đơn giản hóa bảo vệ runtime state và reference count, nhưng GIL không thay thế lock cho business invariant gồm nhiều bước.
+
+Interpreter định kỳ cho thread khác cơ hội chạy; blocking I/O và nhiều native extension detach thread state/release GIL. Vì vậy thread vẫn hữu ích cho nhiều blocking I/O. Với CPU-bound pure Python, nhiều thread chủ yếu time-slice một core cho bytecode; process/native code thường phù hợp hơn. Từ CPython 3.13 có free-threaded build tùy chọn: built-in có internal synchronization, extension phải khai báo tương thích và shared mutable state vẫn cần lock.
+
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart TD
+    T1["Thread A"] --> Gate{"GIL available?"}
+    T2["Thread B"] --> Gate
+    T3["Thread C"] --> Gate
+    Gate -->|acquired| VM["CPython bytecode / object access"]
+    VM -->|blocking I/O releases GIL| IO["Kernel waits for network / disk"]
+    IO -->|I/O ready| Gate
+    VM -->|switch opportunity| Gate
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Dưới load, blocking call, unbounded fan-out, race hoặc lock contention làm queue/loop lag tăng. Áp deadline, semaphore/pool bound, structured cancellation và tách CPU work khỏi event loop.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Phân loại CPU-bound, blocking I/O hay async I/O.
+2. Xem per-core CPU, event-loop lag, thread/process/queue depth.
+3. Capture stack/profile của execution unit đang giữ CPU/lock.
+4. Kiểm semaphore, timeout, cancellation và shared-state invariant.
+5. Load test lại với bounded concurrency.
+
+## 18. Common Misconceptions
+
+**Sai:** concurrency luôn là parallelism và thêm worker luôn tăng throughput. **Đúng:** queueing, GIL, locks và downstream capacity có thể làm p99 tệ hơn.
+
+## 19. When NOT to use
+
+Không thêm concurrency khi workload nhỏ hoặc downstream đã saturated; model tuần tự đơn giản có thể đúng và dễ vận hành hơn.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Global Interpreter Lock (GIL) provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Global Interpreter Lock (GIL)** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [AsyncIO](asyncio.md)
+- [Event Loop](event-loop.md)
+- [FastAPI Sync vs Async](../03-fastapi/sync-vs-async-endpoint.md)
+- [CPU vs I/O](cpu-vs-io-bound.md)

@@ -127,3 +127,87 @@ Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Pro
 - Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
 - Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
 - Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
+
+
+## 13. Mental Model
+
+Index là bản đồ đã sắp xếp từ search key đến vị trí tuple; đọc ít page hơn nhưng mọi write phải duy trì thêm bản đồ.
+
+## 14. Internals Deep Dive
+
+
+PostgreSQL B-tree gồm page root/internal/leaf. Leaf giữ index tuple với key và TID trỏ heap tuple (trừ khi index-only scan có visibility map đủ dùng). Split page, random insert và deleted entry tạo write amplification/bloat; VACUUM/index maintenance và fillfactor có thể ảnh hưởng workload.
+
+Composite index sắp lexicographic; leftmost equality rồi range/order thường quyết định phần hữu dụng. INCLUDE không tham gia search order mà giúp covering. Partial index chỉ dùng khi planner chứng minh query predicate hàm ý index predicate. Index scan vẫn có thể tệ khi selectivity thấp/random heap fetch nhiều; bitmap scan gom TID để đọc heap page hiệu quả hơn.
+
+
+Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
+
+## 15. Request / Data Flow
+
+```mermaid
+flowchart TD
+    Root["Root page"] --> I1["Internal page A"]
+    Root --> I2["Internal page B"]
+    I1 --> L1["Leaf page: keys + TIDs"]
+    I1 --> L2["Leaf page: keys + TIDs"]
+    I2 --> L3["Leaf page: keys + TIDs"]
+    I2 --> L4["Leaf page: keys + TIDs"]
+    L2 --> Heap["Heap tuple via TID"]
+```
+
+Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+
+## 16. Failure Scenario
+
+Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+
+Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+
+## 17. How I would debug this in production
+
+1. Kiểm DB CPU/IO/connections và application pool wait.
+2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
+3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
+4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
+5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
+6. Mitigate rồi đo lại p99 và write/WAL cost.
+
+## 18. Common Misconceptions
+
+**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+
+## 19. When NOT to use
+
+Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+
+## 20. What interviewer may ask next
+
+1. **What guarantee does Index provide, and what does it explicitly not guarantee?**
+2. **Which implementation detail changes across versions or runtimes?**
+3. **Where is the first queue or contention point under high load?**
+4. **What happens if the dependency times out after committing state?**
+5. **How would you observe, degrade, and recover this in production?**
+6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+
+## 21. Check Your Understanding
+
+1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Index** sẽ tạo queue/backpressure ở đâu?
+2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
+3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+
+<details>
+<summary>Answer</summary>
+
+1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
+2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
+3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+
+</details>
+
+## 22. See also
+
+- [EXPLAIN ANALYZE](explain-analyze.md)
+- [MVCC](mvcc.md)
+- [Transactions](transaction.md)
+- [SQLAlchemy Session](../05-sqlalchemy/session-lifecycle.md)
