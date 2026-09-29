@@ -1,211 +1,251 @@
-# Dependency Injection
+# Dependency Injection trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Dependency Injection (DI) là kỹ thuật trong đó một thành phần **không tự tạo** những thứ nó cần (database session, user hiện tại, config, client), mà **khai báo** nhu cầu và để bên ngoài cung cấp.
 
-FastAPI DI khai báo dependency graph qua callable/`Depends`, cache kết quả trong request và hỗ trợ `yield` cleanup.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Dependency Injection** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Framework resolve graph theo thứ tự, truyền sub-dependency và chạy phần sau `yield` khi request kết thúc. DI tiện cho auth/session nhưng không thay thế domain boundary hoặc service container toàn cục.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+FastAPI có hệ thống DI riêng dựa trên `Depends`: bạn khai báo tham số của endpoint là kết quả của một callable khác. Với mỗi request, FastAPI tự gọi các callable đó theo đúng thứ tự, truyền kết quả vào, và dọn dẹp sau khi xong.
 
 ```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
+@app.get("/claims/{claim_id}")
+async def get_claim(
+    claim_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+): ...
 ```
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Dependency Injection**.
+DI của FastAPI là nơi đặt các concern gắn với request: xác thực, phân quyền, DB session, transaction, tenant context, rate limit, phân trang chung.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-`get_session` tạo AsyncSession mỗi request; `current_principal` xác thực rồi policy service authorize resource; test override dependency ở integration boundary.
+> Mỗi endpoint là gốc của một **cây dependency**. Với mỗi request, FastAPI duyệt cây từ lá lên gốc, gọi mỗi node một lần, và nhớ kết quả để các node khác cùng dùng. Dependency có `yield` giống một context manager: mở khi đi vào, đóng khi request kết thúc.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+## 3. Vì sao cần DI?
 
-## 6. Common Problems
+- **Tái sử dụng**: logic xác thực viết một lần, dùng ở mọi endpoint cần nó.
+- **Vòng đời rõ ràng**: session DB được tạo và đóng đúng một lần mỗi request, kể cả khi có exception.
+- **Test dễ**: thay dependency thật bằng giả qua `app.dependency_overrides` mà không sửa code endpoint.
+- **Tài liệu tự động**: dependency khai báo query/header/security được đưa vào OpenAPI.
+- **Endpoint mỏng**: endpoint chỉ nhận thứ đã sẵn sàng và gọi logic nghiệp vụ.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+## 4. Cơ chế hoạt động
 
-## 7. Trade-offs
+### Dependency là callable bất kỳ
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Dependency Injection | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Function, async function, class (constructor là callable), hoặc instance có `__call__`. FastAPI phân tích **signature** của dependency giống như endpoint: tham số của dependency có thể là path/query/header/body, hoặc lại là `Depends` khác.
 
-## 8. Interview Questions
+```python
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> User:
+    claims = verify_jwt(token)
+    user = await session.get(User, claims["sub"])
+    if user is None:
+        raise HTTPException(status_code=401)
+    return user
+```
 
-### Basic / Mid-level (10)
-
-- **B1.** What is Dependency Injection, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Dependency Injection.
-- **B3.** Which guarantees does Dependency Injection provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Dependency Injection?
-- **B5.** What is the most common misconception about Dependency Injection?
-- **B6.** How would you test assumptions involving Dependency Injection?
-- **B7.** Which edge cases or failure modes matter most for Dependency Injection?
-- **B8.** How can Dependency Injection affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Dependency Injection?
-- **B10.** When is a different or simpler approach better than relying on Dependency Injection?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Dependency Injection triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Dependency Injection is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Dependency Injection. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Dependency Injection fails first?
-- **S5.** A canary changes the behavior of Dependency Injection; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Dependency Injection constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Dependency Injection meets concurrency or partial failure?
-- **L3.** What breaks first around Dependency Injection at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Dependency Injection?
-- **L5.** How would you benchmark or validate Dependency Injection without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Dependency Injection introduce?
-- **L7.** How would you change a poor decision around Dependency Injection with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Dependency Injection?
-- **L10.** How would you turn an incident involving Dependency Injection into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** FastAPI DI khai báo dependency graph qua callable/`Depends`, cache kết quả trong request và hỗ trợ `yield` cleanup. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Dependency Injection.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Dependency Injection như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Dependency Injection khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Dependency Injection**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Dependency Injection** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+### Giải đồ thị dependency
 
 ```mermaid
-flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Dependency Injection"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+flowchart BT
+    EP["Endpoint get_claim"]
+    CU["get_current_user"]
+    SE["get_session"]
+    OA["oauth2_scheme: đọc header Authorization"]
+    SM["app.state.sessionmaker"]
+    OA --> CU
+    SE --> CU
+    SE --> EP
+    CU --> EP
+    SM -.-> SE
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. FastAPI phân tích đồ thị **một lần** khi route được đăng ký (lúc import).
+2. Với mỗi request, nó giải từ lá: `oauth2_scheme` đọc header, `get_session` mở session.
+3. `get_current_user` nhận token và session.
+4. Endpoint nhận `user` và `session`.
+5. `get_session` được dùng ở hai nơi nhưng chỉ được **gọi một lần**: kết quả được cache trong phạm vi request, nên endpoint và `get_current_user` dùng **cùng một session** — cùng transaction.
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+Cache mặc định bật; `Depends(dep, use_cache=False)` buộc gọi lại mỗi lần xuất hiện.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+### Sync và async dependency
 
-## 17. How I would debug this in production
+- Dependency `async def` được `await` trên event loop.
+- Dependency `def` chạy trong **threadpool** (40 token mặc định mỗi worker), giống endpoint `def`.
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+Một endpoint async với ba dependency `def` tiêu tốn ba lần mượn thread cho mỗi request. Với tải cao, đây có thể là nguyên nhân bão hòa threadpool. Dependency rẻ, không I/O nên viết `async def` để tránh chi phí chuyển thread. Xem [Sync vs Async Endpoint](sync-vs-async-endpoint.md).
 
-## 18. Common Misconceptions
+## 5. Dependency có `yield`
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+```python
+async def get_session(request: Request):
+    async with request.app.state.sessionmaker() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+```
 
-## 19. When NOT to use
+Cơ chế bên trong:
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+1. FastAPI chạy phần trước `yield`, lấy giá trị được yield làm kết quả dependency.
+2. Generator được đăng ký vào một `AsyncExitStack` gắn với request (xem [Context Manager](../01-python-core/context-manager.md#6-quản-lý-nhiều-tài-nguyên-exitstack)).
+3. Khi request kết thúc, `AsyncExitStack` chạy phần sau `yield` của mọi dependency theo thứ tự **ngược** với lúc khởi tạo.
+4. Nếu endpoint raise exception, exception được **ném vào** generator tại dòng `yield` — dependency có thể rollback, rồi phải `raise` lại.
 
-## 20. What interviewer may ask next
+```mermaid
+sequenceDiagram
+    participant F as FastAPI
+    participant S as get_session
+    participant U as get_current_user
+    participant E as Endpoint
+    F->>S: chạy tới yield, mở session
+    F->>U: chạy, dùng session
+    F->>E: gọi endpoint
+    alt Endpoint thành công
+        E-->>F: kết quả
+        F->>F: serialize, gửi response
+        F->>S: tiếp tục sau yield, đóng session
+    else Endpoint raise
+        E-->>F: exception
+        F->>S: ném exception vào tại yield
+        S->>S: rollback, raise lại
+        F->>F: exception handler tạo response lỗi
+    end
+```
 
-1. **What guarantee does Dependency Injection provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+> **Ghi chú version:** Thời điểm phần sau `yield` chạy so với lúc gửi response đã thay đổi qua các version FastAPI (thay đổi lớn ở 0.106.0; các bản gần đây bổ sung tùy chọn scope cho dependency để chọn chạy cleanup trước hay sau khi gửi response). Không dùng tài nguyên của dependency (session) trong background task, và không dựa vào cleanup để quyết định response. Kiểm tra tài liệu cho version bạn dùng.
 
-## 21. Check Your Understanding
+### Transaction nên commit ở đâu?
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Dependency Injection** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Hai lựa chọn phổ biến:
 
-<details>
-<summary>Answer</summary>
+1. **Dependency commit sau `yield`**: đơn giản, mọi endpoint có transaction tự động. Nhưng nếu commit thất bại **sau khi** response 200 đã được gửi (tùy version), client nhận thành công cho một thao tác không được lưu.
+2. **Service commit tường minh** trước khi return: lỗi commit trở thành response lỗi đúng; dependency chỉ lo đóng session và rollback khi có lỗi.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Lựa chọn 2 an toàn hơn cho thao tác ghi quan trọng. Xem [Transaction trong SQLAlchemy](../05-sqlalchemy/transaction.md).
 
-</details>
+## 6. Các pattern thường dùng
 
-## 22. See also
+### Alias với `Annotated`
+
+```python
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+@app.post("/claims")
+async def create_claim(payload: ClaimIn, user: CurrentUser, session: SessionDep): ...
+```
+
+### Dependency có tham số (factory)
+
+```python
+def require_role(role: str):
+    async def checker(user: CurrentUser) -> User:
+        if role not in user.roles:
+            raise HTTPException(status_code=403)
+        return user
+    return checker
+
+@app.delete("/claims/{claim_id}", dependencies=[Depends(require_role("admin"))])
+async def delete_claim(claim_id: int): ...
+```
+
+`dependencies=[...]` chạy dependency chỉ để lấy tác dụng (kiểm tra quyền), không truyền kết quả vào endpoint. Có thể gắn cho cả router: `APIRouter(dependencies=[Depends(verify_api_key)])`.
+
+### Class làm dependency
+
+```python
+class Pagination:
+    def __init__(self, limit: int = Query(20, le=100), cursor: str | None = None):
+        self.limit = limit
+        self.cursor = cursor
+```
+
+### Override trong test
+
+```python
+app.dependency_overrides[get_current_user] = lambda: User(id=1, roles=["admin"])
+```
+
+Override thay dependency theo **identity của callable**. Nếu code tạo dependency mới mỗi lần (như `require_role("admin")` tạo closure mới), override theo cách này không bắt được — nên override dependency gốc bên trong (`get_current_user`).
+
+## 7. DI của FastAPI không phải là gì
+
+- **Không phải IoC container toàn ứng dụng.** DI của FastAPI sống trong phạm vi request và chỉ hoạt động cho endpoint/dependency. Service và repository bên dưới vẫn cần được tạo bằng cách khác (truyền qua constructor, factory).
+- **Không phải nơi đặt logic nghiệp vụ.** Dependency làm nhiều việc (gọi nhiều service, quyết định nghiệp vụ) khiến logic bị phân tán vào signature của endpoint và khó test độc lập.
+- **Không thay thế lifespan.** Tài nguyên dùng chung (engine, client) phải tạo trong lifespan; dependency chỉ lấy chúng ra (`request.app.state`). Tạo `httpx.AsyncClient()` trong dependency mỗi request là tạo connection pool mới mỗi request.
+
+## 8. Hành vi trong production
+
+- **Chi phí ẩn**: mỗi dependency là một lời gọi function, có thể một lần chuyển thread, có thể một query. `get_current_user` query DB mỗi request → một query bổ sung cho mọi endpoint. Cân nhắc cache ngắn hạn cho dữ liệu user/permission, hoặc đưa claim cần thiết vào token.
+- **Gọi trùng**: hai dependency khác nhau cùng gọi một service lấy cùng dữ liệu (không qua dependency chung) → hai query. Gom vào một dependency để hưởng cache theo request.
+- **Transaction quá rộng**: session mở từ đầu request trong dependency, và endpoint gọi HTTP ra ngoài trong lúc transaction đang mở → giữ connection và lock trong suốt lời gọi HTTP. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
+- **Thứ tự dependency và rate limit**: dependency rate limit nên chạy **trước** dependency đắt (xác thực có query DB). FastAPI giải dependency theo thứ tự khai báo trong signature và theo đồ thị.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Threadpool bão hòa | Nhiều dependency `def` | Endpoint async chậm dù loop rảnh |
+| Session đóng khi dùng | Dùng session của request trong background task | Lỗi "session is closed" hoặc connection về pool rồi |
+| Commit fail sau response | Commit trong cleanup sau khi đã gửi 200 | Client nhận thành công, dữ liệu không có |
+| Exception bị nuốt | Dependency `yield` bắt exception không raise lại | Lỗi biến mất, response sai |
+| Query thừa | Dependency xác thực query DB mỗi request | Số query tăng tuyến tính theo RPS |
+| Override không tác dụng | Override closure tạo động | Test dùng dependency thật |
+
+## 10. Trade-offs
+
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Dependency cho auth/session | Vòng đời chuẩn, test override dễ | Gắn với FastAPI |
+| Middleware cho auth | Áp dụng mọi request | Không biết route, khó trả lỗi theo endpoint, khó test |
+| Truyền tường minh qua constructor | Độc lập framework | Nhiều code "đi dây" hơn |
+| DI container bên ngoài (dependency-injector...) | Quản lý đồ thị service lớn | Thêm abstraction, hai hệ DI song song |
+
+## 11. Sai lầm thường gặp
+
+- Tạo client/engine trong dependency cho mỗi request.
+- Viết dependency `def` cho thứ không có I/O.
+- Để dependency chứa logic nghiệp vụ phức tạp.
+- Dựa vào commit trong cleanup cho thao tác quan trọng.
+- Dùng session của request sau khi request kết thúc.
+- Không raise lại exception trong dependency có `yield`.
+
+## 12. Cách debug
+
+- Bật log SQL để đếm query mỗi request; dependency sinh query thừa sẽ lộ ra.
+- Tracing: tạo span cho dependency quan trọng (xác thực, session) để thấy thời gian của chúng.
+- Kiểm tra threadpool đang dùng khi endpoint async chậm.
+- Test override: xác nhận override được áp dụng bằng cách assert dependency thật không được gọi.
+
+## 13. Best Practices
+
+- Dependency cho concern theo request: xác thực, phân quyền, session, tenant, pagination.
+- Tài nguyên dùng chung trong lifespan; dependency chỉ truy xuất.
+- Viết dependency `async def` khi có thể; chỉ dùng `def` khi phải gọi thư viện sync.
+- Dependency có `yield` luôn `try/except/raise` hoặc `try/finally`.
+- Commit tường minh ở tầng service cho thao tác ghi quan trọng.
+- Dùng `Annotated` alias để giữ signature gọn và nhất quán.
+
+## 14. Tóm tắt
+
+- `Depends` khai báo nhu cầu; FastAPI giải đồ thị dependency mỗi request, gọi mỗi dependency một lần và cache kết quả trong request.
+- Dependency `def` chạy trong threadpool; `async def` chạy trên loop.
+- Dependency có `yield` là context manager theo request, được quản lý bằng `AsyncExitStack`, cleanup theo thứ tự ngược.
+- Exception của endpoint được ném vào dependency tại `yield`.
+- Thời điểm cleanup so với lúc gửi response phụ thuộc version; không dựa vào nó cho đúng đắn.
+
+## Liên quan
 
 - [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Authentication](authentication.md)
+- [Context Manager](../01-python-core/context-manager.md)
+- [Session Lifecycle](../05-sqlalchemy/session-lifecycle.md)
+- [Hexagonal Architecture](../09-software-architecture/hexagonal-architecture.md)

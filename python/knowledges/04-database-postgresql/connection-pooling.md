@@ -1,207 +1,254 @@
 # Connection Pooling
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Connection pool là tập hợp các kết nối database được giữ lại để tái sử dụng thay vì tạo một connection mới cho mỗi request.
 
-Connection pool tái sử dụng connection đắt đỏ và giới hạn concurrency đi vào PostgreSQL; pool không tạo thêm database capacity.
+Với PostgreSQL, pooling không chỉ là tối ưu hiệu năng. Vì mỗi connection là một **process** trên server ([PostgreSQL Fundamentals](database-fundamentals.md#3-kiến-trúc-process)), số connection đồng thời là một tài nguyên hữu hạn và đắt. Connection pool đóng vai trò **admission control**: nó quyết định tối đa bao nhiêu thao tác được vào database cùng lúc, và những thao tác còn lại phải **xếp hàng ở đâu**.
 
-## 2. Why does it matter?
+Có hai tầng pool thường gặp:
 
-Senior Engineer cần hiểu **Connection Pooling** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+1. **Pool trong ứng dụng** (SQLAlchemy `QueuePool`, asyncpg pool): mỗi worker process có pool riêng.
+2. **Pool ngoài** (PgBouncer, RDS Proxy, pgcat): một proxy đứng giữa mọi instance ứng dụng và PostgreSQL, gộp hàng nghìn connection phía client thành vài chục connection thật tới server.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Tổng connection = replicas × workers × pool size cộng background jobs. Pool wait cho thấy backpressure; PgBouncer transaction mode giảm session cost nhưng hạn chế session state/prepared behavior.
+> Pool là cánh cửa có số chỗ cố định dẫn vào database. Request vượt quá số chỗ sẽ xếp hàng **trước cửa** (trong ứng dụng) thay vì chen vào **bên trong** database. Tăng kích thước pool không làm database mạnh hơn; nó chỉ dời hàng đợi từ ứng dụng vào trong database — nơi hàng đợi đắt hơn nhiều.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
+## 3. Vì sao cần connection pool?
 
-## 4. Example
+Tạo một connection PostgreSQL mới cần: TCP handshake, TLS handshake, xác thực, `fork` backend process, khởi tạo. Tổng từ vài ms tới hàng chục ms — thường lâu hơn cả query. Mở/đóng connection mỗi request lãng phí thời gian và làm postmaster bận fork liên tục.
 
-```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
+Quan trọng hơn: nếu không giới hạn, mỗi request đồng thời mở một connection. Traffic spike 3.000 request đồng thời → 3.000 backend process → database hết memory, CPU dành cho context switch, mọi query chậm lại. Database sụp đổ vì quá nhiều người "đang làm việc" cùng lúc.
+
+## 4. Cơ chế hoạt động: pool trong ứng dụng
+
+```mermaid
+sequenceDiagram
+    participant R as Request
+    participant P as Pool: size 10, overflow 5
+    participant DB as PostgreSQL
+    R->>P: checkout
+    alt Có connection rảnh
+        P-->>R: connection có sẵn
+    else Chưa đủ size + overflow
+        P->>DB: Mở connection mới
+        DB-->>P: connection
+        P-->>R: connection
+    else Đã đạt giới hạn
+        P->>P: Chờ tối đa pool_timeout
+        P-->>R: connection được trả lại, hoặc TimeoutError
+    end
+    R->>DB: Query trong transaction
+    DB-->>R: Kết quả
+    R->>P: checkin, rollback trạng thái dở, trả về pool
 ```
 
-Với **Connection Pooling**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+Diễn giải:
 
-## 5. Production Use Case
+1. Request **mượn** (checkout) một connection khi bắt đầu dùng database.
+2. Nếu có connection rảnh, dùng ngay. Nếu chưa đạt giới hạn, mở mới. Nếu đã đạt giới hạn, **chờ** tới khi có connection được trả, tối đa `pool_timeout`.
+3. Request dùng connection trong suốt transaction.
+4. Khi xong, connection được **trả** (checkin); pool reset trạng thái (rollback transaction dở) để request sau dùng sạch.
 
-Scale API từ 20 lên 200 pod mà pool 20 sẽ đòi 4.000 connection; đặt global budget, pool nhỏ, PgBouncer và queue/rate limit để bảo vệ DB.
+### Tham số SQLAlchemy quan trọng
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+| Tham số | Ý nghĩa | Gợi ý |
+|---|---|---|
+| `pool_size` | Số connection giữ thường trực | Theo tính toán ở mục 6 |
+| `max_overflow` | Số connection tạm thời thêm khi đông | Nhỏ; overflow được đóng khi trả về |
+| `pool_timeout` | Thời gian tối đa chờ checkout | 1–5 giây: fail nhanh thay vì treo |
+| `pool_recycle` | Đóng connection sống quá N giây | Nhỏ hơn idle timeout của proxy/LB/firewall |
+| `pool_pre_ping` | Kiểm tra connection còn sống trước khi dùng | Bật khi có proxy/failover có thể cắt connection im lặng |
 
-## 6. Common Problems
+Mỗi **worker process** có pool riêng. Pool không được chia sẻ giữa process (và không được kế thừa qua `fork`).
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Connection Pooling | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Connection Pooling, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Connection Pooling.
-- **B3.** Which guarantees does Connection Pooling provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Connection Pooling?
-- **B5.** What is the most common misconception about Connection Pooling?
-- **B6.** How would you test assumptions involving Connection Pooling?
-- **B7.** Which edge cases or failure modes matter most for Connection Pooling?
-- **B8.** How can Connection Pooling affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Connection Pooling?
-- **B10.** When is a different or simpler approach better than relying on Connection Pooling?
-
-### Production Scenarios (5)
-
-- **S1.** Scaling from 20 to 200 pods requests 4,000 DB connections. Build a safe global connection budget.
-- **S2.** Pool wait rises while query duration is flat. What does this reveal, and what should you not do blindly?
-- **S3.** PgBouncer transaction mode breaks session-level assumptions. Which features and code paths do you audit?
-- **S4.** One tenant monopolizes the pool. Design admission control and isolation.
-- **S5.** During failover every pod reconnects simultaneously. How do you prevent a connection storm?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Connection Pooling constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Connection Pooling meets concurrency or partial failure?
-- **L3.** What breaks first around Connection Pooling at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Connection Pooling?
-- **L5.** How would you benchmark or validate Connection Pooling without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Connection Pooling introduce?
-- **L7.** How would you change a poor decision around Connection Pooling with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Connection Pooling?
-- **L10.** How would you turn an incident involving Connection Pooling into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Connection pool tái sử dụng connection đắt đỏ và giới hạn concurrency đi vào PostgreSQL; pool không tạo thêm database capacity. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Connection Pooling.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Connection Pooling như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Connection Pooling khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Connection Pooling**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Pool là hàng rào admission vào database. Request vượt số connection sẽ xếp hàng; tăng pool chỉ chuyển queue từ app vào database.
-
-## 14. Internals Deep Dive
-
-Reason đồng thời ở logical SQL, planner/executor tree, heap/index page, buffer/WAL và MVCC/lock. Một query nhanh đơn lẻ có thể chậm dưới concurrency vì pool, cache, I/O và lock wait.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Pool ngoài: PgBouncer
 
 ```mermaid
 flowchart LR
-            SQL --> Plan["Planner decision for Connection Pooling"]
-            Plan --> Executor
-            Executor --> Index[(Index pages)]
-            Executor --> Heap[(Heap pages)]
-            Executor --> Result
+    subgraph Apps["60 worker process trên 15 pod"]
+        A1["Worker pool 10"]
+        A2["Worker pool 10"]
+        A3["..."]
+    end
+    Apps -->|"tối đa 600 client connection"| PGB["PgBouncer<br/>transaction pooling"]
+    PGB -->|"40 server connection"| PG[("PostgreSQL<br/>max_connections 100")]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Ứng dụng có thể mở tổng cộng 600 connection **tới PgBouncer** — mỗi cái rất rẻ (PgBouncer là process event-driven nhẹ).
+2. PgBouncer chỉ giữ 40 connection **thật** tới PostgreSQL.
+3. Ở **transaction mode**, một connection thật chỉ được gán cho client trong thời gian của **một transaction**. Khi transaction kết thúc, connection thật được trả về cho client khác.
+4. Vì phần lớn thời gian connection phía ứng dụng rảnh (giữa các transaction, chờ HTTP, xử lý logic), 600 client connection có thể được phục vụ bởi 40 server connection.
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+### Ba chế độ
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+| Mode | Server connection được gán cho client trong | Tương thích |
+|---|---|---|
+| **Session** | Cả session của client | Mọi tính năng; ít lợi ích gộp |
+| **Transaction** | Một transaction | Phổ biến nhất; hạn chế tính năng gắn với session |
+| **Statement** | Một câu lệnh | Không cho phép transaction nhiều câu lệnh |
 
-## 17. How I would debug this in production
+### Hạn chế của transaction mode
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+Vì mỗi transaction có thể chạy trên một backend khác nhau, những gì gắn với **session** không còn đáng tin:
 
-## 18. Common Misconceptions
+- `SET` không có `LOCAL` (ví dụ `SET statement_timeout`) — ảnh hưởng tới client khác dùng backend đó sau. Dùng `SET LOCAL` trong transaction.
+- Session advisory lock (`pg_advisory_lock`) — dùng bản mức transaction.
+- `LISTEN/NOTIFY`, temporary table giữa các transaction.
+- Prepared statement ở mức giao thức — > **Ghi chú version:** PgBouncer 1.21+ hỗ trợ prepared statement ở transaction mode qua `max_prepared_statements`. Với phiên bản cũ hơn, phải tắt statement cache của driver (ví dụ asyncpg `statement_cache_size=0`).
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+## 6. Sizing: bao nhiêu connection là đủ?
 
-## 19. When NOT to use
+### Từ phía database
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+Số connection **đang hoạt động** hữu ích bị giới hạn bởi tài nguyên của database: CPU core, và khả năng I/O. Một nguyên tắc kinh nghiệm cũ (từ HikariCP) là `connections ≈ (số core × 2) + số disk hiệu dụng`. Con số chính xác phụ thuộc workload, nhưng thông điệp quan trọng: số connection **hoạt động** tối ưu thường là **hàng chục**, không phải hàng nghìn. Quá mức đó, throughput không tăng mà latency tăng vì tranh chấp CPU, lock, và cache.
 
-## 20. What interviewer may ask next
+### Từ phía ứng dụng: Little's Law
 
-1. **What guarantee does Connection Pooling provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+```text
+connection cần ≈ throughput query × thời gian giữ connection
+```
 
-## 21. Check Your Understanding
+1.000 query/giây, mỗi query giữ connection 5 ms → trung bình 5 connection bận. Cần dư cho spike và phân phối không đều, nhưng không cần 200.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Connection Pooling** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Điều quan trọng là **thời gian giữ connection**, không chỉ thời gian query. Transaction mở, gọi HTTP 300 ms, rồi commit → giữ connection 300+ ms. Cùng throughput cần gấp 60 lần số connection.
 
-<details>
-<summary>Answer</summary>
+### Connection budget toàn hệ thống
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+```text
+tổng connection tới DB = số pod × worker mỗi pod × (pool_size + max_overflow)
+                        + worker Celery × pool + migration + monitoring + admin
+```
 
-</details>
+Ví dụ: 20 pod × 4 worker × (10 + 5) = 1.200 — vượt xa khả năng của một PostgreSQL instance. Lựa chọn:
 
-## 22. See also
+- Giảm pool mỗi worker (async worker thường cần ít connection hơn nghĩ, nếu transaction ngắn).
+- Đặt PgBouncer giữa ứng dụng và database.
+- Giới hạn autoscaling của ứng dụng theo budget.
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
-- [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+Luôn chừa connection cho admin (`superuser_reserved_connections`) và cho công cụ vận hành.
+
+## 7. Bên trong hệ thống xảy ra gì khi pool cạn?
+
+Pool cạn thường **không phải** do database chậm, mà do connection bị giữ lâu. Các nguyên nhân:
+
+- Transaction bao cả lời gọi HTTP, xử lý file, chờ queue.
+- Query chậm (thiếu index, lock wait).
+- Session ORM được mở ở đầu request và chỉ đóng ở cuối, dù chỉ cần database trong vài ms.
+- Leak: connection không được trả (code không dùng context manager).
+- Background task/streaming response giữ session của request.
+
+Triệu chứng đặc trưng: **latency API cao trong khi CPU database thấp**. Request đang xếp hàng chờ checkout, không phải đang chạy query.
+
+## 8. Failure chain: query chậm làm cạn pool
+
+```mermaid
+flowchart TD
+    A["Một query mới thiếu index, 800ms"] --> B["Connection bị giữ lâu hơn 100 lần"]
+    B --> C["Pool 10 connection mỗi worker bị chiếm hết"]
+    C --> D["Mọi request khác chờ checkout, kể cả request không dùng query đó"]
+    D --> E["pool_timeout, lỗi 500 hoặc 503"]
+    E --> F["Client retry, LB retry"]
+    F --> G["Thêm request, thêm chờ"]
+    D --> H["Autoscaler thêm pod vì latency"]
+    H --> I["Pod mới mở thêm connection"]
+    I --> J["Database chạm max_connections và CPU, mọi query chậm"]
+    J --> B
+```
+
+Diễn giải:
+
+1. Một thay đổi nhỏ (query mới, thống kê cũ, lock) làm connection bị giữ lâu.
+2. Pool cạn, mọi request dùng database trên worker đó bị ảnh hưởng — **kể cả** request vốn nhanh.
+3. Timeout và retry khuếch đại tải.
+4. Autoscaling theo latency/CPU thêm pod, mỗi pod mang pool mới, dồn thêm connection vào database đang quá tải.
+5. Vòng lặp tự củng cố.
+
+Phá vòng: `pool_timeout` ngắn để fail nhanh, `statement_timeout` để giới hạn query tệ, retry có budget, giới hạn autoscaling theo connection budget, và [bulkhead](../10-distributed-systems/bulkhead.md) — pool riêng cho đường xử lý nặng để không ảnh hưởng đường nhẹ.
+
+## 9. Hành vi trong production
+
+- **Failover và idle timeout**: khi primary chuyển sang replica (RDS Multi-AZ, Patroni), connection cũ trong pool trỏ tới server chết. `pool_pre_ping` phát hiện và tạo lại. NAT/firewall/proxy có thể cắt connection idle im lặng; `pool_recycle` nhỏ hơn timeout của chúng.
+- **Async không cần pool lớn**: coroutine chỉ giữ connection khi thực sự đang query (nếu session được quản lý đúng). Pool 10 có thể phục vụ hàng trăm request đồng thời với transaction ngắn.
+- **Celery worker**: mỗi worker process cũng có pool; prefork 16 process × pool 5 = 80 connection từ một máy worker.
+- **Kết nối khởi động đồng loạt**: deploy hoặc scale-out 50 pod cùng lúc tạo storm kết nối mới vào database; pool lazy (mở khi cần) và PgBouncer giúp làm mượt.
+
+## 10. Khi scale lên thì chuyện gì xảy ra?
+
+| Quy mô ứng dụng | Kiến trúc pool thường phù hợp |
+|---|---|
+| 1–5 instance | Pool trong ứng dụng là đủ |
+| 10–50 instance | Tổng connection bắt đầu vượt ngưỡng; PgBouncer hoặc pool nhỏ hơn |
+| 50+ instance, nhiều service dùng chung DB | PgBouncer bắt buộc; cân nhắc tách database theo service |
+| Replica cho đọc | Pool riêng cho primary và replica; routing theo loại query |
+
+## 11. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Pool lớn | Ít chờ checkout | Dồn tải vào DB, dễ quá tải khi spike |
+| Pool nhỏ + timeout ngắn | Bảo vệ DB, fail nhanh | Lỗi sớm hơn khi tải cao |
+| PgBouncer transaction mode | Gộp connection mạnh | Mất tính năng gắn session, thêm một hop mạng |
+| PgBouncer session mode | Tương thích đầy đủ | Gộp kém |
+| Managed proxy (RDS Proxy) | Ít vận hành, hỗ trợ failover | Chi phí, latency thêm, giới hạn riêng |
+
+## 12. Sai lầm thường gặp
+
+- Tăng `max_connections` và `pool_size` khi gặp lỗi pool timeout thay vì tìm nguyên nhân giữ connection lâu.
+- Tính pool theo một instance mà quên nhân số pod × worker.
+- Giữ session/transaction trong lúc gọi dịch vụ ngoài.
+- Dùng `SET` (không `LOCAL`) hoặc session advisory lock qua PgBouncer transaction mode.
+- Không đặt `pool_timeout` — request treo vô hạn.
+
+## 13. Cách debug
+
+Phía database:
+
+```sql
+-- Số connection theo trạng thái và ứng dụng
+SELECT application_name, state, count(*)
+FROM pg_stat_activity GROUP BY 1, 2 ORDER BY 3 DESC;
+
+-- Connection idle in transaction lâu
+SELECT pid, application_name, now() - state_change AS idle_for, left(query, 60)
+FROM pg_stat_activity WHERE state = 'idle in transaction' ORDER BY idle_for DESC;
+```
+
+Phía ứng dụng — metric cần có:
+
+- Số connection đang checkout / tổng pool.
+- **Thời gian chờ checkout** (histogram) — tín hiệu quan trọng nhất.
+- Số lần `pool_timeout`.
+- Thời gian giữ connection mỗi request.
+
+SQLAlchemy cung cấp event `checkout`/`checkin` để đo. PgBouncer: `SHOW POOLS;` (`cl_waiting` = client đang chờ server connection), `SHOW STATS;`.
+
+## 14. Best Practices
+
+- Luôn dùng pool; không mở connection mỗi request.
+- Tính connection budget toàn hệ thống trước khi chọn `pool_size` và số worker.
+- Giữ connection ngắn nhất có thể: transaction ngắn, không I/O bên ngoài trong transaction.
+- `pool_timeout` ngắn, `statement_timeout` và `idle_in_transaction_session_timeout` ở database.
+- Bật `pool_pre_ping` và `pool_recycle` phù hợp với hạ tầng mạng.
+- Dùng PgBouncer transaction mode khi nhiều instance; tránh tính năng gắn session.
+- Đo thời gian chờ checkout như một metric hạng nhất.
+
+## 15. Tóm tắt
+
+- Connection PostgreSQL là process đắt; pool tái sử dụng connection và giới hạn số thao tác vào database cùng lúc.
+- Pool là admission control: tăng pool chỉ dời hàng đợi vào trong database.
+- Số connection cần = throughput × thời gian giữ connection; giữ connection ngắn quan trọng hơn pool lớn.
+- Tổng connection = pod × worker × pool; PgBouncer gộp nhiều client connection thành ít server connection.
+- Pool cạn thường do connection bị giữ lâu; có thể kích hoạt vòng lặp retry và autoscaling làm sập database.
+
+## Liên quan
+
+- [PostgreSQL Fundamentals](database-fundamentals.md)
+- [Session Lifecycle trong SQLAlchemy](../05-sqlalchemy/session-lifecycle.md)
+- [Kiến trúc FastAPI](../03-fastapi/architecture.md)
+- [FastAPI Performance](../03-fastapi/performance.md)
+- [Bulkhead](../10-distributed-systems/bulkhead.md)
+- [High Traffic](../20-production-incidents/high-traffic.md)

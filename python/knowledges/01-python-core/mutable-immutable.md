@@ -1,211 +1,211 @@
-# Mutable Immutable
+# Mutable và Immutable
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Một object là **mutable** nếu value của nó có thể thay đổi trong khi identity giữ nguyên. Object **immutable** không cho phép thay đổi value sau khi tạo; mọi "thay đổi" đều tạo ra object mới.
 
-Mutable Immutable là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+| Immutable | Mutable |
+|---|---|
+| `int`, `float`, `complex`, `bool` | `list` |
+| `str`, `bytes` | `dict` |
+| `tuple`, `frozenset` | `set` |
+| `range`, `None` | `bytearray` |
+| `@dataclass(frozen=True)` instance | instance class thông thường |
 
-## 2. Why does it matter?
+Phân biệt này quyết định ba thứ: object có thể làm key của dict/set không, có an toàn khi chia sẻ giữa nhiều nơi (nhiều hàm, nhiều thread) không, và một thao tác như `+=` sẽ mutate hay tạo object mới.
 
-Senior Engineer cần hiểu **Mutable Immutable** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
-
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Mutable Immutable',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
-
-Ví dụ biến quyết định về **Mutable Immutable** thành invariant và tín hiệu vận hành có thể kiểm chứng.
-
-## 5. Production Use Case
-
-Một shared library dùng Mutable Immutable để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Mutable Immutable | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Mutable Immutable, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Mutable Immutable.
-- **B3.** Which guarantees does Mutable Immutable provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Mutable Immutable?
-- **B5.** What is the most common misconception about Mutable Immutable?
-- **B6.** How would you test assumptions involving Mutable Immutable?
-- **B7.** Which edge cases or failure modes matter most for Mutable Immutable?
-- **B8.** How can Mutable Immutable affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Mutable Immutable?
-- **B10.** When is a different or simpler approach better than relying on Mutable Immutable?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Mutable Immutable triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Mutable Immutable is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Mutable Immutable. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Mutable Immutable fails first?
-- **S5.** A canary changes the behavior of Mutable Immutable; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Mutable Immutable constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Mutable Immutable meets concurrency or partial failure?
-- **L3.** What breaks first around Mutable Immutable at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Mutable Immutable?
-- **L5.** How would you benchmark or validate Mutable Immutable without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Mutable Immutable introduce?
-- **L7.** How would you change a poor decision around Mutable Immutable with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Mutable Immutable?
-- **L10.** How would you turn an incident involving Mutable Immutable into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Mutable Immutable là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Mutable Immutable.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Mutable Immutable như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Mutable Immutable khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Mutable Immutable**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Mutability là khả năng object giữ nguyên identity nhưng đổi observable state; rebinding một name không phải mutation.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+> Mutation thay đổi **object**. Rebinding thay đổi **name**.
 
 ```mermaid
 flowchart LR
-            Source["Python source"] --> Runtime["Mutable Immutable runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+    subgraph Mutation["Mutation: lst.append(3)"]
+        n1["lst"] --> o1["list id=100<br/>[1, 2, 3]"]
+        n2["alias"] --> o1
+    end
+    subgraph Rebinding["Rebinding: s = s + '!'"]
+        s1["s"] -.->|"trước"| old["str id=200<br/>'hi'"]
+        s1 -->|"sau"| new["str id=300<br/>'hi!'"]
+        s2["alias"] --> old
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Giải thích:
 
-## 16. Failure Scenario
+1. Bên trái: `append` sửa trực tiếp list có id 100. Mọi name trỏ tới list đó (`lst`, `alias`) đều thấy `[1, 2, 3]`.
+2. Bên phải: string không thể sửa. `s + '!'` tạo string mới id 300, rồi name `s` được gắn sang object mới. `alias` vẫn trỏ tới `'hi'` cũ.
+3. Câu hỏi "thay đổi có lan sang nơi khác không" chỉ phụ thuộc vào việc thao tác là mutation hay rebinding.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+## 3. Vì sao cần phân biệt?
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- **Hashing.** Dict và set dựa trên hash để tìm kiếm. Nếu key thay đổi value sau khi được đưa vào dict, hash thay đổi và dict không tìm lại được nó. Vì vậy chỉ object hashable (thường là immutable) mới làm key.
+- **Chia sẻ an toàn.** Immutable object có thể chia sẻ giữa nhiều hàm, nhiều thread mà không cần copy, không cần lock.
+- **Dự đoán được code.** Hàm nhận immutable argument không thể làm hỏng dữ liệu của caller.
+- **Hiệu năng.** Nối chuỗi trong vòng lặp tạo object mới mỗi lần; append vào list thì không.
 
-## 17. How I would debug this in production
+## 4. Cơ chế hoạt động
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+### Immutable là "shallow"
 
-## 18. Common Misconceptions
+Tuple là immutable: không thể thay phần tử bằng object khác. Nhưng nếu phần tử là object mutable, object đó vẫn có thể bị sửa:
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+```python
+t = (1, [2, 3])
+t[1].append(4)     # hợp lệ: mutate list bên trong
+t                   # (1, [2, 3, 4])
+hash(t)             # TypeError: unhashable type: 'list'
+```
 
-## 19. When NOT to use
+Tuple chỉ đảm bảo **danh sách reference** không đổi. Một tuple chỉ hashable khi mọi phần tử của nó đều hashable. Tương tự, `@dataclass(frozen=True)` chặn gán attribute nhưng không ngăn mutate một list là attribute.
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+### Augmented assignment
 
-## 20. What interviewer may ask next
+`x += y` được dịch thành:
 
-1. **What guarantee does Mutable Immutable provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+1. Nếu type của `x` có `__iadd__`, gọi `x.__iadd__(y)` — thường mutate tại chỗ và trả `self`.
+2. Nếu không, gọi `x.__add__(y)` để tạo object mới.
+3. Bind kết quả vào `x`.
 
-## 21. Check Your Understanding
+```python
+a = [1]
+b = a
+a += [2]        # list.__iadd__ mutate → b cũng thấy [1, 2]
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Mutable Immutable** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+s = "x"
+t = s
+s += "y"        # str không có __iadd__ → object mới, t vẫn là "x"
+```
 
-<details>
-<summary>Answer</summary>
+Một trường hợp bất ngờ minh họa rõ hai bước "gọi `__iadd__`" và "gán lại":
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+```python
+t = ([1],)
+t[0] += [2]     # TypeError: 'tuple' object does not support item assignment
+t               # ([1, 2],)  — list vẫn bị mutate!
+```
 
-</details>
+`list.__iadd__` đã chạy thành công (mutate), sau đó bước gán `t[0] = result` thất bại vì tuple immutable.
 
-## 22. See also
+### Hash và equality
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+Quy tắc bắt buộc: `a == b` thì `hash(a) == hash(b)`. Object mutable dùng value để so sánh (`list`, `dict`) không thể có hash ổn định nên đặt `__hash__ = None`. Object do bạn định nghĩa:
+
+- Không định nghĩa `__eq__`: hash dựa trên identity, luôn hashable.
+- Định nghĩa `__eq__` nhưng không `__hash__`: unhashable.
+- Định nghĩa cả hai: hash phải chỉ dùng các field không đổi trong lifetime.
+
+## 5. Internals: interpreter tối ưu gì cho immutable?
+
+> **Ghi chú version:** Các tối ưu dưới đây là implementation detail của CPython; không dựa vào chúng để đảm bảo đúng đắn.
+
+- **Small int cache** (-5 đến 256) và **string interning**: vì immutable nên chia sẻ an toàn, không ai sửa được.
+- **Constant folding**: `x = 2 * 3600` được tính sẵn lúc compile thành `7200`; tuple literal chứa toàn hằng số được tạo một lần và lưu trong code object.
+- **In-place string concat**: CPython có tối ưu cho `s += t` khi `s` chỉ có một reference — có thể mở rộng buffer tại chỗ. Tối ưu này không có trên PyPy và mất tác dụng khi có alias, nên nối chuỗi trong vòng lặp vẫn có thể thành O(n²). Dùng `"".join(parts)`.
+- **Immortal object** (3.12+): `None`, `True`, small int có refcount cố định vì chúng immutable và dùng chung toàn process.
+
+## 6. Ví dụ: immutable config dùng chung
+
+```python
+from dataclasses import dataclass
+from types import MappingProxyType
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    max_attempts: int
+    base_delay_ms: int
+    retryable_status: frozenset[int]
+
+DEFAULT_POLICY = RetryPolicy(3, 100, frozenset({502, 503, 504}))
+
+_TIMEOUTS = {"payment": 2.0, "inventory": 0.5}
+TIMEOUTS = MappingProxyType(_TIMEOUTS)   # view chỉ đọc
+```
+
+- `DEFAULT_POLICY` có thể được mọi request, mọi thread dùng chung mà không cần lock.
+- Muốn biến thể, dùng `dataclasses.replace(DEFAULT_POLICY, max_attempts=5)` — tạo object mới, object gốc không đổi.
+- `MappingProxyType` ngăn caller sửa dict qua view; nhưng ai giữ `_TIMEOUTS` vẫn sửa được, nên chỉ export proxy.
+
+## 7. Hành vi trong production
+
+**Chia sẻ giữa thread.** Trong worker đa thread (threadpool của FastAPI cho sync endpoint, Gunicorn `gthread`), object mutable dùng chung là nơi phát sinh [race condition](../02-python-concurrency/race-condition.md). Immutable object loại bỏ cả một lớp bug mà không cần lock.
+
+**Cache.** Giá trị trả về từ cache nên immutable. Nếu cache trả list/dict và caller mutate, dữ liệu trong cache bị hỏng cho mọi request sau — bug khó tái hiện vì phụ thuộc thứ tự request.
+
+**Key của cache và dedup.** Key phải hashable và ổn định: tuple của các field, frozenset cho tập tham số không thứ tự. Dùng dict làm key bằng cách `tuple(sorted(d.items()))` chỉ đúng khi value cũng hashable.
+
+**Model dữ liệu.** Pydantic hỗ trợ `model_config = ConfigDict(frozen=True)`; dataclass có `frozen=True`. Dùng cho value object (tiền tệ, địa chỉ, khoảng thời gian), event, command — những thứ không nên thay đổi sau khi tạo.
+
+## 8. Failure Modes
+
+| Failure | Cơ chế | Dấu hiệu |
+|---|---|---|
+| Key "biến mất" khỏi dict/set | Object mutable có `__hash__` tùy biến, field bị sửa sau khi insert | `key in d` trả False dù key có trong `d.keys()` |
+| Dữ liệu cache bị hỏng | Caller mutate object trả về từ cache | Kết quả sai xuất hiện sau một request cụ thể |
+| Default argument tích lũy | Default mutable dùng chung giữa các lần gọi | Dữ liệu từ request trước lọt sang request sau |
+| Nối chuỗi O(n²) | Tạo string mới mỗi vòng lặp | CPU cao khi build response/CSV lớn |
+| Tưởng tuple bảo vệ dữ liệu | Tuple chứa list/dict mutable | Dữ liệu "bất biến" vẫn bị sửa |
+
+## 9. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Immutable | An toàn khi chia sẻ, hashable, dễ lý luận | Mỗi thay đổi tạo object mới, tốn allocation |
+| Mutable | Cập nhật tại chỗ, hiệu quả với dữ liệu thay đổi liên tục | Phải kiểm soát ai được sửa, cần lock khi chia sẻ |
+| Copy tại boundary | Giữ API an toàn với object mutable | Chi phí copy, có thể lớn |
+| Frozen dataclass + `replace` | Rõ ràng, có type | `replace` chậm hơn gán attribute; `frozen` thêm chút overhead khi khởi tạo |
+
+Thực tế thường kết hợp: dữ liệu dùng chung, config, message giữa các thành phần là immutable; dữ liệu cục bộ trong một hàm hoặc buffer đang xây dựng là mutable.
+
+## 10. Sai lầm thường gặp
+
+- Nghĩ rằng `x += 1` và `lst += [1]` có cùng ngữ nghĩa với alias.
+- Tin rằng tuple hoặc frozen dataclass là "deep immutable".
+- Định nghĩa `__hash__` dựa trên field có thể thay đổi.
+- Dùng `is` để so sánh string/int vì "chúng immutable nên được dùng chung". Việc dùng chung là tối ưu tùy ý của interpreter.
+- Trả về list nội bộ của object (`return self._items`) cho caller, cho phép caller sửa state nội bộ.
+
+## 11. Khi nào nên dùng immutable?
+
+- Config, constant, policy dùng chung toàn process.
+- Value object trong domain (Money, DateRange, Address).
+- Key của dict, cache, set dedup.
+- Event, command, message truyền giữa các thành phần hoặc qua queue.
+- Dữ liệu chia sẻ giữa thread.
+
+## 12. Khi nào không nên?
+
+- Cấu trúc được cập nhật liên tục trong vòng lặp nóng (buffer, accumulator) — dùng mutable cục bộ rồi "đóng băng" kết quả.
+- Object ORM được Session theo dõi thay đổi: SQLAlchemy dựa trên mutation để phát hiện dirty state.
+- Khi chi phí tạo object mới đo được là đáng kể ở hot path.
+
+## 13. Cách debug
+
+- `id(x)` trước và sau thao tác để biết là mutation hay rebinding.
+- `hash(x)` để kiểm tra hashability; `TypeError: unhashable type` chỉ ra phần tử mutable lẫn trong tuple.
+- Với bug dữ liệu lan giữa request, tìm mutable default (`__defaults__`), class attribute mutable, và object được trả thẳng từ cache.
+- Trong test, bọc dữ liệu dùng chung bằng `MappingProxyType` hoặc frozen model để lỗi mutate xuất hiện ngay dưới dạng exception.
+
+## 14. Best Practices
+
+- Mặc định dùng immutable cho dữ liệu dùng chung; chỉ dùng mutable khi có lý do.
+- Không để lộ container nội bộ; trả về tuple/copy hoặc view chỉ đọc.
+- Dùng `None` làm default cho tham số mutable.
+- Dùng `"".join()` hoặc `io.StringIO` để xây string lớn.
+- Với dataclass/Pydantic dùng làm key hoặc chia sẻ, bật `frozen`.
+
+## 15. Tóm tắt
+
+- Mutable: value đổi, identity giữ nguyên. Immutable: mọi thay đổi tạo object mới.
+- Mutation lan tới mọi alias; rebinding chỉ ảnh hưởng một name.
+- Immutability là shallow: tuple chứa list vẫn có phần bị sửa được.
+- `+=` gọi `__iadd__` nếu có (mutate), không thì tạo object mới.
+- Hashable đòi hỏi hash ổn định, thường đồng nghĩa với immutable.
+- Immutable object là cách rẻ nhất để chia sẻ dữ liệu an toàn giữa thread và giữa các thành phần.
+
+## Liên quan
+
+- [Python Object Model](object-model.md)
+- [Shallow Copy và Deep Copy](shallow-vs-deep-copy.md)
+- [Race Condition](../02-python-concurrency/race-condition.md)
+- [Hashmap trong Python](../19-data-structures-algorithms/hashmap.md)

@@ -1,211 +1,172 @@
-# Background Task
+# Background Task trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
-
-FastAPI BackgroundTasks chạy in-process sau khi response được gửi; không phải durable queue và mất khi process crash/restart.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Background Task** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Phù hợp best-effort task nhỏ, nhanh, idempotent; task CPU/blocking vẫn chiếm resource worker. Work quan trọng/dài cần Celery/queue có persisted state/retry/observability.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+`BackgroundTasks` của FastAPI (kế thừa từ Starlette) cho phép đăng ký một function chạy **sau khi response đã được gửi** cho client, trong **cùng process, cùng worker**.
 
 ```python
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks
 
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
+@app.post("/claims")
+async def create_claim(payload: ClaimIn, background: BackgroundTasks):
+    claim = await service.create(payload)
+    background.add_task(send_confirmation_email, claim.id)
+    return {"id": claim.id}
 ```
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Background Task**.
+Client nhận `{"id": ...}` ngay; email được gửi sau đó. Cơ chế này tiện cho việc nhỏ, nhanh, không quan trọng. Nó **không phải** một job queue: không bền vững, không retry, không phân tán, mất khi process tắt.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Ghi analytics nhẹ có thể background; generate inspection report và gửi settlement phải qua durable task/outbox.
+> Background task là việc "làm nốt sau khi tiễn khách ra cửa" — do chính người phục vụ đó làm, tại chính quầy đó. Nếu quán đóng cửa đột ngột, việc làm nốt bị bỏ dở và không ai nhớ tới nó.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+## 3. Vì sao tồn tại?
 
-## 6. Common Problems
+Giảm latency người dùng thấy cho những việc phụ không ảnh hưởng tới kết quả response: gửi email xác nhận, ghi analytics, xóa file tạm, làm mới cache. Không cần hạ tầng queue cho những việc mà mất vài lần cũng chấp nhận được.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+## 4. Cơ chế hoạt động
 
-## 7. Trade-offs
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant T as Task của request trên event loop
+    participant R as Response object
+    participant BG as Background tasks
+    participant TP as Threadpool
+    C->>T: POST /claims
+    T->>T: endpoint chạy, add_task(send_email)
+    T->>R: tạo Response, gắn BackgroundTasks
+    R->>C: send start và body
+    Note over C: Client đã nhận response
+    R->>BG: await background()
+    alt Task là async def
+        BG->>BG: await trực tiếp trên event loop
+    else Task là def
+        BG->>TP: run_in_threadpool
+    end
+    BG-->>T: xong, request Task kết thúc
+```
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Background Task | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Diễn giải:
 
-## 8. Interview Questions
+1. `add_task` chỉ ghi lại function và argument vào một danh sách gắn với response.
+2. Response được gửi đầy đủ cho client.
+3. **Trong cùng Task của request**, Starlette lần lượt chạy các background task theo thứ tự đăng ký.
+4. Task `async def` chạy trên event loop; task `def` chạy trong threadpool (dùng chung 40 token với endpoint `def`).
+5. Chỉ khi mọi background task xong, Task của request mới kết thúc.
 
-### Basic / Mid-level (10)
+Hệ quả:
 
-- **B1.** What is Background Task, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Background Task.
-- **B3.** Which guarantees does Background Task provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Background Task?
-- **B5.** What is the most common misconception about Background Task?
-- **B6.** How would you test assumptions involving Background Task?
-- **B7.** Which edge cases or failure modes matter most for Background Task?
-- **B8.** How can Background Task affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Background Task?
-- **B10.** When is a different or simpler approach better than relying on Background Task?
+- Worker vẫn **bận** sau khi client nhận response; request in-flight của worker bao gồm cả thời gian background.
+- Background task CPU nặng trong `async def` vẫn block event loop.
+- Exception trong background task được log nhưng không ảnh hưởng response (đã gửi rồi), và không có retry.
 
-### Production Scenarios (5)
+## 5. Vì sao không phải job queue?
 
-- **S1.** A release involving Background Task triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Background Task is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Background Task. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Background Task fails first?
-- **S5.** A canary changes the behavior of Background Task; success rate is flat but saturation rises. Promote or roll back?
+| Thuộc tính | `BackgroundTasks` | Job queue (Celery, RQ, Dramatiq, Arq) |
+|---|---|---|
+| Lưu trữ việc | Memory của process | Broker bền vững (Redis, RabbitMQ, SQS) |
+| Khi process crash/deploy | Việc bị mất | Việc còn trong broker, worker khác nhận |
+| Retry | Không | Có, với backoff |
+| Chạy ở đâu | Cùng web worker | Worker riêng, scale riêng |
+| Theo dõi trạng thái | Không | Có (state, result backend, metric) |
+| Giới hạn tài nguyên | Chiếm tài nguyên của web worker | Cô lập |
+| Thời gian chạy hợp lý | Vài trăm ms | Giây tới giờ |
 
-## 9. Senior-level Questions
+Kubernetes gửi SIGTERM khi rolling update; worker có grace period để hoàn tất request đang chạy (bao gồm background task). Việc vượt quá grace period bị kill. Việc đang chờ trong danh sách background của request chưa tới lượt cũng mất.
 
-- **L1.** How does Background Task constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Background Task meets concurrency or partial failure?
-- **L3.** What breaks first around Background Task at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Background Task?
-- **L5.** How would you benchmark or validate Background Task without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Background Task introduce?
-- **L7.** How would you change a poor decision around Background Task with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Background Task?
-- **L10.** How would you turn an incident involving Background Task into a durable prevention mechanism?
+## 6. Luồng thay thế: ghi ý định vào database, xử lý bằng queue
 
-## 10. Short Answers
-
-**B1.** FastAPI BackgroundTasks chạy in-process sau khi response được gửi; không phải durable queue và mất khi process crash/restart. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Background Task.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Background Task như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Background Task khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Background Task**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Background Task** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+Với việc quan trọng (gửi thông báo thanh toán, đồng bộ sang ERP), đảm bảo không mất bằng cách ghi **ý định** trong cùng transaction với dữ liệu nghiệp vụ:
 
 ```mermaid
 flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Background Task"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+    EP["Endpoint"] --> TX["Transaction: insert claim và insert outbox event"]
+    TX --> Resp["Response 201"]
+    Relay["Outbox relay"] --> Broker["Broker"]
+    TX -.-> Relay
+    Broker --> W["Worker: gửi email, retry nếu lỗi"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: event nằm trong database cùng với claim, nên nếu claim được lưu thì event chắc chắn tồn tại. Relay đọc outbox và publish lên broker; worker xử lý có retry. Đây là [Outbox Pattern](../10-distributed-systems/outbox-pattern.md).
 
-## 16. Failure Scenario
+## 7. Ví dụ dùng đúng và sai
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+```python
+# Đúng: việc nhỏ, idempotent, mất cũng chấp nhận được
+background.add_task(metrics_client.record_signup, user.id)
+background.add_task(os.remove, temp_path)
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+# Sai: dùng session của request trong background
+async def update_stats(session: AsyncSession, claim_id: int):
+    await session.execute(...)          # session có thể đã đóng khi task chạy
 
-## 17. How I would debug this in production
+background.add_task(update_stats, session, claim.id)
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+# Đúng hơn: background tự mở session riêng
+async def update_stats(claim_id: int):
+    async with sessionmaker() as session, session.begin():
+        await session.execute(...)
+```
 
-## 18. Common Misconceptions
+Tài nguyên của dependency có `yield` (session) có thể đã được dọn dẹp trước khi background task chạy — hành vi phụ thuộc version FastAPI. Background task phải tự quản lý tài nguyên của nó. Xem [Dependency Injection](dependency-injection.md#5-dependency-có-yield).
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+## 8. Hành vi trong production
 
-## 19. When NOT to use
+- **Đếm sai tải**: metric latency của request (đo đến lúc gửi response) trông tốt, nhưng worker thực ra bận lâu hơn. Throughput tối đa thấp hơn dự kiến.
+- **Lỗi im lặng**: exception trong background chỉ xuất hiện trong log; không có alert nếu không cấu hình riêng.
+- **Mất việc khi deploy**: mỗi rolling update có thể mất một số việc đang chờ.
+- **Tranh chấp threadpool**: background `def` dùng chung threadpool với endpoint `def`.
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+## 9. Failure Modes
 
-## 20. What interviewer may ask next
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Mất việc | Process restart, OOM, deploy | Email/notification thiếu, không có lỗi |
+| Không retry | Dependency tạm thời lỗi | Lỗi một lần trong log, việc không bao giờ hoàn tất |
+| Event loop block | Background CPU/sync trong `async def` | Loop lag sau các request có background |
+| Session đã đóng | Dùng tài nguyên của request | Lỗi session/connection trong log background |
+| Worker quá tải | Background dài chiếm worker | Throughput giảm, in-flight cao |
 
-1. **What guarantee does Background Task provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+## 10. Khi nào nên dùng?
 
-## 21. Check Your Understanding
+- Việc ngắn (dưới vài trăm ms), không quan trọng, idempotent.
+- Mất vài việc khi deploy là chấp nhận được.
+- Không cần biết kết quả, không cần retry.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Background Task** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 11. Khi nào không nên dùng?
 
-<details>
-<summary>Answer</summary>
+- Việc có tác động nghiệp vụ hoặc tài chính.
+- Việc dài, CPU nặng, gọi dịch vụ ngoài không ổn định.
+- Việc cần retry, theo dõi trạng thái, hoặc scale độc lập.
+- Việc cần chạy đúng một lần hoặc có thứ tự.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Dùng [Celery](../07-celery/architecture.md) hoặc queue khác, kết hợp outbox nếu việc phải gắn với transaction.
 
-</details>
+## 12. Cách debug
 
-## 22. See also
+- Log bắt đầu/kết thúc/lỗi của background task kèm request ID.
+- Đo thời gian từ lúc gửi response tới lúc request Task kết thúc (in-flight thực tế).
+- Đếm việc được đăng ký và việc hoàn tất để phát hiện mất mát khi deploy.
+
+## 13. Best Practices
+
+- Chỉ dùng cho việc nhỏ, idempotent, best-effort.
+- Background task tự mở tài nguyên riêng (session, client), không dùng của request.
+- Bọc task bằng try/except có log và metric.
+- Việc quan trọng: ghi ý định vào DB (outbox) và xử lý bằng queue có retry.
+- Đặt grace period của orchestrator đủ dài cho request + background.
+
+## 14. Tóm tắt
+
+- `BackgroundTasks` chạy sau khi response được gửi, trong cùng Task, cùng worker.
+- Không bền vững, không retry, không cô lập tài nguyên; mất khi process tắt.
+- Task `async def` chạy trên event loop, `def` chạy trong threadpool.
+- Việc quan trọng cần queue bền vững và outbox pattern.
+
+## Liên quan
 
 - [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Coroutine, Task và Future](../02-python-concurrency/coroutine-task-future.md)
+- [Celery Architecture](../07-celery/architecture.md)
+- [Outbox Pattern](../10-distributed-systems/outbox-pattern.md)

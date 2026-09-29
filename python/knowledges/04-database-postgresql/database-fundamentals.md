@@ -1,213 +1,266 @@
-# Database Fundamentals
+# PostgreSQL Fundamentals: process, memory, storage và WAL
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Trước khi tối ưu query hay chọn isolation level, cần một bức tranh về cách PostgreSQL được tổ chức bên trong: nó chạy những process nào, dùng memory ra sao, lưu dữ liệu trên disk dưới dạng gì, và làm thế nào để một `COMMIT` được đảm bảo không mất khi server mất điện.
 
-Database Fundamentals là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness.
+Bốn câu hỏi này giải thích hàng loạt hành vi production:
 
-## 2. Why does it matter?
+- Vì sao mỗi connection đắt và cần [connection pool](connection-pooling.md)?
+- Vì sao `UPDATE` làm bảng phình to và cần [VACUUM](vacuum-bloat.md)?
+- Vì sao query "lúc nhanh lúc chậm" tùy dữ liệu có nằm trong cache không?
+- Vì sao commit nhiều transaction nhỏ chậm hơn gom thành batch?
 
-Senior Engineer cần hiểu **Database Fundamentals** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> **Ghi chú version:** Nội dung bám theo PostgreSQL 14–18. Một số chi tiết (async I/O từ 18, cơ chế vacuum từ 17) được ghi chú tại chỗ.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Reason từ access pattern và invariant; kiểm tra planner estimate/actual, tuple/page/WAL, lock/snapshot và tác động vacuum/replication thay vì chỉ nhìn SQL text.
+> PostgreSQL là một **nhóm process** chia sẻ một vùng memory chung. Dữ liệu nằm trên disk dưới dạng các **page 8 KB**. Mọi thay đổi được ghi vào **nhật ký (WAL)** trước, rồi mới được áp dụng dần vào page dữ liệu. Commit bền vững nghĩa là nhật ký đã xuống disk, không phải page dữ liệu đã xuống disk.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
-```
-
-Với **Database Fundamentals**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
-
-## 5. Production Use Case
-
-Warranty workload dùng Database Fundamentals trên dữ liệu production-like; quyết định được kiểm chứng bằng EXPLAIN buffers, lock wait, WAL/IO và p99.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Database Fundamentals | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Database Fundamentals, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Database Fundamentals.
-- **B3.** Which guarantees does Database Fundamentals provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Database Fundamentals?
-- **B5.** What is the most common misconception about Database Fundamentals?
-- **B6.** How would you test assumptions involving Database Fundamentals?
-- **B7.** Which edge cases or failure modes matter most for Database Fundamentals?
-- **B8.** How can Database Fundamentals affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Database Fundamentals?
-- **B10.** When is a different or simpler approach better than relying on Database Fundamentals?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Database Fundamentals triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Database Fundamentals is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Database Fundamentals. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Database Fundamentals fails first?
-- **S5.** A canary changes the behavior of Database Fundamentals; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Database Fundamentals constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Database Fundamentals meets concurrency or partial failure?
-- **L3.** What breaks first around Database Fundamentals at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Database Fundamentals?
-- **L5.** How would you benchmark or validate Database Fundamentals without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Database Fundamentals introduce?
-- **L7.** How would you change a poor decision around Database Fundamentals with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Database Fundamentals?
-- **L10.** How would you turn an incident involving Database Fundamentals into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Database Fundamentals là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Database Fundamentals.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Database Fundamentals như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Database Fundamentals khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Database Fundamentals**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Database Fundamentals** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-
-PostgreSQL nhận SQL rồi parse thành syntax tree, analyze/resolve name và type, rewrite rule/view, planner tạo nhiều path và chọn plan có estimated cost, executor kéo tuple qua cây operator. Buffer manager ánh xạ page từ relation vào shared buffers; WAL ghi change trước data page để crash recovery.
-
-Cost không phải millisecond. Planner dựa statistics về row count, distinct, histogram, most-common values và correlation. Sai estimate ở node thấp khuếch đại lên join/order. Executor có thể đọc cache hoặc disk, spill sort/hash ra temp và chờ lock/I/O; vì vậy phải đọc actual rows, loops, buffers, temp và wait event cùng nhau.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 3. Kiến trúc process
 
 ```mermaid
-flowchart LR
-    Client --> Parser
-    Parser --> Analyzer["Analyzer / Rewriter"]
-    Analyzer --> Planner
-    Planner --> Executor
-    Executor --> Buffer["Buffer manager"]
-    Buffer --> Storage["Heap / Index pages"]
-    Executor --> WAL["WAL for changes"]
+flowchart TB
+    Client1["App connection 1"] --> PM["postmaster<br/>process cha, lắng nghe port 5432"]
+    Client2["App connection 2"] --> PM
+    PM -->|"fork mỗi connection"| B1["Backend process 1"]
+    PM -->|"fork"| B2["Backend process 2"]
+    subgraph Shared["Shared memory"]
+        SB["shared_buffers<br/>cache page dữ liệu"]
+        WB["WAL buffers"]
+        LK["Lock table, proc array, CLOG cache"]
+    end
+    B1 --> Shared
+    B2 --> Shared
+    subgraph BG["Background processes"]
+        CP["checkpointer"]
+        BW["background writer"]
+        WW["WAL writer"]
+        AV["autovacuum launcher và workers"]
+        WS["WAL sender cho replica"]
+    end
+    BG --> Shared
+    Shared --> Disk[("Data files và WAL trên disk")]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. **postmaster** là process cha. Mỗi khi có connection mới, nó `fork` ra một **backend process** riêng phục vụ connection đó suốt vòng đời kết nối.
+2. Mọi backend dùng chung **shared memory**: cache page dữ liệu (`shared_buffers`), buffer WAL, bảng lock, danh sách transaction đang chạy.
+3. Các **background process** làm việc nền: ghi page bẩn xuống disk (checkpointer, background writer), ghi WAL (WAL writer), dọn dẹp (autovacuum), gửi WAL cho replica (WAL sender).
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+### Hệ quả: connection là process
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- Mở connection = fork process + xác thực + khởi tạo: vài ms tới hàng chục ms.
+- Mỗi backend tiêu tốn memory riêng (vài MB tới hàng chục MB tùy workload, cộng `work_mem` cho mỗi thao tác sort/hash).
+- Hàng nghìn backend làm tăng chi phí context switch và chi phí tính snapshot (đã được cải thiện ở PostgreSQL 14 nhưng vẫn tăng theo số connection).
+- `max_connections` mặc định là 100. Đặt 5.000 không làm database mạnh hơn; nó làm database dễ bị quá tải hơn.
 
-## 17. How I would debug this in production
+Đây là lý do mọi ứng dụng production cần connection pool, và thường cần thêm PgBouncer khi có nhiều instance ứng dụng. Xem [Connection Pooling](connection-pooling.md).
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+## 4. Memory
 
-## 18. Common Misconceptions
+| Vùng | Phạm vi | Vai trò | Ghi chú |
+|---|---|---|---|
+| `shared_buffers` | Toàn server | Cache page dữ liệu và index | Thường 25% RAM làm điểm khởi đầu |
+| OS page cache | Toàn máy | Kernel cache file | PostgreSQL dựa nhiều vào nó; page có thể nằm ở cả hai ("double buffering") |
+| `work_mem` | Mỗi thao tác sort/hash **trong mỗi backend** | Bộ nhớ cho sort, hash join, hash aggregate | Vượt quá thì spill ra temp file trên disk |
+| `maintenance_work_mem` | Mỗi thao tác bảo trì | VACUUM, CREATE INDEX | Lớn hơn giúp tạo index, vacuum nhanh hơn |
+| WAL buffers | Toàn server | Đệm WAL trước khi ghi | Thường tự tính |
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+Cẩn thận với `work_mem`: một query có 4 node sort/hash, chạy song song 2 worker, trên 200 connection đồng thời có thể dùng `4 × 3 × 200 × work_mem`. Đặt `work_mem = 256MB` toàn cục dễ làm server hết RAM. Tăng `work_mem` theo session/role cho query báo cáo cụ thể thay vì toàn cục.
 
-## 19. When NOT to use
+## 5. Storage: page, tuple, file
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+### File và page
 
-## 20. What interviewer may ask next
+Mỗi bảng và mỗi index là một **relation**, lưu thành một hoặc nhiều file (mỗi file tối đa 1 GB) trong thư mục dữ liệu. File chia thành **page** (block) kích thước cố định **8 KB**. Mọi I/O của PostgreSQL diễn ra theo đơn vị page: đọc một row 100 byte cũng đọc cả page 8 KB.
 
-1. **What guarantee does Database Fundamentals provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+### Cấu trúc một heap page
 
-## 21. Check Your Understanding
+```text
++-------------------------------------------------------------+
+| Page header (LSN của lần sửa cuối, con trỏ free space...)   |
+| Line pointers: [1][2][3][4] ... → trỏ tới vị trí tuple      |
+|                                                             |
+|                 free space                                  |
+|                                                             |
+|                     ... [tuple 4][tuple 3][tuple 2][tuple 1]|
++-------------------------------------------------------------+
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Database Fundamentals** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+- **Line pointer** (item id) là mảng con trỏ từ đầu page; tuple được xếp từ cuối page ngược lên.
+- Một row được định danh bằng **TID/ctid** = `(số page, số line pointer)`, ví dụ `(42, 3)`. Index lưu TID để trỏ về heap.
+- Line pointer cho phép di chuyển tuple trong page (khi dọn dẹp) mà không đổi TID.
 
-<details>
-<summary>Answer</summary>
+### Tuple header
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Mỗi tuple (một phiên bản của row) có header khoảng 23 byte chứa:
 
-</details>
+- `xmin`: ID transaction đã tạo phiên bản này.
+- `xmax`: ID transaction đã xóa/cập nhật phiên bản này (0 nếu còn sống), hoặc đang khóa row.
+- `ctid`: trỏ tới phiên bản mới hơn nếu row đã được cập nhật.
+- Infomask: các bit trạng thái (hint bits: transaction tạo/xóa đã commit hay abort).
+- Null bitmap.
 
-## 22. See also
+`xmin`/`xmax` là nền tảng của [MVCC](mvcc.md): mỗi transaction dựa vào chúng để quyết định phiên bản nào nó được nhìn thấy.
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
+### TOAST
+
+Giá trị lớn (text, JSONB, bytea dài hơn khoảng 2 KB) được nén và/hoặc tách ra bảng phụ **TOAST**, heap chỉ giữ con trỏ. Hệ quả: `SELECT *` trên bảng có cột JSONB lớn phải đọc thêm bảng TOAST; chỉ chọn cột cần thiết giúp tránh việc này.
+
+### Các file phụ
+
+- **Free Space Map (FSM)**: page nào còn chỗ trống để insert.
+- **Visibility Map (VM)**: page nào có mọi tuple đều visible với mọi transaction (all-visible) và đã được freeze (all-frozen). VACUUM dùng VM để bỏ qua page không cần dọn; index-only scan dùng VM để tránh đọc heap.
+
+## 6. WAL: ghi nhật ký trước
+
+### Nguyên tắc write-ahead
+
+Nếu mỗi `COMMIT` phải ghi mọi page dữ liệu bị sửa xuống disk ngay, hiệu năng sẽ rất tệ: page nằm rải rác, ghi ngẫu nhiên. Thay vào đó PostgreSQL tuân theo nguyên tắc **Write-Ahead Logging**:
+
+> Trước khi một page dữ liệu bẩn được ghi xuống disk, bản ghi WAL mô tả thay đổi đó phải đã nằm trên disk. Commit chỉ cần WAL của transaction được flush.
+
+WAL là file ghi **tuần tự** (append-only), nhanh hơn nhiều so với ghi ngẫu nhiên. Mỗi bản ghi WAL có vị trí **LSN** (Log Sequence Number).
+
+### Luồng ghi một UPDATE
+
+```mermaid
+sequenceDiagram
+    participant B as Backend
+    participant SB as shared_buffers
+    participant WB as WAL buffers
+    participant WAL as WAL trên disk
+    participant CP as Checkpointer
+    participant DF as Data files
+    B->>SB: Tìm page chứa row, đọc từ disk nếu chưa có
+    B->>SB: Tạo tuple mới, đánh dấu tuple cũ có xmax, page thành dirty
+    B->>WB: Ghi bản ghi WAL mô tả thay đổi
+    B->>WAL: COMMIT: flush WAL tới LSN của commit, fsync
+    WAL-->>B: Bền vững, trả COMMIT thành công cho client
+    Note over SB,DF: Page dữ liệu vẫn chỉ ở trong memory
+    CP->>SB: Checkpoint định kỳ: lấy page dirty
+    CP->>DF: Ghi page xuống data files, fsync
+```
+
+Diễn giải:
+
+1. Backend sửa page **trong shared_buffers**; page trở thành "dirty".
+2. Thay đổi được mô tả trong bản ghi WAL.
+3. Khi `COMMIT`, WAL được flush và `fsync` xuống disk. Chỉ sau bước này client mới nhận được thông báo thành công.
+4. Page dữ liệu dirty có thể nằm trong memory rất lâu sau đó.
+5. **Checkpoint** định kỳ (theo `checkpoint_timeout` hoặc khi WAL đạt `max_wal_size`) ghi mọi page dirty xuống data file.
+
+### Crash recovery
+
+Nếu server mất điện, data file có thể thiếu các thay đổi chưa được checkpoint. Khi khởi động lại, PostgreSQL đọc WAL từ checkpoint cuối và **replay** mọi thay đổi. Commit đã được flush WAL không bao giờ mất.
+
+**Full-page writes**: lần đầu một page bị sửa sau mỗi checkpoint, toàn bộ page được ghi vào WAL, để phục hồi được cả khi page bị ghi dở (torn page). Đây là lý do WAL tăng vọt ngay sau checkpoint.
+
+### WAL còn dùng cho
+
+- **Replication**: replica nhận WAL từ primary và replay. Xem [Replication](replication.md).
+- **Point-in-time recovery**: base backup + WAL lưu trữ cho phép khôi phục tới bất kỳ thời điểm nào.
+- **Logical decoding / CDC**: đọc thay đổi từ WAL để đồng bộ sang hệ thống khác.
+
+### Đánh đổi độ bền
+
+`synchronous_commit = off` cho phép COMMIT trả về trước khi WAL được flush. Throughput ghi tăng mạnh, đổi lại có thể mất vài trăm ms giao dịch cuối cùng khi crash (dữ liệu vẫn nhất quán, không hỏng). Có thể đặt theo transaction cho dữ liệu kém quan trọng (log, analytics) và giữ `on` cho dữ liệu tài chính.
+
+## 7. Bên trong hệ thống xảy ra gì khi đọc một row?
+
+1. Backend nhận query, [lập kế hoạch](query-lifecycle.md), chọn index scan.
+2. Duyệt index để tìm TID. Mỗi page index cần đọc được tra trong `shared_buffers`; nếu không có (**cache miss**), đọc từ OS — có thể từ OS page cache (nhanh) hoặc từ disk (chậm).
+3. Theo TID đọc heap page, lấy tuple.
+4. Kiểm tra visibility theo `xmin`/`xmax` và snapshot của transaction.
+5. Trả row.
+
+"Query lúc nhanh lúc chậm" thường là khác biệt giữa page đã nằm trong cache và page phải đọc từ disk. `EXPLAIN (ANALYZE, BUFFERS)` cho thấy `shared hit` (từ cache) và `shared read` (phải đọc). Xem [EXPLAIN ANALYZE](explain-analyze.md).
+
+## 8. Hành vi trong production
+
+- **Cache hit ratio** của `shared_buffers` thường nên trên 99% cho workload OLTP; dưới mức đó, dữ liệu nóng không vừa memory hoặc có query quét lớn đẩy dữ liệu nóng ra khỏi cache.
+- **Checkpoint spike**: checkpoint ghi nhiều page cùng lúc gây I/O spike và làm latency tăng định kỳ. `checkpoint_completion_target` (mặc định 0.9) rải việc ghi ra khoảng thời gian dài hơn.
+- **Commit rate giới hạn bởi fsync**: mỗi commit cần một lần flush WAL. Nhiều transaction nhỏ đồng thời được PostgreSQL gộp flush (group commit), nhưng vòng lặp insert từng row với commit mỗi row vẫn chậm. Gom thành batch.
+- **WAL volume**: update nhiều, full-page writes, index nhiều đều làm WAL lớn — ảnh hưởng replication lag và dung lượng lưu trữ backup.
+
+## 9. Khi scale lên thì chuyện gì xảy ra?
+
+| Áp lực | Biểu hiện | Hướng xử lý |
+|---|---|---|
+| Nhiều connection | Memory, context switch, CPU tăng; lỗi `too many clients` | PgBouncer, pool nhỏ hơn mỗi instance |
+| Dữ liệu nóng vượt RAM | Cache hit giảm, I/O read tăng | Thêm RAM, giảm dữ liệu nóng (partition, archive), index gọn |
+| Ghi nhiều | WAL, checkpoint, I/O ghi, replication lag | Batch, giảm index thừa, tăng `max_wal_size`, disk nhanh hơn |
+| Update nhiều | Dead tuple, bloat | Autovacuum tích cực hơn, HOT update, fillfactor |
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `too many clients already` | Vượt `max_connections` | Lỗi kết nối từ app |
+| OOM killer giết backend | `work_mem` × số thao tác × connection vượt RAM | Postmaster restart mọi backend, mọi connection bị ngắt |
+| Latency spike định kỳ | Checkpoint dồn I/O | Spike trùng thời điểm checkpoint trong log |
+| Disk đầy do WAL | Replication slot giữ WAL, archive lỗi | Thư mục `pg_wal` tăng không ngừng |
+| Chậm sau restart | Cache nguội | Query chậm cho tới khi dữ liệu nóng được đọc lại |
+
+## 11. Trade-offs
+
+| Cấu hình | Lợi ích | Chi phí |
+|---|---|---|
+| `shared_buffers` lớn | Nhiều dữ liệu trong cache | Ít RAM cho OS cache và `work_mem`, checkpoint lớn hơn |
+| `work_mem` lớn | Ít spill ra disk | Rủi ro hết RAM khi nhiều connection |
+| `synchronous_commit = off` | Ghi nhanh hơn | Có thể mất giao dịch cuối khi crash |
+| Checkpoint thưa (`max_wal_size` lớn) | Ít full-page write, ít spike | Recovery lâu hơn, WAL chiếm nhiều disk |
+
+## 12. Sai lầm thường gặp
+
+- Tăng `max_connections` thay vì dùng pool.
+- Đặt `work_mem` rất lớn toàn cục.
+- Nghĩ rằng COMMIT nghĩa là data file đã được ghi.
+- Commit từng row trong vòng lặp import dữ liệu.
+- `SELECT *` trên bảng có cột lớn được TOAST.
+
+## 13. Cách debug
+
+```sql
+-- Connection đang mở và trạng thái
+SELECT state, count(*) FROM pg_stat_activity GROUP BY state;
+
+-- Cache hit ratio theo bảng
+SELECT relname,
+       heap_blks_hit::float / nullif(heap_blks_hit + heap_blks_read, 0) AS hit_ratio
+FROM pg_statio_user_tables ORDER BY heap_blks_read DESC LIMIT 10;
+
+-- Checkpoint (PostgreSQL 17+ dùng pg_stat_checkpointer, trước đó pg_stat_bgwriter)
+SELECT * FROM pg_stat_checkpointer;
+
+-- I/O theo loại backend và đối tượng (PostgreSQL 16+)
+SELECT backend_type, object, context, reads, writes, hits FROM pg_stat_io;
+```
+
+Bật `log_checkpoints` (mặc định bật từ 15), `log_temp_files` để phát hiện spill, và theo dõi kích thước `pg_wal`.
+
+## 14. Best Practices
+
+- Luôn dùng connection pool; giữ số backend ở mức hàng chục tới vài trăm, không phải hàng nghìn.
+- Cấu hình memory theo tổng ngân sách: `shared_buffers` + (`work_mem` × số thao tác đồng thời ước tính) + OS cache.
+- Ghi theo batch; tránh commit từng row.
+- Chỉ chọn cột cần thiết; tách dữ liệu lớn ít dùng ra bảng riêng hoặc object storage.
+- Theo dõi cache hit ratio, checkpoint, WAL volume, temp file.
+
+## 15. Tóm tắt
+
+- PostgreSQL chạy một backend process cho mỗi connection; connection đắt nên cần pool.
+- Dữ liệu lưu thành page 8 KB; row được định danh bằng TID; tuple header chứa `xmin`/`xmax` cho MVCC.
+- `shared_buffers` cache page; `work_mem` là bộ nhớ cho mỗi thao tác sort/hash, vượt thì spill ra disk.
+- WAL được ghi trước; COMMIT bền vững khi WAL đã flush, page dữ liệu được checkpoint sau.
+- WAL là nền cho crash recovery, replication, PITR và CDC.
+
+## Liên quan
+
+- [Query Lifecycle](query-lifecycle.md)
 - [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+- [VACUUM và Bloat](vacuum-bloat.md)
+- [Connection Pooling](connection-pooling.md)
+- [Replication](replication.md)

@@ -1,213 +1,222 @@
 # Synchronization
 
-> **Phạm vi phỏng vấn:** Python Concurrency · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Synchronization là tập hợp các cơ chế giúp nhiều tác vụ đồng thời **phối hợp** với nhau: loại trừ lẫn nhau khi truy cập trạng thái chung, chờ một điều kiện xảy ra, giới hạn số tác vụ cùng làm một việc, hoặc truyền dữ liệu an toàn.
 
-Synchronization là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python.
+Python có bốn "họ" primitive, mỗi họ chỉ hoạt động trong phạm vi của nó:
 
-## 2. Why does it matter?
+| Họ | Module | Phạm vi |
+|---|---|---|
+| Thread | `threading`, `queue` | Các thread trong **một process** |
+| AsyncIO | `asyncio` | Các coroutine trên **một event loop** |
+| Process | `multiprocessing` | Các process trên **một máy** |
+| Phân tán | PostgreSQL lock, Redis, ZooKeeper/etcd | Nhiều máy, nhiều service |
 
-Senior Engineer cần hiểu **Synchronization** để chọn đúng execution model, bảo vệ shared state và giữ tail latency ổn định. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Dùng primitive sai phạm vi là lỗi phổ biến: `asyncio.Lock` không bảo vệ gì giữa các thread; `threading.Lock` không bảo vệ gì giữa các pod.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Xác định execution unit (coroutine/thread/process), điểm yield/preemption, shared state và propagation của exception/cancellation; mọi fan-out phải có bound.
+> Mọi primitive đồng bộ đều trả lời một câu hỏi: "ai được đi tiếp, và những người còn lại chờ ở đâu?"
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `event-loop lag, queue depth, context switch, CPU saturation và p99 latency` và phân biệt symptom, bottleneck với root cause.
+- **Lock**: một người đi qua cửa tại một thời điểm.
+- **Semaphore**: tối đa N người trong phòng.
+- **Event**: tất cả chờ cho tới khi đèn xanh bật.
+- **Condition**: chờ cho tới khi một điều kiện cụ thể thành đúng, và được đánh thức khi có người thay đổi trạng thái.
+- **Queue**: không chia sẻ trạng thái, chỉ chuyền đồ qua ô cửa; ô cửa có giới hạn thì người chuyền phải chờ.
 
-## 4. Example
+## 3. Vì sao cần?
+
+- Bảo vệ invariant khi nhiều tác vụ đọc/ghi trạng thái chung ([Race Condition](race-condition.md)).
+- Giới hạn concurrency tới tài nguyên có hạn (connection, API có rate limit).
+- Phối hợp producer/consumer với backpressure.
+- Chờ sự kiện: service sẵn sàng, dữ liệu đã tải xong, yêu cầu shutdown.
+
+## 4. Các primitive trong `threading`
+
+| Primitive | Hành vi | Dùng khi |
+|---|---|---|
+| `Lock` | Một chủ sở hữu; `acquire` block tới khi được | Bảo vệ đoạn code critical ngắn |
+| `RLock` | Thread đang giữ có thể acquire lại (đếm số lần) | Code đệ quy hoặc method gọi method cùng lock |
+| `Semaphore(n)` | Tối đa n lượt giữ cùng lúc | Giới hạn concurrency |
+| `BoundedSemaphore(n)` | Như trên, báo lỗi nếu release nhiều hơn acquire | Phát hiện bug release thừa |
+| `Event` | Cờ boolean; `wait()` block tới khi `set()` | Tín hiệu một lần: sẵn sàng, dừng |
+| `Condition` | Lock + hàng chờ; `wait()` nhả lock và ngủ, `notify()` đánh thức | Chờ điều kiện phức tạp trên trạng thái chung |
+| `Barrier(n)` | n thread chờ nhau tại một điểm | Đồng bộ các pha tính toán |
+| `queue.Queue(maxsize)` | Hàng đợi thread-safe, `put` block khi đầy | Producer/consumer, truyền việc giữa thread |
+
+Trong CPython, `acquire()` khi phải chờ sẽ **nhả GIL** (chờ trên primitive của OS), nên thread chờ lock không chặn thread khác chạy Python code.
+
+### Condition: luôn chờ trong vòng lặp
 
 ```python
-from dataclasses import dataclass
+import threading
 
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
+class BoundedBuffer:
+    def __init__(self, capacity: int):
+        self._items: list = []
+        self._capacity = capacity
+        self._cond = threading.Condition()
 
-decision = Decision(
-    topic='Synchronization',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+    def put(self, item) -> None:
+        with self._cond:
+            while len(self._items) >= self._capacity:   # while, không phải if
+                self._cond.wait()
+            self._items.append(item)
+            self._cond.notify_all()
+
+    def get(self):
+        with self._cond:
+            while not self._items:
+                self._cond.wait()
+            item = self._items.pop(0)
+            self._cond.notify_all()
+            return item
 ```
 
-Ví dụ biến quyết định về **Synchronization** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+`wait()` phải nằm trong `while` vì khi được đánh thức, điều kiện có thể đã bị thread khác làm sai lại (hoặc thread bị đánh thức giả — spurious wakeup). Trong thực tế, `queue.Queue` đã cài đặt đúng pattern này; hãy dùng nó thay vì tự viết.
 
-## 5. Production Use Case
+## 5. Các primitive trong `asyncio`
 
-Service xử lý vehicle telemetry áp dụng Synchronization, đo loop lag/queue age/CPU rồi giới hạn concurrency theo capacity downstream.
+`asyncio.Lock`, `Event`, `Condition`, `Semaphore`, `BoundedSemaphore`, `Barrier` (3.11+), `Queue` có API tương tự nhưng:
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+- Chỉ dùng được giữa các coroutine **trên cùng một event loop**.
+- **Không thread-safe**.
+- Chờ bằng `await`, nhường quyền cho coroutine khác thay vì block thread.
 
-## 6. Common Problems
+```python
+sem = asyncio.Semaphore(10)
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+async def call_partner(payload):
+    async with sem:                    # tối đa 10 lời gọi đồng thời
+        return await client.post("/v1/score", json=payload, timeout=2.0)
+```
 
-## 7. Trade-offs
+Semaphore là công cụ chính để giới hạn fan-out trong code async. Xem [AsyncIO](asyncio.md#giới-hạn-concurrency).
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Synchronization | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+`asyncio.Queue(maxsize=N)`: `await queue.put()` tạm dừng producer khi đầy — backpressure tự nhiên giữa coroutine.
 
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Synchronization, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Synchronization.
-- **B3.** Which guarantees does Synchronization provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Synchronization?
-- **B5.** What is the most common misconception about Synchronization?
-- **B6.** How would you test assumptions involving Synchronization?
-- **B7.** Which edge cases or failure modes matter most for Synchronization?
-- **B8.** How can Synchronization affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Synchronization?
-- **B10.** When is a different or simpler approach better than relying on Synchronization?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Synchronization triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Synchronization is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Synchronization. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Synchronization fails first?
-- **S5.** A canary changes the behavior of Synchronization; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Synchronization constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Synchronization meets concurrency or partial failure?
-- **L3.** What breaks first around Synchronization at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Synchronization?
-- **L5.** How would you benchmark or validate Synchronization without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Synchronization introduce?
-- **L7.** How would you change a poor decision around Synchronization with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Synchronization?
-- **L10.** How would you turn an incident involving Synchronization into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Synchronization là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Synchronization.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo event-loop lag, queue depth, context switch, CPU saturation và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Synchronization như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Synchronization khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Synchronization**, không chỉ “dùng để làm gì”.
-- Định lượng bằng event-loop lag, queue depth, context switch, CPU saturation và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Synchronization** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Xác định ai schedule work (OS hay event loop), unit nào có stack/heap riêng, điểm preemption/yield, memory nào được chia sẻ và exception/cancellation đi đâu. Bound concurrency trước khi tối ưu throughput.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 6. Luồng xử lý: producer/consumer với hàng đợi có giới hạn
 
 ```mermaid
 flowchart LR
-            Work["Synchronization workload"] --> Scheduler["OS / Python scheduler"]
-            Scheduler --> Running["Running execution unit"]
-            Running -->|wait / yield| Waiting
-            Waiting -->|ready| Scheduler
-            Running --> Shared["Shared state + synchronization"]
+    P1["Producer 1"] -->|"put, chờ nếu đầy"| Q["Queue maxsize=100"]
+    P2["Producer 2"] -->|"put, chờ nếu đầy"| Q
+    Q -->|"get, chờ nếu rỗng"| C1["Consumer 1"]
+    Q -->|"get, chờ nếu rỗng"| C2["Consumer 2"]
+    C1 --> DB["Database"]
+    C2 --> DB
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Producer đặt việc vào queue; consumer lấy ra xử lý.
+2. Khi consumer chậm (DB chậm), queue đầy dần.
+3. Khi queue đầy, `put` block producer — tốc độ sinh việc tự động giảm xuống bằng tốc độ tiêu thụ. Đây là **backpressure**.
+4. Không có `maxsize`, queue lớn vô hạn: memory tăng, và việc nằm trong queue càng lâu càng "cũ".
+5. Producer và consumer không chia sẻ trạng thái nào ngoài queue — không cần lock cho dữ liệu nghiệp vụ.
 
-Dưới load, blocking call, unbounded fan-out, race hoặc lock contention làm queue/loop lag tăng. Áp deadline, semaphore/pool bound, structured cancellation và tách CPU work khỏi event loop.
+Nguyên lý "chia sẻ bằng cách truyền message, không truyền message bằng cách chia sẻ memory" giúp tránh phần lớn lỗi đồng bộ. Xem [Backpressure](../10-distributed-systems/backpressure.md).
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 7. Internals: lock bên trong connection pool
 
-## 17. How I would debug this in production
+Connection pool (SQLAlchemy `QueuePool`, asyncpg pool) là một ví dụ thực tế của synchronization:
 
-1. Phân loại CPU-bound, blocking I/O hay async I/O.
-2. Xem per-core CPU, event-loop lag, thread/process/queue depth.
-3. Capture stack/profile của execution unit đang giữ CPU/lock.
-4. Kiểm semaphore, timeout, cancellation và shared-state invariant.
-5. Load test lại với bounded concurrency.
+- Bên trong là một queue các connection rảnh, được bảo vệ bởi lock/condition.
+- `checkout`: lấy connection; nếu hết và chưa đạt `max_overflow`, tạo mới; nếu đạt giới hạn, **chờ** trên condition tới khi có connection được trả hoặc hết `pool_timeout`.
+- `checkin`: trả connection vào queue và `notify` một thread/coroutine đang chờ.
 
-## 18. Common Misconceptions
+Vì vậy "chờ connection pool" là một dạng chờ lock: nó xuất hiện dưới dạng latency, không phải CPU. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
 
-**Sai:** concurrency luôn là parallelism và thêm worker luôn tăng throughput. **Đúng:** queueing, GIL, locks và downstream capacity có thể làm p99 tệ hơn.
+## 8. Ví dụ: single-flight cho cache trong AsyncIO
 
-## 19. When NOT to use
+Nhiều coroutine cùng cần một key chưa có trong cache: chỉ một coroutine nên tải, số còn lại chờ kết quả.
 
-Không thêm concurrency khi workload nhỏ hoặc downstream đã saturated; model tuần tự đơn giản có thể đúng và dễ vận hành hơn.
+```python
+import asyncio
 
-## 20. What interviewer may ask next
+class SingleFlight:
+    def __init__(self):
+        self._inflight: dict[str, asyncio.Task] = {}
 
-1. **What guarantee does Synchronization provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+    async def do(self, key: str, loader):
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(loader())
+            self._inflight[key] = task
+            task.add_done_callback(lambda _t: self._inflight.pop(key, None))
+        return await task
+```
 
-## 21. Check Your Understanding
+Không cần lock vì giữa việc kiểm tra `self._inflight.get(key)` và gán `self._inflight[key]` không có `await` — trên một event loop, đoạn này không bị chen ngang. Đây là điểm mạnh của cooperative scheduling. Trong code đa thread, đoạn tương tự **cần** lock.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Synchronization** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 9. Hành vi trong production
 
-<details>
-<summary>Answer</summary>
+- **Lock contention**: nhiều tác vụ chờ cùng một lock làm throughput giảm về mức tuần tự. Dấu hiệu: latency tăng khi concurrency tăng, CPU thấp.
+- **Giữ lock qua I/O**: `with lock: requests.get(...)` hoặc `async with lock: await http_call()` biến lock thành nút cổ chai tuần tự hóa mọi request đi qua nó.
+- **Lock toàn cục trong thư viện**: logging handler có lock; ghi log đồng bộ ra file/network chậm làm mọi thread chờ nhau. Dùng `QueueHandler`/`QueueListener` để ghi log bất đồng bộ.
+- **Nhiều pod**: mọi primitive trong process chỉ có tác dụng trong pod đó. Đồng bộ giữa pod phải qua database (row lock, advisory lock, constraint) hoặc hệ thống điều phối.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+## 10. Failure Modes
 
-</details>
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Deadlock | Chờ vòng tròn giữa các lock | Thread/coroutine treo vĩnh viễn, CPU 0% |
+| Contention | Lock thô, giữ lâu | Throughput không tăng khi thêm worker |
+| Lock không có tác dụng | Dùng primitive sai phạm vi | Race condition vẫn xảy ra |
+| Quên release | Acquire không dùng `with` và có exception | Mọi tác vụ sau đó treo |
+| Queue phình | Không có `maxsize` | Memory tăng, việc cũ bị xử lý muộn |
+| Lost wakeup | `notify` trước khi bên kia `wait`, kiểm tra điều kiện bằng `if` | Consumer ngủ mãi dù có việc |
 
-## 22. See also
+## 11. Trade-offs
 
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Lock thô (một lock cho cả cấu trúc) | Đơn giản, khó sai | Contention cao |
+| Lock mịn (nhiều lock nhỏ) | Concurrency cao | Phức tạp, rủi ro deadlock |
+| Message passing (queue) | Không chia sẻ trạng thái, dễ lý luận | Thêm độ trễ, cần thiết kế lại luồng dữ liệu |
+| Immutable data | Không cần đồng bộ khi đọc | Tạo object mới khi thay đổi |
+| Atomic tại storage | Đúng đắn giữa nhiều process/pod | Phụ thuộc khả năng của database |
+
+## 12. Sai lầm thường gặp
+
+- Dùng `asyncio.Lock` giữa thread hoặc `threading.Lock` trong coroutine (block cả event loop).
+- Giữ lock trong lúc chờ network.
+- Kiểm tra điều kiện của `Condition` bằng `if` thay vì `while`.
+- Acquire/release thủ công thay vì `with`.
+- Nghĩ lock trong process bảo vệ được dữ liệu trong database khi có nhiều instance.
+- Tự viết producer/consumer thay vì dùng `queue.Queue`/`asyncio.Queue`.
+
+## 13. Cách debug
+
+- `py-spy dump`: nhiều thread nằm ở `acquire` hoặc `wait` cùng một chỗ → contention hoặc deadlock.
+- Đo thời gian chờ lock: bọc acquire bằng timer và xuất metric cho các lock quan trọng.
+- `acquire(timeout=...)` trong môi trường staging để biến treo vô hạn thành lỗi có traceback.
+- Với asyncio, debug mode cảnh báo khi primitive được dùng từ loop khác.
+- Metric queue: độ dài, thời gian việc nằm trong queue (queue age).
+
+## 14. Best Practices
+
+- Chọn primitive đúng phạm vi: thread, loop, process, hay phân tán.
+- Ưu tiên queue và immutable data; dùng lock khi thực sự phải chia sẻ trạng thái.
+- Giữ critical section ngắn, không chứa I/O hoặc `await` tới dịch vụ ngoài.
+- Luôn dùng `with`/`async with` cho lock.
+- Mọi queue và pool đều có giới hạn và timeout khi chờ.
+- Đồng bộ giữa instance bằng cơ chế của storage (constraint, row lock, atomic update).
+
+## 15. Tóm tắt
+
+- Primitive đồng bộ quyết định ai đi tiếp và ai chờ ở đâu: lock, semaphore, event, condition, queue.
+- Mỗi họ primitive chỉ có tác dụng trong phạm vi của nó: thread, event loop, process, hay hệ thống phân tán.
+- Queue có giới hạn vừa truyền dữ liệu an toàn vừa tạo backpressure.
+- Lock giữ qua I/O là nguồn contention phổ biến nhất.
+- Trong asyncio, đoạn code không có `await` không bị chen ngang — có thể tránh lock trong nhiều trường hợp.
+
+## Liên quan
+
+- [Race Condition](race-condition.md)
+- [Deadlock](deadlock.md)
+- [Threading](threading.md)
 - [AsyncIO](asyncio.md)
-- [Event Loop](event-loop.md)
-- [FastAPI Sync vs Async](../03-fastapi/sync-vs-async-endpoint.md)
-- [CPU vs I/O](cpu-vs-io-bound.md)
+- [Backpressure](../10-distributed-systems/backpressure.md)
+- [Distributed Lock](../10-distributed-systems/distributed-lock.md)

@@ -1,221 +1,308 @@
-# Request Lifecycle
+# Request Lifecycle trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Một request HTTP tới FastAPI đi qua nhiều tầng trước khi tới dòng code đầu tiên trong endpoint, và đi qua nhiều tầng nữa sau khi endpoint return. Mỗi tầng có thể thêm latency, ném lỗi, giữ tài nguyên, hoặc bị cancel.
 
-Request đi qua proxy/ASGI server, middleware, routing, dependency resolution, validation, endpoint, serialization và response middleware.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Request Lifecycle** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Context và resource scope phải kết thúc kể cả exception/cancellation; transaction không nên bao trùm network call và trace ID cần xuyên mọi lớp.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
+```text
+Client
+↓
+Load Balancer
+↓
+Uvicorn (socket, HTTP parser, event loop)
+↓
+ASGI (scope, receive, send)
+↓
+Middleware
+↓
+Router
+↓
+Dependency Injection
+↓
+Validation (Pydantic)
+↓
+Endpoint
+↓
+Service
+↓
+Repository
+↓
+Database
 ```
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Request Lifecycle**.
+Tài liệu này đi qua từng bước theo chiều vào và chiều ra, chỉ ra điều gì xảy ra ở mỗi bước, ai sở hữu tài nguyên, và lỗi nào có thể xuất hiện.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Dependency `yield` mở AsyncSession cho một request, commit ở service boundary, rollback khi lỗi và đóng session trước khi response connection được tái sử dụng.
+> Một request là một **scope có thời hạn** với quyền sở hữu tài nguyên rõ ràng: được tạo khi request tới, làm việc, trả response, và dọn dẹp — kể cả khi có exception hoặc cancellation.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+Chiều vào xây dựng context (parse, xác thực, mở session). Chiều ra phá dỡ context theo thứ tự ngược lại (serialize, commit/rollback, đóng session, ghi log). Cấu trúc này giống một chồng [context manager](../01-python-core/context-manager.md) lồng nhau.
 
-## 6. Common Problems
+## 3. Vì sao cần hiểu lifecycle?
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+- Biết **đặt logic ở đâu**: middleware, dependency hay endpoint.
+- Biết **latency đến từ đâu**: chờ trong accept queue, chờ threadpool, validation, query, serialization.
+- Biết **tài nguyên được giải phóng lúc nào**: session DB đóng trước hay sau khi response gửi đi.
+- Biết **lỗi được xử lý ở tầng nào** và vì sao có lỗi trả về 500 dạng text thay vì JSON.
 
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Request Lifecycle | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Request Lifecycle, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Request Lifecycle.
-- **B3.** Which guarantees does Request Lifecycle provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Request Lifecycle?
-- **B5.** What is the most common misconception about Request Lifecycle?
-- **B6.** How would you test assumptions involving Request Lifecycle?
-- **B7.** Which edge cases or failure modes matter most for Request Lifecycle?
-- **B8.** How can Request Lifecycle affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Request Lifecycle?
-- **B10.** When is a different or simpler approach better than relying on Request Lifecycle?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Request Lifecycle triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Request Lifecycle is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Request Lifecycle. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Request Lifecycle fails first?
-- **S5.** A canary changes the behavior of Request Lifecycle; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Request Lifecycle constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Request Lifecycle meets concurrency or partial failure?
-- **L3.** What breaks first around Request Lifecycle at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Request Lifecycle?
-- **L5.** How would you benchmark or validate Request Lifecycle without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Request Lifecycle introduce?
-- **L7.** How would you change a poor decision around Request Lifecycle with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Request Lifecycle?
-- **L10.** How would you turn an incident involving Request Lifecycle into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Request đi qua proxy/ASGI server, middleware, routing, dependency resolution, validation, endpoint, serialization và response middleware. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Request Lifecycle.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Request Lifecycle như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Request Lifecycle khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Request Lifecycle**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Mỗi request là một scope có deadline và resource ownership: tạo context, thực hiện work, trả response, rồi cleanup kể cả khi exception/cancel.
-
-## 14. Internals Deep Dive
-
-
-ASGI server tạo `scope` mô tả HTTP/WebSocket connection và gọi application với `receive`/`send` async callable. Uvicorn sở hữu socket/event loop/protocol; FastAPI/Starlette sở hữu middleware, routing và application behavior. Gunicorn có thể làm process manager cho nhiều worker, nhưng Uvicorn cũng hỗ trợ nhiều process; deployment choice phụ thuộc platform và graceful lifecycle.
-
-FastAPI match route, resolve dependency graph (sync dependency có thể vào thread pool), validate input qua Pydantic rồi gọi endpoint. Response serialization và middleware unwind xảy ra trước/đồng thời cleanup tùy dependency scope/version; không dựa vào thứ tự mơ hồ cho transaction correctness. Mỗi worker có event loop/pool riêng, nên tổng DB connection = replicas × workers × pool configuration.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. Luồng xử lý tổng thể
 
 ```mermaid
 flowchart LR
     Client --> LB["Load balancer"]
     LB --> Uvicorn
-    Uvicorn --> ASGI
-    ASGI --> Middleware
-    Middleware --> Router
+    Uvicorn --> ASGI["ASGI app call"]
+    ASGI --> MW["Middleware stack"]
+    MW --> Router
     Router --> DI["Dependency graph"]
-    DI --> Validation["Pydantic validation"]
-    Validation --> Endpoint
-    Endpoint --> Service
-    Service --> Repository
-    Repository --> DB[(PostgreSQL)]
+    DI --> Val["Pydantic validation"]
+    Val --> EP["Endpoint"]
+    EP --> Svc["Service"]
+    Svc --> Repo["Repository"]
+    Repo --> DB[("PostgreSQL")]
+    EP -.-> Ser["Serialize response_model"]
+    Ser -.-> MWout["Middleware chiều ra"]
+    MWout -.-> Send["send() tới client"]
+    Send -.-> BG["Background tasks"]
+    BG -.-> Clean["Cleanup dependency có yield"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Đường liền là chiều vào; đường đứt là chiều ra. Phần dưới đây mô tả từng bước.
 
-## 16. Failure Scenario
+## 5. Bên trong hệ thống xảy ra gì? Chiều vào
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+### Bước 1 — Load balancer
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Load balancer (ALB, Nginx, Ingress controller) nhận kết nối TLS từ client, thường **terminate TLS**, chọn một pod theo thuật toán cân bằng tải, và mở (hoặc tái sử dụng) kết nối HTTP tới pod. Nó thêm header `X-Forwarded-For`, `X-Forwarded-Proto`. Timeout ở tầng này (idle timeout, request timeout) là giới hạn trên cho mọi thứ bên dưới. Xem [Load Balancer](../11-system-design/load-balancer.md).
 
-## 17. How I would debug this in production
+### Bước 2 — Uvicorn nhận kết nối
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+1. Kernel hoàn tất TCP handshake và đặt kết nối vào **accept queue** của socket đang listen. Nếu worker bận (event loop bị block), kết nối nằm ở đây — latency tăng mà application không hề thấy.
+2. Event loop của worker `accept` kết nối, tạo transport và một instance protocol HTTP.
+3. Byte tới được parser (httptools) xử lý: method, path, header. Khi đủ header, Uvicorn tạo **scope** ASGI.
+4. Uvicorn tạo một **Task** mới chạy `app(scope, receive, send)`. Từ đây request có coroutine riêng trên event loop.
 
-## 18. Common Misconceptions
+Body **chưa** được đọc lúc này. Body đến dần qua `receive()`.
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+### Bước 3 — Middleware stack
 
-## 19. When NOT to use
+Starlette dựng một chồng ASGI app lồng nhau. Với FastAPI, thứ tự từ ngoài vào trong là:
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+```mermaid
+flowchart TB
+    SE["ServerErrorMiddleware<br/>bắt mọi exception chưa xử lý, trả 500"]
+    UM["Middleware do bạn thêm<br/>CORS, tracing, request ID, GZip..."]
+    EM["ExceptionMiddleware<br/>chạy exception handler: HTTPException, validation error, handler tùy biến"]
+    RT["Router"]
+    SE --> UM --> EM --> RT
+```
 
-## 20. What interviewer may ask next
+Diễn giải:
 
-1. **What guarantee does Request Lifecycle provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+1. **ServerErrorMiddleware** ngoài cùng: exception không ai xử lý sẽ tới đây và thành response 500 (và được log).
+2. **Middleware của bạn** ở giữa; middleware thêm sau cùng bằng `add_middleware` nằm **ngoài cùng** trong nhóm này.
+3. **ExceptionMiddleware** gần router: chuyển `HTTPException`, `RequestValidationError` và exception có handler đăng ký thành response.
+4. **Router** chọn route.
 
-## 21. Check Your Understanding
+Vì exception handler nằm **trong** middleware của bạn, middleware nhìn thấy response đã được xử lý (ví dụ 404, 422), nhưng exception không có handler sẽ đi xuyên qua middleware của bạn tới ServerErrorMiddleware. Chi tiết ở [Middleware](middleware.md) và [Error Handling](error-handling.md).
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Request Lifecycle** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Bước 4 — Routing
 
-<details>
-<summary>Answer</summary>
+Router duyệt danh sách route theo **thứ tự đăng ký**, so khớp path với regex đã compile từ path template (`/claims/{claim_id}`) và method. Route đầu tiên khớp thắng. Path parameter được trích xuất vào `scope["path_params"]`.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Hệ quả: `/users/me` phải đăng ký **trước** `/users/{user_id}`, nếu không `"me"` bị coi là `user_id` và validation `int` thất bại với 422.
 
-</details>
+### Bước 5 — Dependency resolution
 
-## 22. See also
+FastAPI đã phân tích signature của endpoint lúc import (xem [Typing](../01-python-core/typing.md)). Với mỗi request, nó giải **dependency graph**:
 
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+1. Duyệt đồ thị theo chiều sâu; dependency con được giải trước dependency cha.
+2. Mỗi dependency được gọi **tối đa một lần mỗi request** (trừ khi `use_cache=False`) — nếu `get_session` được dùng bởi ba dependency khác nhau, cả ba nhận cùng một session.
+3. Dependency `async def` chạy trên event loop; dependency `def` chạy trong **threadpool**.
+4. Dependency có `yield`: phần trước `yield` chạy ngay; phần sau `yield` được đăng ký vào một `AsyncExitStack` để chạy khi dọn dẹp.
+5. Dependency có thể raise `HTTPException` (ví dụ 401) để dừng request trước khi tới endpoint.
+
+Chi tiết ở [Dependency Injection](dependency-injection.md).
+
+### Bước 6 — Đọc body và validation
+
+1. Nếu endpoint cần body, FastAPI gọi `await request.body()` (hoặc form parser): lặp `receive()` tới khi hết body. Toàn bộ body được đọc vào memory — body 100 MB chiếm 100 MB.
+2. Body JSON được parse và validate bằng Pydantic theo model khai báo. Path, query, header, cookie được validate theo type hint.
+3. Lỗi validation được gom lại thành `RequestValidationError` → ExceptionMiddleware trả **422** với danh sách lỗi chi tiết.
+
+Validation bằng Pydantic v2 chạy trong code Rust đã compile, nhưng vẫn tốn CPU trên event loop — với payload lớn, đây là chi phí đáng kể. Xem [Validation với Pydantic](validation-pydantic.md).
+
+### Bước 7 — Endpoint
+
+- `async def` endpoint: được `await` trực tiếp trên event loop.
+- `def` endpoint: chạy trong threadpool AnyIO (40 token mặc định mỗi worker).
+
+Xem [Sync vs Async Endpoint](sync-vs-async-endpoint.md).
+
+### Bước 8 — Service, repository, database
+
+Endpoint gọi service (logic nghiệp vụ), service gọi repository (truy cập dữ liệu), repository dùng session để gửi query. Mỗi `await` tới database là một điểm event loop có thể chạy request khác. Connection được lấy từ pool khi query đầu tiên chạy (hoặc khi transaction bắt đầu) và giữ tới khi transaction kết thúc. Xem [Session Lifecycle](../05-sqlalchemy/session-lifecycle.md).
+
+## 6. Bên trong hệ thống xảy ra gì? Chiều ra
+
+### Bước 9 — Serialize response
+
+1. Giá trị endpoint trả về được validate và serialize theo `response_model` (hoặc return type annotation). Field không có trong model bị loại — đây là lớp bảo vệ chống rò rỉ dữ liệu (không trả `password_hash` dù ORM object có).
+2. Kết quả được đóng gói thành `JSONResponse` (hoặc response class được chỉ định).
+
+Serialize danh sách lớn (10.000 object) là chi phí CPU đáng kể, chạy trên event loop.
+
+### Bước 10 — Middleware chiều ra
+
+Response đi ngược qua middleware: thêm header (request ID, timing), nén (GZip), ghi log truy cập, kết thúc span tracing.
+
+### Bước 11 — Gửi response
+
+Starlette gọi `send({"type": "http.response.start", ...})` rồi `send({"type": "http.response.body", ...})`. Uvicorn ghi byte vào transport. Nếu client đọc chậm, buffer ghi đầy và `send` tạm dừng (backpressure).
+
+### Bước 12 — Background tasks
+
+`BackgroundTasks` được chạy **sau khi** response đã gửi xong, trong cùng Task, trên cùng worker. Client đã nhận response nhưng worker vẫn đang bận. Xem [Background Task](background-task.md).
+
+### Bước 13 — Cleanup dependency có `yield`
+
+`AsyncExitStack` chạy phần sau `yield` của các dependency theo thứ tự **ngược** với lúc khởi tạo: đóng session, trả connection về pool, nhả lock.
+
+> **Ghi chú version:** Thời điểm chạy phần sau `yield` so với lúc gửi response (và so với background task) đã thay đổi qua các version FastAPI — có thay đổi lớn ở 0.106.0 và các version gần đây bổ sung tùy chọn scope cho dependency. Không thiết kế logic đúng đắn (ví dụ commit transaction) dựa trên giả định về thứ tự này; commit tường minh trong service trước khi return, và không dùng session của request bên trong background task.
+
+### Bước 14 — Keep-alive
+
+Kết nối HTTP/1.1 được giữ mở cho request tiếp theo tới hết `--timeout-keep-alive`.
+
+## 7. Toàn bộ vòng đời trên một sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant LB as Load balancer
+    participant U as Uvicorn
+    participant MW as Middleware
+    participant DI as Dependency
+    participant EP as Endpoint
+    participant DB as PostgreSQL
+    C->>LB: HTTPS request
+    LB->>U: HTTP request, X-Forwarded-For
+    U->>U: accept, parse header, tạo scope, tạo Task
+    U->>MW: app(scope, receive, send)
+    MW->>MW: request ID, bắt đầu span
+    MW->>DI: Router chọn route, giải dependency
+    DI->>DI: xác thực token, mở session
+    DI->>EP: gọi endpoint với dữ liệu đã validate
+    EP->>DB: await query
+    Note over U,DB: Event loop chạy request khác trong lúc chờ
+    DB-->>EP: rows
+    EP-->>MW: serialize theo response_model
+    MW-->>U: thêm header, kết thúc span
+    U-->>LB: HTTP response
+    LB-->>C: HTTPS response
+    U->>DI: background tasks, rồi cleanup dependency
+    DI->>DB: session đóng, connection về pool
+```
+
+Diễn giải: điểm quan trọng nhất nằm ở cuối diagram — **client đã nhận response trước khi connection DB được trả về pool** (tùy version và cấu hình), và trước khi background task chạy xong. Thời gian giữ tài nguyên của một request dài hơn latency mà client thấy.
+
+## 8. Ví dụ: đo thời gian từng tầng
+
+```python
+import time
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+class TimingMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        start = time.perf_counter()
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                headers = list(message.get("headers", []))
+                headers.append((b"server-timing", f"app;dur={elapsed_ms:.1f}".encode()))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+```
+
+Middleware ASGI thuần bọc `send` để đo thời gian tới lúc bắt đầu gửi response và thêm header `Server-Timing`. Nó không đọc body, không phá streaming. So sánh con số này với latency ở load balancer cho biết thời gian nằm ngoài application (accept queue, network).
+
+## 9. Hành vi trong production
+
+- **Thời gian chờ ẩn**: latency client thấy = chờ ở LB + chờ trong accept queue + chờ event loop rảnh + chờ threadpool/pool + thời gian xử lý thật. Tracing trong application chỉ thấy phần sau cùng.
+- **Client ngắt kết nối**: nếu client đóng kết nối giữa chừng, `receive()` trả về `http.disconnect`. Tùy server và cách xử lý, Task có thể bị cancel. Transaction đang dở được rollback nhờ cleanup, nhưng tác dụng phụ bên ngoài (gọi API thanh toán) có thể đã xảy ra.
+- **Request body lớn**: đọc toàn bộ vào memory. Giới hạn kích thước body ở LB/Ingress và xử lý upload lớn bằng streaming hoặc pre-signed URL tới object storage.
+- **Exception trong cleanup**: lỗi khi đóng session sau khi response đã gửi không thể thay đổi response nữa; chỉ còn log.
+
+## 10. Failure Modes
+
+| Tầng | Failure | Dấu hiệu |
+|---|---|---|
+| Accept queue | Worker bận, event loop bị block | Latency ở LB cao hơn nhiều so với latency trong app |
+| Routing | Thứ tự route sai | 422 bất ngờ, route không bao giờ được gọi |
+| Dependency | Dependency sync chậm chiếm threadpool | Latency tăng ở mọi endpoint dùng dependency đó |
+| Validation | Payload lớn, model lồng sâu | CPU event loop cao |
+| Endpoint | Blocking call trong `async def` | Loop lag, mọi request chậm |
+| Serialize | Response rất lớn | CPU cao, memory spike |
+| Background | Task nặng sau response | Worker bận dù không có request, lỗi không ai thấy |
+| Cleanup | Session dùng sau khi đóng | Lỗi trong background task truy cập DB |
+
+## 11. Trade-offs: đặt logic ở tầng nào?
+
+| Logic | Tầng phù hợp | Lý do |
+|---|---|---|
+| Request ID, tracing, timing, CORS, nén | Middleware | Áp dụng cho mọi request, không cần biết route |
+| Xác thực, phân quyền theo route | Dependency | Biết route, trả lỗi có cấu trúc, test override dễ |
+| DB session, transaction scope | Dependency có `yield` | Vòng đời gắn với request, cleanup đảm bảo |
+| Kiểm tra định dạng dữ liệu | Pydantic model | Khai báo, sinh OpenAPI |
+| Quy tắc nghiệp vụ | Service | Độc lập framework, test được |
+| Truy cập dữ liệu | Repository | Tách khỏi nghiệp vụ |
+
+## 12. Sai lầm thường gặp
+
+- Đặt xác thực vào middleware rồi phải tự parse route để biết endpoint nào cần bảo vệ.
+- Đọc body trong middleware kiểu `BaseHTTPMiddleware`, làm hỏng streaming và tăng memory.
+- Dùng session DB của request trong background task.
+- Tin rằng latency trong trace là latency người dùng thấy.
+- Khai báo route động trước route tĩnh cùng tiền tố.
+
+## 13. Cách debug trong production
+
+1. So sánh latency ở LB (access log của LB/Ingress) với latency trong application (middleware timing): chênh lệch lớn → chờ trước application (accept queue, event loop).
+2. Distributed tracing với span cho dependency, query, lời gọi ngoài; span gốc bắt đầu ở middleware.
+3. Metric: request in-flight mỗi worker, loop lag, threadpool đang bận, pool wait.
+4. Log có request ID xuyên suốt các tầng, kể cả background task và cleanup.
+5. Với lỗi 500 dạng text: exception đi thẳng tới ServerErrorMiddleware, chưa có handler — thêm handler cho loại exception đó.
+
+## 14. Best Practices
+
+- Middleware chỉ làm việc cross-cutting, nhẹ, không đọc body.
+- Xác thực, phân quyền, session qua dependency.
+- Endpoint mỏng: nhận dữ liệu đã validate, gọi service, trả kết quả.
+- Luôn khai báo `response_model` hoặc return type để kiểm soát dữ liệu trả ra.
+- Commit transaction tường minh trước khi return; không dựa vào cleanup để commit.
+- Giới hạn kích thước request ở tầng trước application.
+
+## 15. Tóm tắt
+
+- Request đi qua LB → Uvicorn (accept, parse, tạo Task) → middleware → router → dependency → validation → endpoint → service → repository → DB.
+- Chiều ra: serialize theo `response_model` → middleware → gửi response → background task → cleanup dependency.
+- Exception handler nằm trong middleware của bạn; exception không có handler thành 500 ở tầng ngoài cùng.
+- Dependency được giải một lần mỗi request; `def` chạy trong threadpool; `yield` gắn cleanup vào vòng đời request.
+- Tài nguyên của request có thể còn bị giữ sau khi client đã nhận response.
+
+## Liên quan
+
+- [Kiến trúc FastAPI](architecture.md)
+- [Middleware](middleware.md)
+- [Dependency Injection](dependency-injection.md)
+- [Validation với Pydantic](validation-pydantic.md)
+- [Error Handling](error-handling.md)
+- [AsyncIO](../02-python-concurrency/asyncio.md)

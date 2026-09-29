@@ -1,211 +1,191 @@
-# Shallow Vs Deep Copy
+# Shallow Copy và Deep Copy
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Trong Python có ba mức "sao chép" khác nhau:
 
-Shallow Vs Deep Copy là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+| Thao tác | Tạo object mới ở cấp ngoài? | Tạo object mới cho các object con? |
+|---|---|---|
+| Assignment `b = a` | Không | Không |
+| Shallow copy `copy.copy(a)`, `a[:]`, `dict(a)` | Có | Không — dùng chung object con |
+| Deep copy `copy.deepcopy(a)` | Có | Có — đệ quy toàn bộ |
 
-## 2. Why does it matter?
+Chọn sai mức là nguồn gốc của hai loại bug đối lập: dữ liệu bị sửa ngoài ý muốn (copy quá nông) và service chậm/tốn memory hoặc lỗi khó hiểu (copy quá sâu).
 
-Senior Engineer cần hiểu **Shallow Vs Deep Copy** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Shallow Vs Deep Copy',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
-
-Ví dụ biến quyết định về **Shallow Vs Deep Copy** thành invariant và tín hiệu vận hành có thể kiểm chứng.
-
-## 5. Production Use Case
-
-Một shared library dùng Shallow Vs Deep Copy để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Shallow Vs Deep Copy | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Shallow Vs Deep Copy, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Shallow Vs Deep Copy.
-- **B3.** Which guarantees does Shallow Vs Deep Copy provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Shallow Vs Deep Copy?
-- **B5.** What is the most common misconception about Shallow Vs Deep Copy?
-- **B6.** How would you test assumptions involving Shallow Vs Deep Copy?
-- **B7.** Which edge cases or failure modes matter most for Shallow Vs Deep Copy?
-- **B8.** How can Shallow Vs Deep Copy affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Shallow Vs Deep Copy?
-- **B10.** When is a different or simpler approach better than relying on Shallow Vs Deep Copy?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Shallow Vs Deep Copy triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Shallow Vs Deep Copy is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Shallow Vs Deep Copy. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Shallow Vs Deep Copy fails first?
-- **S5.** A canary changes the behavior of Shallow Vs Deep Copy; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Shallow Vs Deep Copy constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Shallow Vs Deep Copy meets concurrency or partial failure?
-- **L3.** What breaks first around Shallow Vs Deep Copy at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Shallow Vs Deep Copy?
-- **L5.** How would you benchmark or validate Shallow Vs Deep Copy without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Shallow Vs Deep Copy introduce?
-- **L7.** How would you change a poor decision around Shallow Vs Deep Copy with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Shallow Vs Deep Copy?
-- **L10.** How would you turn an incident involving Shallow Vs Deep Copy into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Shallow Vs Deep Copy là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Shallow Vs Deep Copy.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Shallow Vs Deep Copy như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Shallow Vs Deep Copy khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Shallow Vs Deep Copy**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Shallow Vs Deep Copy** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 2. Mental Model
 
 ```mermaid
-flowchart LR
-            Source["Python source"] --> Runtime["Shallow Vs Deep Copy runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+flowchart TB
+    subgraph Shallow["Shallow copy"]
+        A1["order (dict)"] --> I1["items (list)"]
+        B1["copy (dict mới)"] --> I1
+    end
+    subgraph Deep["Deep copy"]
+        A2["order (dict)"] --> I2["items (list)"]
+        B2["copy (dict mới)"] --> I3["items (list mới)"]
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Giải thích:
 
-## 16. Failure Scenario
+1. Shallow copy tạo dict mới nhưng value bên trong vẫn là **cùng** list `items`. Sửa `copy["items"].append(...)` sẽ thấy ở `order` gốc.
+2. Deep copy tạo dict mới **và** list mới cho mọi object con mutable. Hai cấu trúc độc lập hoàn toàn.
+3. Với object con immutable (int, str, tuple của immutable), deep copy thường không tạo bản mới vì không cần: không ai sửa được chúng.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+## 3. Vì sao cần hiểu?
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- Hàm "làm việc trên bản sao" nhưng dùng shallow copy cho dữ liệu lồng nhau vẫn sửa dữ liệu gốc.
+- Template/config mặc định bị sửa bởi request đầu tiên và "nhiễm" sang mọi request sau.
+- `deepcopy` ở hot path (mỗi request) có thể chiếm phần lớn CPU và gây latency.
+- `deepcopy` một object chứa lock, socket, DB session gây lỗi hoặc tạo ra bản sao vô nghĩa.
 
-## 17. How I would debug this in production
+## 4. Cơ chế hoạt động
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+### Shallow copy
 
-## 18. Common Misconceptions
+Các cách tạo shallow copy phổ biến:
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+```python
+new_list = old_list[:]          # hoặc list(old_list), old_list.copy()
+new_dict = dict(old_dict)       # hoặc old_dict.copy(), {**old_dict}
+new_set = set(old_set)
+import copy
+new_obj = copy.copy(obj)
+```
 
-## 19. When NOT to use
+Tất cả tạo container mới và sao chép **reference** của các phần tử.
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+### `copy.copy` với object tùy biến
 
-## 20. What interviewer may ask next
+`copy.copy(x)` tìm theo thứ tự:
 
-1. **What guarantee does Shallow Vs Deep Copy provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+1. `type(x).__copy__` nếu có.
+2. Giao thức pickle: `__reduce_ex__(4)` để lấy "công thức" tái tạo object, rồi dựng object mới với cùng state. Với instance thông thường, kết quả là object mới có `__dict__` là shallow copy của `__dict__` cũ.
 
-## 21. Check Your Understanding
+### Deep copy và memo
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Shallow Vs Deep Copy** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+`copy.deepcopy(x, memo)` đệ quy qua mọi object con. Tham số `memo` là dict ánh xạ `id(original) → copy`:
 
-<details>
-<summary>Answer</summary>
+- Khi gặp lại object đã copy (hai reference tới cùng object), dùng lại bản copy — giữ nguyên cấu trúc chia sẻ.
+- Khi gặp cycle, không đệ quy vô hạn vì object đã nằm trong memo.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+```python
+import copy
 
-</details>
+shared = [1, 2]
+data = {"a": shared, "b": shared}
+clone = copy.deepcopy(data)
+clone["a"] is clone["b"]      # True — chia sẻ được bảo toàn
+clone["a"] is shared          # False
+```
 
-## 22. See also
+Object tùy biến có thể định nghĩa `__deepcopy__(self, memo)` để kiểm soát, ví dụ bỏ qua cache hoặc không copy connection.
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+## 5. Internals: chi phí thật của deepcopy
+
+`deepcopy` được viết bằng Python thuần (module `copy`), với mỗi object nó:
+
+1. Tra `memo` bằng `id(x)`.
+2. Tra dispatch table theo type hoặc tìm `__deepcopy__`/`__reduce_ex__`.
+3. Tạo object mới, đệ quy cho từng phần tử, ghi vào memo.
+
+Với cấu trúc có hàng chục nghìn node, chi phí có thể lên tới hàng chục mili giây — tức là lớn hơn cả một truy vấn database nhanh. Đo bằng `timeit` trước khi đặt `deepcopy` vào đường xử lý request.
+
+Một số object không deep copy được hoặc cho kết quả vô nghĩa:
+
+- `threading.Lock`, socket, file handle: raise `TypeError: cannot pickle ...`.
+- Generator, frame: không copy được.
+- Module, class, function: được coi là "atomic", trả về chính nó.
+- SQLAlchemy session, HTTP client: nếu copy được thì bản sao chia sẻ connection pool bên dưới một cách khó lường.
+
+## 6. Ví dụ: template mặc định bị nhiễm
+
+```python
+DEFAULT_REPORT = {
+    "filters": {"status": ["active"]},
+    "columns": ["id", "amount"],
+}
+
+def build_report(extra_status: str | None):
+    report = DEFAULT_REPORT.copy()                 # shallow
+    if extra_status:
+        report["filters"]["status"].append(extra_status)   # sửa list DÙNG CHUNG
+    return report
+```
+
+Request đầu tiên với `extra_status="pending"` làm `DEFAULT_REPORT["filters"]["status"]` thành `["active", "pending"]` vĩnh viễn trong process đó.
+
+Ba cách sửa, theo thứ tự ưu tiên:
+
+```python
+# 1. Xây mới thay vì sửa: không cần copy
+def build_report(extra_status: str | None):
+    statuses = ["active"] + ([extra_status] if extra_status else [])
+    return {"filters": {"status": statuses}, "columns": ["id", "amount"]}
+
+# 2. Default là immutable, tạo cấu trúc mutable mới khi cần
+DEFAULT_STATUSES = ("active",)
+
+# 3. Deep copy khi cấu trúc thực sự phức tạp và nhỏ
+import copy
+report = copy.deepcopy(DEFAULT_REPORT)
+```
+
+## 7. Hành vi trong production
+
+**Pydantic và dataclass.** Pydantic v2 tạo bản copy cho default mutable của field (vì vậy `items: list[str] = []` an toàn trong Pydantic model, khác với function default). `model.model_copy()` là shallow; `model_copy(deep=True)` là deep. `dataclasses.replace(obj, **changes)` tạo instance mới với shallow copy các field còn lại.
+
+**Truyền dữ liệu qua process/queue.** Khi gửi object qua `multiprocessing` hoặc Celery, dữ liệu được serialize (pickle/JSON) — tương đương một deep copy. Bên nhận có bản độc lập; sửa bên nhận không ảnh hưởng bên gửi. Đồng thời chi phí serialize tỷ lệ với kích thước dữ liệu.
+
+**Cache.** Nếu cache lưu object mutable và cần trả bản an toàn, việc deepcopy mỗi lần đọc có thể xóa sạch lợi ích của cache. Lưu dạng immutable (tuple, frozen model) hoặc dạng đã serialize (bytes) thường rẻ hơn.
+
+## 8. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Rò dữ liệu giữa request | Shallow copy template lồng nhau rồi mutate phần con | Kết quả sai sau request đầu tiên có tham số đặc biệt |
+| CPU cao ở endpoint đơn giản | `deepcopy` cấu trúc lớn mỗi request | Profiler thấy `copy.deepcopy`, `_deepcopy_dict` |
+| `TypeError: cannot pickle '_thread.lock'` | Deep copy object chứa lock/connection | Lỗi khi copy model/service object |
+| Memory tăng đột biến | Deep copy tạo bản thứ hai của dữ liệu lớn | Đỉnh memory gấp đôi khi xử lý batch |
+
+## 9. Trade-offs
+
+| Cách | Khi phù hợp | Chi phí |
+|---|---|---|
+| Không copy, dùng immutable | Dữ liệu dùng chung, config, message | Cần thiết kế từ đầu |
+| Shallow copy | Chỉ thay đổi cấp ngoài cùng (thêm/xóa key) | Phần con vẫn dùng chung |
+| Deep copy | Cấu trúc nhỏ, lồng nhau, cần độc lập hoàn toàn | CPU, memory, không copy được tài nguyên |
+| Xây mới từ dữ liệu gốc | Biến đổi dữ liệu theo kiểu functional | Code dài hơn đôi chút, nhưng rõ ràng |
+
+## 10. Sai lầm thường gặp
+
+- Nghĩ `list(a)` hay `a.copy()` cho ra bản độc lập với dữ liệu lồng nhau.
+- Dùng `deepcopy` như phản xạ "cho chắc", kể cả ở hot path.
+- Deep copy object nghiệp vụ đang giữ session/connection.
+- Quên rằng `[[0] * 3] * 3` tạo ba reference tới **cùng** một list con; dùng `[[0] * 3 for _ in range(3)]`.
+
+## 11. Cách debug
+
+- So sánh `id()` của object con giữa bản gốc và bản copy để biết chúng có dùng chung không.
+- Khi nghi dữ liệu dùng chung bị sửa, bọc bằng `MappingProxyType` hoặc frozen model trong test để phát hiện nơi mutate.
+- Dùng profiler (`py-spy`, `cProfile`) để tìm `deepcopy` trong hot path.
+
+## 12. Best Practices
+
+- Thiết kế để không cần copy: dữ liệu dùng chung là immutable, biến đổi bằng cách tạo mới.
+- Nếu phải copy, copy đúng mức: shallow cho thay đổi cấp ngoài, deep cho cấu trúc nhỏ cần độc lập.
+- Định nghĩa `__deepcopy__` hoặc tách tài nguyên ra khỏi object dữ liệu để object dữ liệu copy được an toàn.
+- Đo chi phí copy trước khi đưa vào đường xử lý request.
+
+## 13. Tóm tắt
+
+- Assignment không copy; shallow copy tạo container mới nhưng dùng chung phần tử; deep copy tạo mới đệ quy.
+- `deepcopy` dùng memo để bảo toàn chia sẻ và xử lý cycle.
+- Deep copy tốn kém và không áp dụng được cho tài nguyên như lock, socket, session.
+- Cách tốt nhất để tránh bug copy là dùng immutable cho dữ liệu dùng chung.
+
+## Liên quan
+
+- [Mutable và Immutable](mutable-immutable.md)
+- [Python Object Model](object-model.md)
+- [Validation với Pydantic](../03-fastapi/validation-pydantic.md)

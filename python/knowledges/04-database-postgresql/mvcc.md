@@ -1,214 +1,261 @@
-# PostgreSQL MVCC
+# MVCC trong PostgreSQL
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+MVCC (Multi-Version Concurrency Control) là cơ chế PostgreSQL dùng để cho nhiều transaction đọc và ghi đồng thời mà **người đọc không chặn người ghi, người ghi không chặn người đọc**.
 
-PostgreSQL MVCC giữ nhiều row version để statement/transaction đọc snapshot nhất quán trong khi writer tạo version mới.
+Ý tưởng cốt lõi: thay vì sửa trực tiếp một row tại chỗ (và bắt người đọc phải chờ), PostgreSQL giữ **nhiều phiên bản** của row. Mỗi transaction nhìn dữ liệu qua một **snapshot** — một "ảnh chụp" cho biết transaction nào đã commit tại thời điểm snapshot được lấy — và chỉ thấy các phiên bản phù hợp với snapshot đó.
 
-## 2. Why does it matter?
+MVCC giải thích hàng loạt hành vi của PostgreSQL: vì sao `SELECT` không bao giờ chờ `UPDATE`, vì sao `UPDATE` làm bảng phình to, vì sao cần [VACUUM](vacuum-bloat.md), vì sao transaction mở lâu gây hại, và cách các [isolation level](isolation-level.md) hoạt động.
 
-Senior Engineer cần hiểu **PostgreSQL MVCC** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Thay vì sửa trực tiếp một row để mọi transaction cùng nhìn thấy giá trị mới, PostgreSQL tạo một **phiên bản mới** của row. Mỗi transaction dùng snapshot để quyết định phiên bản nào nó được phép nhìn thấy. Phiên bản cũ chỉ được dọn đi khi không còn snapshot nào cần nó.
 
-Tuple có visibility metadata; UPDATE tạo tuple mới. VACUUM thu hồi dead tuples khi không còn snapshot cần chúng. Long transaction giữ xmin cũ và gây bloat.
+Giống một tài liệu có lịch sử phiên bản: người đang đọc bản cũ tiếp tục đọc bản cũ; người sửa tạo bản mới; bản cũ chỉ bị xóa khi không còn ai đọc nó.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
+## 3. Vì sao cần MVCC?
 
-## 4. Example
+Với cơ chế chỉ dùng lock (two-phase locking thuần), một `UPDATE` dài trên bảng sẽ chặn mọi `SELECT` đọc các row đó, và một báo cáo dài sẽ chặn mọi `UPDATE`. Hệ thống OLTP với nhiều đọc/ghi đồng thời sẽ tắc nghẽn.
+
+MVCC cho phép:
+
+- Báo cáo chạy 10 phút đọc dữ liệu nhất quán tại một thời điểm, không chặn ai.
+- `UPDATE` không chờ các `SELECT` đang đọc.
+- Snapshot nhất quán cho backup (`pg_dump`) trong khi hệ thống vẫn chạy.
+
+Cái giá: phiên bản cũ tích tụ và cần được dọn; ghi-ghi vẫn cần lock.
+
+## 4. Cơ chế hoạt động: tuple version, xmin, xmax
+
+Mỗi phiên bản row (tuple) trong heap có header chứa:
+
+- **`xmin`**: transaction ID (XID) đã **tạo** phiên bản này.
+- **`xmax`**: XID đã **xóa** hoặc **thay thế** phiên bản này (0 nếu chưa bị xóa). Cũng được dùng để đánh dấu row đang bị khóa.
+- **`ctid`**: vị trí của chính nó, hoặc của phiên bản mới hơn nếu đã bị update.
+
+Các thao tác:
+
+| Thao tác | Điều xảy ra |
+|---|---|
+| `INSERT` | Tạo tuple mới với `xmin = XID hiện tại`, `xmax = 0` |
+| `DELETE` | Đặt `xmax = XID hiện tại` trên tuple hiện có. Tuple **không bị xóa vật lý** |
+| `UPDATE` | = DELETE phiên bản cũ (đặt `xmax`) + INSERT phiên bản mới (`xmin = XID`). `ctid` của bản cũ trỏ tới bản mới |
+| `ROLLBACK` | Không làm gì với tuple. Transaction được đánh dấu aborted trong commit log; mọi tuple nó tạo trở thành vô hình |
+
+Có thể quan sát trực tiếp:
 
 ```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
+CREATE TABLE demo (id int, v text);
+INSERT INTO demo VALUES (1, 'a');
+SELECT ctid, xmin, xmax, * FROM demo;   -- (0,1) | 1001 | 0 | 1 | a
+UPDATE demo SET v = 'b' WHERE id = 1;
+SELECT ctid, xmin, xmax, * FROM demo;   -- (0,2) | 1002 | 0 | 1 | b
 ```
 
-Với **PostgreSQL MVCC**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+Phiên bản `(0,1)` vẫn nằm trong page với `xmax = 1002`, chỉ không còn được nhìn thấy.
 
-## 5. Production Use Case
+```mermaid
+flowchart LR
+    V1["Tuple (0,1)<br/>xmin=1001, xmax=1002<br/>v = a"] -->|"ctid trỏ tới bản mới"| V2["Tuple (0,2)<br/>xmin=1002, xmax=0<br/>v = b"]
+    T1["Snapshot cũ, lấy trước khi 1002 commit"] -.->|"thấy"| V1
+    T2["Snapshot mới, lấy sau khi 1002 commit"] -.->|"thấy"| V2
+```
 
-ETL transaction mở nhiều giờ làm autovacuum không dọn được bảng orders; chia batch, giám sát `xact_start`/dead tuples và tune vacuum theo bảng nóng.
+Diễn giải: hai phiên bản cùng tồn tại. Transaction có snapshot lấy trước khi XID 1002 commit vẫn thấy `'a'`; snapshot lấy sau thấy `'b'`. Không ai phải chờ ai.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+## 5. Internals: snapshot và quy tắc visibility
 
-## 6. Common Problems
+### Snapshot gồm gì?
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+Snapshot về cơ bản có ba phần:
 
-## 7. Trade-offs
+- **`xmin`** của snapshot: XID nhỏ nhất còn đang chạy tại thời điểm lấy snapshot. Mọi XID nhỏ hơn đã kết thúc (commit hoặc abort).
+- **`xmax`** của snapshot: XID tiếp theo sẽ được cấp. Mọi XID lớn hơn hoặc bằng là "tương lai" — vô hình.
+- **`xip`**: danh sách XID đang chạy (in-progress) tại thời điểm lấy snapshot.
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh PostgreSQL MVCC | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Xem snapshot hiện tại: `SELECT pg_current_snapshot();` (PostgreSQL 13+).
 
-## 8. Interview Questions
+### Quy tắc visibility (giản lược)
 
-### Basic / Mid-level (10)
+```mermaid
+flowchart TD
+    Start["Tuple có xmin, xmax"] --> C1{"xmin đã commit<br/>và xmin nằm trong quá khứ của snapshot?"}
+    C1 -->|"không: xmin abort, đang chạy, hoặc sau snapshot"| Invisible["Không nhìn thấy"]
+    C1 -->|"có"| C2{"xmax rỗng, hoặc xmax abort?"}
+    C2 -->|"có"| Visible["Nhìn thấy"]
+    C2 -->|"không"| C3{"xmax đã commit<br/>và nằm trong quá khứ của snapshot?"}
+    C3 -->|"có: đã bị xóa trước snapshot"| Invisible
+    C3 -->|"không: xóa sau snapshot hoặc đang chạy"| Visible
+```
 
-- **B1.** What is PostgreSQL MVCC, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind PostgreSQL MVCC.
-- **B3.** Which guarantees does PostgreSQL MVCC provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of PostgreSQL MVCC?
-- **B5.** What is the most common misconception about PostgreSQL MVCC?
-- **B6.** How would you test assumptions involving PostgreSQL MVCC?
-- **B7.** Which edge cases or failure modes matter most for PostgreSQL MVCC?
-- **B8.** How can PostgreSQL MVCC affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of PostgreSQL MVCC?
-- **B10.** When is a different or simpler approach better than relying on PostgreSQL MVCC?
+Diễn giải:
 
-### Production Scenarios (5)
+1. Tuple chỉ có thể thấy nếu transaction **tạo** nó đã commit **trước** khi snapshot được lấy (hoặc là chính transaction hiện tại).
+2. Nếu tuple chưa bị ai xóa (hoặc người xóa đã abort) → thấy.
+3. Nếu người xóa đã commit trước snapshot → không thấy (row đã bị xóa từ góc nhìn này).
+4. Nếu người xóa commit sau snapshot hoặc chưa commit → vẫn thấy (từ góc nhìn của snapshot, row chưa bị xóa).
 
-- **S1.** A long-running report causes table bloat and replica lag. Explain the MVCC chain and mitigation.
-- **S2.** Autovacuum runs constantly but dead tuples grow. Which thresholds, transaction age, and workload metrics matter?
-- **S3.** Two users update the same logical record and one change disappears. Which control prevents the lost update?
-- **S4.** A read replica returns stale status after a write. Separate MVCC snapshot behavior from replication lag.
-- **S5.** Transaction ID age approaches wraparound. What do you do immediately and permanently?
+"Trong quá khứ của snapshot" nghĩa là XID nhỏ hơn `xmax` của snapshot và không nằm trong danh sách `xip`.
 
-## 9. Senior-level Questions
+### Commit log và hint bits
 
-- **L1.** How does PostgreSQL MVCC constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when PostgreSQL MVCC meets concurrency or partial failure?
-- **L3.** What breaks first around PostgreSQL MVCC at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using PostgreSQL MVCC?
-- **L5.** How would you benchmark or validate PostgreSQL MVCC without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can PostgreSQL MVCC introduce?
-- **L7.** How would you change a poor decision around PostgreSQL MVCC with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for PostgreSQL MVCC?
-- **L10.** How would you turn an incident involving PostgreSQL MVCC into a durable prevention mechanism?
+Để biết một XID đã commit hay abort, PostgreSQL tra **commit log** (`pg_xact`, trước đây gọi là CLOG) — mỗi XID 2 bit trạng thái. Tra CLOG cho mọi tuple rất tốn, nên lần đầu một tuple được kiểm tra, PostgreSQL ghi kết quả vào **hint bits** trong header tuple ("xmin committed", "xmax aborted"...). Lần sau không cần tra lại.
 
-## 10. Short Answers
+Hệ quả bất ngờ: một `SELECT` đầu tiên sau một đợt insert lớn có thể **ghi** page (đặt hint bits), sinh I/O ghi và WAL (nếu bật checksum). Đây là lý do `SELECT` sau bulk load đôi khi chậm hơn dự kiến.
 
-**B1.** PostgreSQL MVCC giữ nhiều row version để statement/transaction đọc snapshot nhất quán trong khi writer tạo version mới. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
+### Snapshot được lấy khi nào?
 
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của PostgreSQL MVCC.
+Phụ thuộc isolation level:
 
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
+- **Read Committed** (mặc định): snapshot mới cho **mỗi câu lệnh**.
+- **Repeatable Read** và **Serializable**: một snapshot cho **toàn transaction**, lấy ở câu lệnh đầu tiên.
 
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
+Chi tiết hệ quả ở [Isolation Level](isolation-level.md).
 
-**B5.** Lỗi phổ biến là dùng PostgreSQL MVCC như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh PostgreSQL MVCC khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của PostgreSQL MVCC**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-UPDATE không sửa tuple tại chỗ theo nghĩa logic; nó tạo version mới. Snapshot quyết định transaction nhìn thấy version nào.
-
-## 14. Internals Deep Dive
-
-
-Heap tuple mang transaction metadata như `xmin` (creator) và `xmax` (deleter/updater). Snapshot chứa visibility horizon để quyết định version nào visible; transaction khác có thể thấy old tuple trong khi writer đã tạo new tuple. UPDATE thường tạo tuple mới, HOT update có thể tránh index update khi indexed column không đổi và còn chỗ trên page.
-
-Dead tuple chỉ reclaim khi không snapshot nào còn cần. Long transaction/idle-in-transaction giữ horizon cũ, làm VACUUM không dọn được, tăng table/index bloat và transaction-ID risk. Visibility map cho biết page all-visible để index-only scan tránh heap lookup; VACUUM và write có thể thay đổi bit này.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 6. Luồng xử lý: đọc và ghi đồng thời
 
 ```mermaid
 sequenceDiagram
-    participant A as Transaction A
+    participant A as Transaction A: UPDATE
     participant H as Heap
-    participant B as Transaction B snapshot
-    A->>H: UPDATE creates new tuple version
-    H-->>A: New version visible to A
-    B->>H: SELECT using older snapshot
-    H-->>B: Old tuple still visible
-    Note over H: VACUUM waits until no snapshot needs old tuple
+    participant B as Transaction B: SELECT, snapshot cũ
+    participant V as VACUUM
+    B->>B: Lấy snapshot S1
+    A->>H: UPDATE row 7: đặt xmax trên bản cũ, tạo bản mới
+    A->>A: COMMIT
+    B->>H: SELECT row 7 với snapshot S1
+    H-->>B: Bản cũ vẫn visible với S1
+    Note over H: Bản cũ là dead tuple với mọi snapshot mới
+    V->>H: Chỉ dọn bản cũ khi không còn snapshot nào như S1
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. B lấy snapshot trước khi A commit.
+2. A cập nhật và commit — không chờ B.
+3. B đọc row: snapshot S1 không bao gồm commit của A, nên B thấy bản cũ. Không chờ A.
+4. Bản cũ trở thành **dead tuple** với mọi snapshot mới, nhưng vẫn phải giữ lại vì B còn cần.
+5. VACUUM chỉ dọn được khi B (và mọi snapshot cũ khác) kết thúc.
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+### Ghi–ghi vẫn phải chờ
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+MVCC không giúp hai transaction cùng **ghi** một row. Nếu A đang update row 7 (chưa commit) và C cũng update row 7, C phải **chờ** A kết thúc (lock trên row được thể hiện bằng `xmax` của A). Khi A commit:
 
-## 17. How I would debug this in production
+- Ở Read Committed: C đọc lại phiên bản mới nhất của row, kiểm tra lại điều kiện `WHERE`, rồi update trên phiên bản đó.
+- Ở Repeatable Read/Serializable: C nhận lỗi `could not serialize access due to concurrent update` và phải retry toàn bộ transaction.
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+## 7. HOT update và visibility map
 
-## 18. Common Misconceptions
+- **HOT (Heap-Only Tuple)**: nếu update không đổi cột nào có index và page còn chỗ, bản mới nằm cùng page, index không cần cập nhật; chuỗi HOT được dọn nhanh ngay trong page (page pruning) mà không cần VACUUM đầy đủ. Xem [Index](index.md#7-cái-giá-của-index).
+- **Visibility map**: một bit mỗi page cho biết "mọi tuple trên page này visible với mọi transaction". VACUUM đặt bit; bất kỳ thay đổi nào trên page xóa bit. Index Only Scan chỉ tránh được đọc heap khi bit được đặt.
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+## 8. Hành vi trong production
 
-## 19. When NOT to use
+### Dead tuple và bloat
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+Mỗi `UPDATE` tạo một dead tuple; mỗi `DELETE` biến một tuple thành dead. Bảng update 1.000 lần/giây tạo 86 triệu dead tuple mỗi ngày. Nếu VACUUM không theo kịp, bảng và index **phình to** (bloat): cùng dữ liệu nhưng chiếm nhiều page hơn → scan chậm hơn, cache kém hiệu quả hơn.
 
-## 20. What interviewer may ask next
+### Transaction dài là kẻ thù
 
-1. **What guarantee does PostgreSQL MVCC provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Một transaction mở (kể cả chỉ đọc, kể cả `idle in transaction`) giữ snapshot cũ. Mọi dead tuple sinh ra sau thời điểm đó **không thể được dọn** trên **toàn database** (horizon là toàn cục, không chỉ bảng transaction đó đọc). Một session quên commit trong 6 giờ có thể làm mọi bảng nóng bloat nghiêm trọng.
 
-## 21. Check Your Understanding
+Nguồn giữ horizon cũ phổ biến:
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **PostgreSQL MVCC** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+- Transaction ứng dụng không đóng (exception không rollback, session bị giữ).
+- Báo cáo/ETL chạy hàng giờ trên primary.
+- Replication slot không được tiêu thụ.
+- Replica với `hot_standby_feedback = on` đang chạy query dài.
+- Prepared transaction (2PC) bị bỏ quên.
 
-<details>
-<summary>Answer</summary>
+### Transaction ID wraparound
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+XID là số 32-bit, so sánh theo vòng tròn (khoảng 2 tỷ trong quá khứ, 2 tỷ trong tương lai). Tuple rất cũ phải được **freeze** (đánh dấu "luôn visible") trước khi XID quay vòng, nếu không chúng sẽ đột ngột trở thành "tương lai" và biến mất. VACUUM làm việc freeze; nếu bị chặn quá lâu, PostgreSQL buộc chạy anti-wraparound vacuum và cuối cùng từ chối cấp XID mới (dừng mọi thao tác ghi) để bảo vệ dữ liệu. Xem [VACUUM và Bloat](vacuum-bloat.md).
 
-</details>
+## 9. Failure Modes và Failure Chain
 
-## 22. See also
+```mermaid
+flowchart TD
+    A["Session idle in transaction 6 giờ"] --> B["Snapshot horizon bị giữ"]
+    B --> C["VACUUM không dọn được dead tuple trên mọi bảng"]
+    C --> D["Bảng nóng và index bloat"]
+    D --> E["Scan đọc nhiều page hơn, cache hit giảm"]
+    E --> F["Query chậm, giữ connection lâu hơn"]
+    F --> G["Pool đầy, latency API tăng"]
+    B --> H["Freeze không tiến triển"]
+    H --> I["Tiến gần XID wraparound, anti-wraparound vacuum nặng"]
+```
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
-- [Transactions](transaction.md)
-- [SQLAlchemy Session](../05-sqlalchemy/session-lifecycle.md)
+Diễn giải: một transaction bị bỏ quên không gây lỗi trực tiếp nào, nhưng từ từ làm suy giảm toàn bộ database. Đây là lý do cần `idle_in_transaction_session_timeout` và giám sát tuổi transaction.
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Bloat | Update/delete nhiều, VACUUM không theo kịp hoặc bị chặn | Kích thước bảng tăng nhanh hơn dữ liệu, `n_dead_tup` cao |
+| Horizon bị giữ | Transaction dài, replication slot | `backend_xmin` cũ trong `pg_stat_activity` |
+| Serialization failure | Hai transaction RR/Serializable cùng ghi | Lỗi `40001` |
+| Wraparound | Freeze không kịp | Cảnh báo trong log, `age(datfrozenxid)` tiến gần 2 tỷ |
+| SELECT sinh I/O ghi | Đặt hint bits sau bulk load | Đọc chậm bất thường sau import |
+
+## 10. Trade-offs
+
+| MVCC của PostgreSQL | Lợi ích | Chi phí |
+|---|---|---|
+| Phiên bản mới nằm trong heap (không có undo log riêng) | Rollback tức thì, đọc bản cũ nhanh | Bloat, cần VACUUM |
+| Snapshot theo câu lệnh (RC) | Luôn thấy dữ liệu mới nhất đã commit | Hai câu lệnh trong cùng transaction có thể thấy dữ liệu khác nhau |
+| Snapshot theo transaction (RR) | Nhất quán trong transaction | Lỗi serialization khi ghi đồng thời |
+
+So với database dùng undo log (Oracle, MySQL InnoDB): ở đó phiên bản mới được ghi đè tại chỗ, phiên bản cũ được đưa vào vùng undo. Bảng không bloat như PostgreSQL, nhưng rollback dài và đọc phiên bản cũ phải dựng lại từ undo.
+
+## 11. Sai lầm thường gặp
+
+- Nghĩ `DELETE` giải phóng dung lượng ngay.
+- Nghĩ rollback tốn công "hoàn tác".
+- Mở transaction rồi gọi API bên ngoài, chờ người dùng, hoặc xử lý file lớn.
+- Chạy báo cáo nhiều giờ trên primary.
+- Nghĩ MVCC loại bỏ mọi xung đột — ghi-ghi vẫn chờ nhau.
+
+## 12. Cách debug
+
+```sql
+-- Transaction mở lâu nhất và snapshot đang giữ
+SELECT pid, state, xact_start, now() - xact_start AS xact_age,
+       backend_xmin, left(query, 60)
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY age(backend_xmin) DESC LIMIT 10;
+
+-- Dead tuple theo bảng
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+
+-- Replication slot giữ horizon
+SELECT slot_name, active, xmin, catalog_xmin FROM pg_replication_slots;
+
+-- Tuổi XID của database (khoảng cách tới wraparound)
+SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY 2 DESC;
+```
+
+## 13. Best Practices
+
+- Giữ transaction ngắn; không làm I/O bên ngoài database trong transaction.
+- Đặt `idle_in_transaction_session_timeout` (ví dụ 1–5 phút) và `statement_timeout` phù hợp.
+- Chạy báo cáo dài trên replica hoặc hệ thống phân tích riêng.
+- Giám sát tuổi transaction lâu nhất, `n_dead_tup`, và tuổi XID.
+- Giúp HOT update: tránh index cột thay đổi liên tục, cân nhắc `fillfactor`.
+- Xóa replication slot không còn dùng.
+
+## 14. Tóm tắt
+
+- MVCC giữ nhiều phiên bản row; mỗi phiên bản có `xmin` (người tạo) và `xmax` (người xóa).
+- UPDATE = đánh dấu bản cũ bằng `xmax` + tạo bản mới; DELETE chỉ đặt `xmax`; ROLLBACK không đụng tới tuple.
+- Snapshot quyết định phiên bản nào visible; RC lấy snapshot mỗi câu lệnh, RR/Serializable mỗi transaction.
+- Người đọc không chặn người ghi và ngược lại; ghi-ghi trên cùng row vẫn phải chờ.
+- Dead tuple chỉ được dọn khi không còn snapshot nào cần; transaction dài gây bloat toàn database.
+
+## Liên quan
+
+- [Transaction](transaction.md)
+- [Isolation Level](isolation-level.md)
+- [VACUUM và Bloat](vacuum-bloat.md)
+- [Locks](locks.md)
+- [PostgreSQL Fundamentals](database-fundamentals.md)

@@ -1,211 +1,261 @@
 # Descriptors
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Descriptor là object định nghĩa một hoặc nhiều method `__get__`, `__set__`, `__delete__`, và được đặt làm **attribute của class**. Khi code truy cập attribute đó qua instance hoặc class, Python không trả về descriptor mà gọi method tương ứng của nó.
 
-Descriptors là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+Descriptor là cơ chế ẩn sau rất nhiều thứ quen thuộc:
 
-## 2. Why does it matter?
+- **Method**: function là descriptor; nhờ đó `obj.method` trở thành bound method có `self`.
+- `property`, `classmethod`, `staticmethod`, `functools.cached_property`.
+- `__slots__`: mỗi slot là một descriptor.
+- Column của SQLAlchemy ORM: `User.email == "a@b.c"` sinh biểu thức SQL, còn `user.email` trả về giá trị — cùng một attribute, hai hành vi.
+- Lazy loading relationship của ORM: truy cập `order.items` có thể phát sinh câu SQL.
 
-Senior Engineer cần hiểu **Descriptors** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Hiểu descriptor là hiểu `obj.attr` thực sự làm gì.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
+> Attribute trên class có thể là một "người gác cổng". Khi bạn đọc/ghi attribute đó, bạn không chạm trực tiếp vào dữ liệu mà nói chuyện với người gác cổng, và người gác cổng quyết định trả gì, lưu ở đâu, có tính toán hay gọi database không.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
+Hai loại người gác cổng:
 
-## 4. Example
+- **Data descriptor** (có `__set__` hoặc `__delete__`): quyền ưu tiên cao nhất, instance `__dict__` không thể che nó. Ví dụ `property`.
+- **Non-data descriptor** (chỉ có `__get__`): nhường cho instance `__dict__` nếu instance có cùng tên. Ví dụ function (method), `cached_property`.
+
+## 3. Vì sao cần?
+
+- Tái sử dụng logic truy cập attribute (validation, chuyển đổi, lazy load, ghi log thay đổi) cho nhiều attribute và nhiều class, điều mà `property` viết tay từng cái không làm được gọn.
+- Giải thích hành vi mà nếu không biết sẽ rất khó hiểu: vì sao method có `self`, vì sao `cached_property` chỉ tính một lần, vì sao truy cập attribute ORM lại gây query, vì sao `MissingGreenlet` xuất hiện khi dùng SQLAlchemy async.
+
+## 4. Giao thức descriptor
 
 ```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Descriptors',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+class Descriptor:
+    def __set_name__(self, owner, name): ...        # 3.6+: gọi khi class được tạo
+    def __get__(self, instance, owner=None): ...    # đọc
+    def __set__(self, instance, value): ...         # ghi
+    def __delete__(self, instance): ...             # xóa
 ```
 
-Ví dụ biến quyết định về **Descriptors** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+- `instance` là object được truy cập qua (`obj` trong `obj.attr`), hoặc `None` khi truy cập qua class (`Cls.attr`).
+- `owner` là class.
+- `__set_name__` cho descriptor biết tên attribute mà nó được gán, tránh phải truyền tên thủ công.
 
-## 5. Production Use Case
+## 5. Internals: thuật toán attribute lookup
 
-Một shared library dùng Descriptors để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Descriptors | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Descriptors, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Descriptors.
-- **B3.** Which guarantees does Descriptors provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Descriptors?
-- **B5.** What is the most common misconception about Descriptors?
-- **B6.** How would you test assumptions involving Descriptors?
-- **B7.** Which edge cases or failure modes matter most for Descriptors?
-- **B8.** How can Descriptors affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Descriptors?
-- **B10.** When is a different or simpler approach better than relying on Descriptors?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Descriptors triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Descriptors is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Descriptors. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Descriptors fails first?
-- **S5.** A canary changes the behavior of Descriptors; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Descriptors constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Descriptors meets concurrency or partial failure?
-- **L3.** What breaks first around Descriptors at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Descriptors?
-- **L5.** How would you benchmark or validate Descriptors without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Descriptors introduce?
-- **L7.** How would you change a poor decision around Descriptors with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Descriptors?
-- **L10.** How would you turn an incident involving Descriptors into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Descriptors là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Descriptors.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Descriptors như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Descriptors khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Descriptors**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Descriptors** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+Khi đọc `obj.name`, `type(obj).__getattribute__(obj, "name")` được gọi. Với `object.__getattribute__` mặc định:
 
 ```mermaid
-flowchart LR
-            Source["Python source"] --> Runtime["Descriptors runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+flowchart TD
+    Start["obj.name"] --> TypeLookup["Tìm name trên type(obj) theo MRO"]
+    TypeLookup --> IsData{"Tìm thấy và là data descriptor?"}
+    IsData -->|"có"| CallData["Gọi desc.__get__(obj, type(obj))"]
+    IsData -->|"không"| InstDict{"name có trong obj.__dict__?"}
+    InstDict -->|"có"| RetInst["Trả obj.__dict__[name]"]
+    InstDict -->|"không"| IsNonData{"Tìm thấy ở bước đầu và có __get__?"}
+    IsNonData -->|"có"| CallNonData["Gọi desc.__get__(obj, type(obj))"]
+    IsNonData -->|"không"| Found{"Tìm thấy attribute thường trên class?"}
+    Found -->|"có"| RetClass["Trả attribute của class"]
+    Found -->|"không"| GetAttr{"Class có __getattr__?"}
+    GetAttr -->|"có"| CallGA["Gọi __getattr__(obj, name)"]
+    GetAttr -->|"không"| AE["AttributeError"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Python **luôn tìm trên type trước**, theo MRO. Kết quả được nhớ lại để dùng ở các bước sau.
+2. Nếu đó là data descriptor, nó thắng tuyệt đối — kể cả khi `obj.__dict__` có key cùng tên. Đây là lý do `property` không bị che.
+3. Nếu không, instance `__dict__` được xét. Có key thì trả về.
+4. Nếu attribute trên class là non-data descriptor (function, `cached_property`), gọi `__get__`.
+5. Nếu là attribute thường trên class (hằng số, list), trả về nguyên giá trị.
+6. Không tìm thấy ở đâu: `__getattr__` (nếu có) là cơ hội cuối; không thì `AttributeError`.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+Với ghi `obj.name = value`: nếu type có data descriptor tên `name`, gọi `desc.__set__(obj, value)`; nếu không, ghi thẳng vào `obj.__dict__`.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Truy cập qua class (`Cls.name`) đi qua `type.__getattribute__`, xét metaclass trước rồi đến MRO của class, và gọi `desc.__get__(None, Cls)`.
 
-## 17. How I would debug this in production
+## 6. Method hoạt động thế nào?
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+Function là **non-data descriptor**. `function.__get__(instance, owner)`:
 
-## 18. Common Misconceptions
+- Nếu `instance` là `None` (truy cập qua class): trả về chính function.
+- Ngược lại: trả về **bound method** — object gói function và `instance`. Khi gọi bound method, `instance` được chèn làm argument đầu tiên.
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+```python
+class Order:
+    def total(self):
+        return 100
 
-## 19. When NOT to use
+o = Order()
+Order.__dict__["total"]          # <function Order.total>
+Order.total                       # <function Order.total> — instance là None
+o.total                           # <bound method Order.total of <Order>>
+o.total.__self__ is o             # True
+o.total.__func__ is Order.total   # True
+o.total()  # == Order.total(o)
+```
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+Không có gì đặc biệt trong ngôn ngữ về `self`; đó chỉ là argument đầu tiên được descriptor chèn vào. `classmethod` là descriptor chèn `owner` thay vì `instance`; `staticmethod` là descriptor không chèn gì.
 
-## 20. What interviewer may ask next
+> **Ghi chú version:** CPython tối ưu lời gọi `obj.method()` để không thực sự tạo bound method object (lệnh `LOAD_ATTR` với cờ method, trước 3.12 là `LOAD_METHOD`). Ngữ nghĩa vẫn như mô tả.
 
-1. **What guarantee does Descriptors provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+## 7. Ví dụ: descriptor validation tái sử dụng
 
-## 21. Check Your Understanding
+```python
+class Positive:
+    def __set_name__(self, owner, name):
+        self.private_name = "_" + name
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Descriptors** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return getattr(instance, self.private_name)
 
-<details>
-<summary>Answer</summary>
+    def __set__(self, instance, value):
+        if value <= 0:
+            raise ValueError(f"{self.private_name[1:]} must be positive")
+        setattr(instance, self.private_name, value)
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+class LineItem:
+    quantity = Positive()
+    unit_price = Positive()
 
-</details>
+    def __init__(self, quantity, unit_price):
+        self.quantity = quantity        # đi qua Positive.__set__
+        self.unit_price = unit_price
+```
 
-## 22. See also
+- Descriptor instance nằm trên **class**, dùng chung cho mọi `LineItem`. State của từng instance phải lưu **trên instance** (`_quantity`), không lưu trên descriptor — nếu lưu `self.value` trong descriptor, mọi instance sẽ dùng chung một giá trị.
+- `__set_name__` giúp descriptor biết tên `quantity`, `unit_price` mà không phải truyền vào.
+- `if instance is None: return self` cho phép introspection qua class (`LineItem.quantity`).
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+Trong code thực tế, validation kiểu này thường do Pydantic hoặc dataclass + `__post_init__` đảm nhận; descriptor phù hợp khi xây framework hoặc thư viện.
+
+## 8. `property` và `cached_property`
+
+`property` là data descriptor viết bằng C: `__get__` gọi getter, `__set__` gọi setter (hoặc raise `AttributeError` nếu không có setter).
+
+`functools.cached_property` là **non-data descriptor**:
+
+1. Lần đầu `obj.attr`: không có trong `obj.__dict__`, descriptor chạy function và **ghi kết quả vào `obj.__dict__["attr"]`**.
+2. Lần sau: lookup tìm thấy trong `obj.__dict__` ở bước 3 của thuật toán — descriptor không được gọi nữa. Chi phí gần bằng đọc dict.
+3. `del obj.attr` xóa khỏi `__dict__`, lần sau tính lại.
+
+Hệ quả:
+
+- Không dùng được với class có `__slots__` không chứa `__dict__`.
+- > **Ghi chú version:** Trước 3.12, `cached_property` có lock nội bộ (nhưng lock dùng chung cho mọi instance, gây contention). Từ 3.12 lock bị bỏ: nhiều thread có thể cùng tính giá trị lần đầu. Nếu hàm tính toán có side effect hoặc rất đắt, cần tự đồng bộ.
+
+## 9. Bên trong ORM: descriptor làm gì với `order.items`?
+
+SQLAlchemy gắn mỗi mapped attribute bằng một `InstrumentedAttribute` — một data descriptor.
+
+```mermaid
+sequenceDiagram
+    participant C as Code
+    participant D as InstrumentedAttribute items
+    participant S as Session
+    participant DB as PostgreSQL
+    C->>D: Order.items truy cập qua class
+    D-->>C: Biểu thức SQL dùng trong select, join, where
+    C->>D: order.items truy cập qua instance
+    D->>D: Kiểm tra state của instance đã load items chưa
+    alt Đã load
+        D-->>C: Trả collection từ state
+    else Chưa load và lazy loading
+        D->>S: Yêu cầu load relationship
+        S->>DB: SELECT từ bảng items WHERE order_id = ...
+        DB-->>S: rows
+        S-->>D: collection
+        D-->>C: collection
+    end
+```
+
+Diễn giải:
+
+1. Truy cập qua class (`instance is None`): descriptor trả về đối tượng biểu thức để xây câu query — `select(Order).where(Order.status == "paid")`.
+2. Truy cập qua instance: descriptor kiểm tra state đã có dữ liệu chưa.
+3. Nếu chưa và strategy là lazy loading, descriptor **phát sinh câu SQL ngay tại dòng đọc attribute**.
+
+Đây là gốc rễ của [N+1 query](../05-sqlalchemy/n-plus-one.md): vòng lặp `for o in orders: o.items` trông vô hại nhưng mỗi lần đọc attribute là một round trip tới database. Với SQLAlchemy async, lazy loading kiểu này không thể `await` được từ một lần đọc attribute đồng bộ, nên sinh lỗi `MissingGreenlet`. Xem [Async SQLAlchemy](../05-sqlalchemy/async-sqlalchemy.md).
+
+## 10. `__slots__`
+
+```python
+class Point:
+    __slots__ = ("x", "y")
+```
+
+Khi class định nghĩa `__slots__`, Python không tạo `__dict__` cho instance. Mỗi tên trong `__slots__` trở thành một **member descriptor** trên class, đọc/ghi vào một vị trí cố định trong struct của instance.
+
+- Memory giảm đáng kể (không có dict mỗi instance).
+- Truy cập nhanh hơn một chút.
+- Không thể thêm attribute ngoài danh sách; `cached_property` không dùng được.
+- `@dataclass(slots=True)` (3.10+) sinh `__slots__` tự động.
+
+## 11. Hành vi trong production
+
+- **Property làm I/O là cái bẫy.** `user.permissions` trông như đọc field, nhưng nếu property gọi database hoặc HTTP, một vòng lặp đơn giản tạo ra hàng trăm lời gọi. Tên attribute không báo hiệu chi phí; dùng method với tên động từ (`load_permissions()`) cho thao tác có I/O.
+- **Lazy loading ẩn trong template/serializer.** Serializer duyệt qua object ORM và truy cập relationship, sinh N+1 mà code nghiệp vụ không hề thấy.
+- **`__getattr__` che lỗi đánh máy.** Proxy object với `__getattr__` trả về giá trị mặc định cho mọi tên chưa biết khiến `obj.stauts` (gõ sai) không báo lỗi.
+- **Descriptor lưu state trên chính nó.** Descriptor là object dùng chung cho mọi instance; state lưu trên descriptor bị chia sẻ giữa mọi instance và mọi thread.
+
+## 12. Failure Modes
+
+| Failure | Cơ chế | Dấu hiệu |
+|---|---|---|
+| N+1 query | Relationship lazy load qua descriptor trong vòng lặp | Số query tỷ lệ với số row |
+| `MissingGreenlet` | Lazy load đồng bộ trong context async | Exception khi truy cập relationship sau khi query async |
+| Giá trị dùng chung giữa instance | Descriptor lưu state trên chính nó | Sửa một object làm thay đổi object khác |
+| `RecursionError` trong `__getattr__`/`__getattribute__` | Truy cập `self.x` bên trong chính hàm lookup | Stack overflow khi đọc attribute |
+| Tính toán lặp trong `cached_property` | Nhiều thread cùng truy cập lần đầu (3.12+) | Side effect chạy nhiều lần |
+
+## 13. Trade-offs
+
+| Cách | Khi phù hợp | Chi phí |
+|---|---|---|
+| Attribute thường | Dữ liệu đơn giản | Không kiểm soát được |
+| `property` | Logic cho một attribute cụ thể, tính toán rẻ | Chạy function mỗi lần đọc |
+| `cached_property` | Tính một lần, đắt, instance sống ngắn | Không tự invalidate, cần `__dict__` |
+| Descriptor tùy biến | Cùng logic cho nhiều attribute/class, framework | Khó đọc, người dùng không nhận ra hành vi ẩn |
+| `__getattr__` | Proxy, lazy module, backward compat | Che lỗi, chậm hơn, khó cho type checker |
+
+## 14. Sai lầm thường gặp
+
+- Nghĩ `self` là từ khóa đặc biệt thay vì argument được descriptor chèn.
+- Nhầm `__getattr__` (chỉ gọi khi lookup thất bại) với `__getattribute__` (gọi cho mọi lookup).
+- Lưu state per-instance trên descriptor.
+- Đặt I/O trong property.
+- Quên xử lý `instance is None` trong `__get__`.
+
+## 15. Cách debug
+
+- `inspect.getattr_static(obj, "name")` trả về thứ nằm trong dict mà không kích hoạt descriptor.
+- `type(obj).__mro__` và `vars(cls)` cho từng class trong MRO để tìm attribute được định nghĩa ở đâu.
+- `hasattr(type(attr), "__set__")` để biết là data hay non-data descriptor.
+- Với ORM: bật log SQL (`echo=True` hoặc logger `sqlalchemy.engine`) và đếm số query mỗi request; `sqlalchemy.inspect(obj).unloaded` liệt kê attribute chưa được load.
+
+## 16. Best Practices
+
+- Dùng `property` cho tính toán rẻ, không I/O; dùng method có tên động từ cho thao tác đắt.
+- Với ORM, chọn loading strategy tường minh (`selectinload`, `joinedload`) và cân nhắc `lazy="raise"` để lazy load ngoài ý muốn trở thành lỗi rõ ràng.
+- Descriptor tùy biến lưu state trên instance, dùng `__set_name__` để lấy tên.
+- Tránh `__getattr__` ở domain model; nếu dùng, raise `AttributeError` cho tên không được hỗ trợ.
+- Cân nhắc `__slots__`/`dataclass(slots=True)` cho object nhỏ tạo với số lượng lớn.
+
+## 17. Tóm tắt
+
+- Descriptor là attribute của class có `__get__`/`__set__`/`__delete__`, can thiệp vào việc đọc/ghi attribute.
+- Thứ tự lookup: data descriptor trên type → instance `__dict__` → non-data descriptor → attribute class → `__getattr__`.
+- Function là non-data descriptor; `__get__` tạo bound method, đó là nguồn gốc của `self`.
+- `property` là data descriptor; `cached_property` là non-data descriptor ghi kết quả vào instance dict.
+- ORM dùng descriptor để vừa xây biểu thức SQL (qua class) vừa lazy load dữ liệu (qua instance) — nguồn gốc của N+1 và `MissingGreenlet`.
+
+## Liên quan
+
+- [Python Object Model](object-model.md)
+- [Dunder Methods](dunder-methods.md)
+- [Decorators](decorators.md)
+- [N+1 Query](../05-sqlalchemy/n-plus-one.md)
+- [Relationship Loading](../05-sqlalchemy/relationship-loading.md)

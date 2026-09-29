@@ -1,226 +1,265 @@
-# Sync Vs Async Endpoint
+# Sync và Async Endpoint trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+FastAPI cho phép khai báo endpoint bằng `def` hoặc `async def`. Hai cách này chạy ở **hai nơi khác nhau**:
 
-FastAPI chạy `async def` trực tiếp trên event loop và chạy `def` endpoint trong thread pool để tránh block loop.
+| Khai báo | Chạy ở đâu | Điều kiện để không gây hại |
+|---|---|---|
+| `async def` | Trực tiếp trên **event loop** của worker | Mọi I/O bên trong phải là non-blocking và được `await` |
+| `def` | Trong **threadpool** của AnyIO (mặc định 40 thread mỗi worker) | Threadpool không bị bão hòa |
 
-## 2. Why does it matter?
+Quy tắc tương tự áp dụng cho **dependency**: dependency `async def` chạy trên loop, dependency `def` chạy trong threadpool.
 
-Senior Engineer cần hiểu **Sync Vs Async Endpoint** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+`async def` không tự làm code non-blocking. Chỉ những thao tác thực sự `await` một I/O non-blocking mới nhường event loop. Chọn sai là nguyên nhân số một của sự cố hiệu năng trong ứng dụng FastAPI.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Async chỉ có lợi khi dependency stack cũng non-blocking. Gọi driver sync trong async endpoint vẫn chặn loop; thread-pool exhaustion có thể tạo queue và tail latency.
+> Event loop là một người phục vụ duy nhất trông nhiều bàn. `async def` nghĩa là "tôi hứa sẽ không đứng đợi ở một bàn". `def` nghĩa là "tôi có thể đứng đợi, hãy giao việc của tôi cho một trong 40 người phụ việc".
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
+Vi phạm lời hứa (`async def` gọi code blocking) làm người phục vụ duy nhất đứng yên — mọi bàn khác bị bỏ rơi. Dùng `def` thì an toàn cho loop, nhưng khi cả 40 người phụ việc đều bận, việc mới phải xếp hàng.
 
-## 4. Example
+## 3. Vì sao có hai cách?
+
+FastAPI phải hỗ trợ cả hai thế giới:
+
+- Hệ sinh thái async: `asyncpg`, SQLAlchemy async, `httpx.AsyncClient`, `redis.asyncio`, `aiobotocore`.
+- Hệ sinh thái sync lâu đời: `psycopg2`, SQLAlchemy sync, `requests`, `boto3`, nhiều SDK nội bộ.
+
+Chạy code sync trong threadpool cho phép dùng thư viện sync mà không block event loop, đổi lại là giới hạn concurrency bằng số thread.
+
+## 4. Cơ chế hoạt động
+
+Khi request tới một route, FastAPI kiểm tra endpoint là coroutine function hay không:
 
 ```python
-import time
-from fastapi import FastAPI
-
-app = FastAPI()
-
-def blocking_database_call() -> list[dict[str, int]]:
-    time.sleep(2)  # Represents a synchronous driver call.
-    return [{"id": 1}]
-
-@app.get("/users-dangerous")
-async def users_dangerous() -> list[dict[str, int]]:
-    # This runs on the event-loop thread and blocks other connections.
-    return blocking_database_call()
-
-@app.get("/users-sync")
-def users_sync() -> list[dict[str, int]]:
-    # FastAPI runs a normal path operation in its external thread pool.
-    return blocking_database_call()
+# Giản lược từ logic của FastAPI / Starlette
+if is_coroutine_function(endpoint):
+    result = await endpoint(**values)                 # chạy trên event loop
+else:
+    result = await run_in_threadpool(endpoint, **values)   # anyio.to_thread.run_sync
 ```
 
-Production ưu tiên async database driver trong `async def`; nếu buộc dùng sync library, bound thread-pool concurrency và đo thread-token/pool wait. CPU-heavy code vẫn nên đi process/job queue.
+`run_in_threadpool` gửi hàm sang một thread worker của AnyIO và `await` kết quả. Event loop tiếp tục phục vụ request khác trong lúc thread chạy. Số thread đồng thời bị giới hạn bởi một `CapacityLimiter` mặc định **40 token**.
 
-## 5. Production Use Case
+Quan trọng: FastAPI chỉ quyết định dựa trên **endpoint và dependency**. Hàm `def` mà bạn tự gọi bên trong một `async def` chạy **ngay trên event loop** — framework không tự đẩy nó sang thread.
 
-Endpoint tra PostgreSQL dùng async driver; PDF rendering CPU-bound được gửi queue. Load test đo event-loop lag và pool wait thay vì đổi mọi hàm sang `async`.
+## 5. Luồng xử lý: ba trường hợp
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+### Trường hợp đúng: `async def` + thư viện async
 
-## 6. Common Problems
+```mermaid
+sequenceDiagram
+    participant L as Event loop
+    participant A as Request A: async def
+    participant B as Request B: async def
+    participant DB as asyncpg
+    L->>A: chạy
+    A->>DB: await query
+    A-->>L: tạm dừng
+    L->>B: chạy
+    B->>DB: await query
+    B-->>L: tạm dừng
+    DB-->>L: kết quả A
+    L->>A: tiếp tục
+    DB-->>L: kết quả B
+    L->>B: tiếp tục
+```
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+Hai request chờ database chồng lên nhau trên một thread.
 
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Sync Vs Async Endpoint | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Sync Vs Async Endpoint, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Sync Vs Async Endpoint.
-- **B3.** Which guarantees does Sync Vs Async Endpoint provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Sync Vs Async Endpoint?
-- **B5.** What is the most common misconception about Sync Vs Async Endpoint?
-- **B6.** How would you test assumptions involving Sync Vs Async Endpoint?
-- **B7.** Which edge cases or failure modes matter most for Sync Vs Async Endpoint?
-- **B8.** How can Sync Vs Async Endpoint affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Sync Vs Async Endpoint?
-- **B10.** When is a different or simpler approach better than relying on Sync Vs Async Endpoint?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Sync Vs Async Endpoint triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Sync Vs Async Endpoint is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Sync Vs Async Endpoint. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Sync Vs Async Endpoint fails first?
-- **S5.** A canary changes the behavior of Sync Vs Async Endpoint; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Sync Vs Async Endpoint constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Sync Vs Async Endpoint meets concurrency or partial failure?
-- **L3.** What breaks first around Sync Vs Async Endpoint at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Sync Vs Async Endpoint?
-- **L5.** How would you benchmark or validate Sync Vs Async Endpoint without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Sync Vs Async Endpoint introduce?
-- **L7.** How would you change a poor decision around Sync Vs Async Endpoint with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Sync Vs Async Endpoint?
-- **L10.** How would you turn an incident involving Sync Vs Async Endpoint into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** FastAPI chạy `async def` trực tiếp trên event loop và chạy `def` endpoint trong thread pool để tránh block loop. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Sync Vs Async Endpoint.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Sync Vs Async Endpoint như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Sync Vs Async Endpoint khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Sync Vs Async Endpoint**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-`async def` không tự làm code non-blocking. Chỉ những operation thật sự `await` non-blocking I/O mới nhường event loop.
-
-## 14. Internals Deep Dive
-
-
-FastAPI chạy path operation `def` trong external thread pool và `async def` trực tiếp trên event loop. Nhưng utility `def` do bạn gọi bên trong `async def` chạy ngay trên loop—framework không tự offload. Vì vậy `requests.get()`, sync DB driver hoặc CPU parse lớn trong async endpoint có thể chặn mọi connection cùng loop.
-
-Thread pool cũng là bounded resource: nếu mọi sync endpoint chờ DB/network, queue của pool tăng và p99 xấu. Chọn async khi dependency stack có async driver; chọn sync/thread khi library chỉ blocking và concurrency đã bound; CPU-heavy chuyển process/job queue. Đo loop lag, thread tokens, pool wait và cancellation behavior.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+### Trường hợp sai: `async def` + thư viện blocking
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant L as Event Loop
+    participant L as Event loop
     participant E as async endpoint
     participant B as Blocking library
     C->>L: HTTP request
-    L->>E: run coroutine
-    E->>B: synchronous call
-    Note over L,B: Event-loop thread is blocked
-    B-->>E: result after 2 seconds
+    L->>E: chạy coroutine
+    E->>B: gọi requests.get đồng bộ
+    Note over L,B: Thread của event loop bị block, không request nào khác được xử lý
+    B-->>E: kết quả sau 2 giây
     E-->>C: response
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: `requests.get` không `await` gì cả; nó giữ thread của event loop trong suốt 2 giây. Trong 2 giây đó worker không accept kết nối mới, không gửi response đã sẵn sàng, không trả lời health check. Với 10 request như vậy đồng thời, request thứ 10 chờ 20 giây.
 
-## 16. Failure Scenario
+### Trường hợp an toàn: `def` + thư viện blocking
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+```mermaid
+sequenceDiagram
+    participant L as Event loop
+    participant TP as Threadpool 40 token
+    participant T as Thread
+    participant S as Service ngoài
+    L->>TP: run_in_threadpool(endpoint)
+    TP->>T: cấp một thread nếu còn token
+    T->>S: requests.get, thread chờ, nhả GIL
+    L->>L: tiếp tục phục vụ request khác
+    S-->>T: response
+    T-->>L: kết quả qua call_soon_threadsafe
+    L->>L: gửi response
+```
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Diễn giải: thread chờ I/O nhả [GIL](../02-python-concurrency/gil.md); event loop tiếp tục làm việc. Giới hạn là 40 thread: request thứ 41 đồng thời phải chờ token.
 
-## 17. How I would debug this in production
+## 6. Bảng quyết định
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+| Code trong endpoint | Nên khai báo | Ghi chú |
+|---|---|---|
+| Chỉ gọi thư viện async (`await`) | `async def` | Tối ưu nhất |
+| Gọi thư viện sync blocking (DB sync, `requests`, `boto3`) | `def` | Chạy trong threadpool |
+| Trộn: phần lớn async, một lời gọi sync | `async def` + `await asyncio.to_thread(sync_fn)` | Đẩy riêng phần blocking sang thread |
+| CPU nặng (>vài chục ms) | Không nên chạy trong request | Đẩy sang process pool hoặc task queue |
+| Không có I/O, tính toán rất nhẹ | `async def` | Tránh overhead chuyển thread |
+| Không chắc thư viện có blocking không | `def` | An toàn cho loop; đo sau |
 
-## 18. Common Misconceptions
+## 7. Ví dụ
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+```python
+import asyncio
+import httpx
+import requests
+from fastapi import FastAPI
 
-## 19. When NOT to use
+app = FastAPI()
+async_client = httpx.AsyncClient(timeout=2.0)   # trong thực tế tạo trong lifespan
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+@app.get("/good-async")
+async def good_async():
+    r = await async_client.get("https://inventory.internal/items/1")
+    return r.json()
 
-## 20. What interviewer may ask next
+@app.get("/bad-async")
+async def bad_async():
+    r = requests.get("https://inventory.internal/items/1", timeout=2)   # block event loop
+    return r.json()
 
-1. **What guarantee does Sync Vs Async Endpoint provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+@app.get("/good-sync")
+def good_sync():
+    r = requests.get("https://inventory.internal/items/1", timeout=2)   # chạy trong threadpool
+    return r.json()
 
-## 21. Check Your Understanding
+@app.get("/mixed")
+async def mixed():
+    legacy = await asyncio.to_thread(legacy_sdk_call, 42)   # offload phần blocking
+    r = await async_client.get("https://pricing.internal/p/42")
+    return {"legacy": legacy, "price": r.json()}
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Sync Vs Async Endpoint** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Lưu ý với `asyncio.to_thread`: nó dùng **default executor của asyncio** (khoảng `min(32, cpu+4)` thread), không phải threadpool 40 token của AnyIO. Hai pool độc lập. Có thể dùng `anyio.to_thread.run_sync` để dùng chung limiter với FastAPI. Xem [Event Loop](../02-python-concurrency/event-loop.md#8-executor-nơi-code-blocking-được-gửi-tới).
 
-<details>
-<summary>Answer</summary>
+## 8. Internals: threadpool 40 token
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+- Limiter mặc định của AnyIO có 40 token, dùng chung cho mọi endpoint và dependency `def` trong worker, và cho `StreamingResponse` với generator sync, `UploadFile` thao tác file...
+- Có thể thay đổi trong lifespan:
 
-</details>
+```python
+import anyio
 
-## 22. See also
+@asynccontextmanager
+async def lifespan(app):
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    limiter.total_tokens = 100
+    yield
+```
 
+Tăng token không miễn phí: nhiều thread hơn nghĩa là nhiều connection DB đồng thời hơn (mỗi thread giữ một connection từ pool sync), nhiều tranh chấp GIL hơn, nhiều memory hơn. Nếu pool DB sync chỉ có 10 connection, 100 thread chỉ làm 90 thread chờ connection.
+
+## 9. Hành vi trong production
+
+**Thư viện "async" nhưng blocking bên trong.** Một số SDK có API `async` nhưng bên trong gọi code sync, hoặc thực hiện DNS lookup đồng bộ, đọc file cấu hình, xác thực token bằng HTTP sync. Chỉ đo lường (loop lag) mới phát hiện được.
+
+**Dependency sync làm async endpoint phải qua threadpool.** Endpoint `async def` với dependency `def get_db()` vẫn tiêu tốn một token threadpool cho mỗi lần giải dependency. Với tải cao, threadpool bão hòa dù endpoint là async.
+
+**CPU trên event loop.** Parse JSON lớn, validate Pydantic phức tạp, serialize response nặng, băm mật khẩu (bcrypt/argon2) đều là CPU. Trong `async def`, chúng chạy trên loop. Hash mật khẩu 200 ms trong endpoint login `async def` là một cách phổ biến để tự làm chậm cả service.
+
+**Gunicorn worker timeout.** Event loop bị block quá `--timeout` của Gunicorn (mặc định 30 giây) làm worker bị kill. Xem [Kiến trúc FastAPI](architecture.md).
+
+## 10. Khi scale lên thì chuyện gì xảy ra?
+
+Giả sử endpoint gọi một dependency ngoài mất 200 ms.
+
+| Tải mỗi worker | Endpoint `def` (40 thread) | Endpoint `async def` + client async |
+|---|---|---|
+| 50 RPS | Cần 10 thread, ổn | ~10 coroutine đồng thời, ổn |
+| 200 RPS | Cần 40 thread — chạm giới hạn, bắt đầu xếp hàng | ~40 coroutine, ổn |
+| 500 RPS | Cần 100 thread — xếp hàng, latency tăng tuyến tính | ~100 coroutine; giới hạn chuyển sang connection pool của client và CPU |
+| Dependency chậm lên 2 s | Cần 1.000 thread — sụp đổ | ~1.000 coroutine chờ; nếu không có timeout và giới hạn, memory và socket cạn |
+
+Async không loại bỏ giới hạn; nó dời giới hạn từ số thread sang connection pool, CPU của loop và capacity của dependency. Dependency chậm vẫn cần [timeout](../10-distributed-systems/timeout.md) và [bulkhead](../10-distributed-systems/bulkhead.md).
+
+## 11. Failure Modes và Failure Chain
+
+```mermaid
+flowchart TD
+    A["async def gọi SDK blocking 300ms"] --> B["Event loop block 300ms mỗi request"]
+    B --> C["Request khác chờ trong accept queue và ready queue"]
+    C --> D["Loop lag tăng, p99 mọi endpoint tăng"]
+    D --> E["Readiness probe timeout"]
+    E --> F["Pod bị loại khỏi Service"]
+    F --> G["Traffic dồn sang pod khác"]
+    G --> H["Pod khác cũng block, lần lượt NotReady"]
+    H --> I["Toàn bộ service mất capacity"]
+```
+
+Diễn giải: một lời gọi blocking duy nhất trong một endpoint không quá phổ biến có thể kéo sập cả service khi tải tăng, vì nó làm hỏng chính cơ chế health check và phân phối tải.
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Loop bị block | Code sync hoặc CPU trong `async def` | Loop lag cao, mọi endpoint chậm đồng loạt |
+| Threadpool bão hòa | Endpoint/dependency `def` chậm, không timeout | Latency tăng ở endpoint sync, CPU thấp |
+| Pool DB cạn | Thread nhiều hơn connection | Pool wait cao |
+| Thiếu thread cho việc khác | Streaming sync, file upload dùng chung limiter | Upload/stream làm chậm endpoint `def` |
+
+## 12. Trade-offs
+
+| Tiêu chí | `async def` | `def` |
+|---|---|---|
+| Concurrency | Rất cao | Giới hạn bởi số thread |
+| Overhead mỗi request | Thấp | Chuyển thread, tranh GIL |
+| Rủi ro | Một lỗi blocking ảnh hưởng cả worker | Bão hòa threadpool |
+| Yêu cầu thư viện | Async | Bất kỳ |
+| Dễ lý luận về race | Chỉ chuyển tại `await` | Chuyển bất kỳ lúc nào giữa thread |
+
+## 13. Sai lầm thường gặp
+
+- Viết `async def` cho mọi endpoint "vì async nhanh hơn" dù dùng thư viện sync.
+- Gọi `time.sleep` trong code async (dùng `await asyncio.sleep`).
+- Băm mật khẩu, resize ảnh, tạo PDF trong `async def`.
+- Tăng token threadpool lên rất cao để "chữa" latency mà không tăng pool DB.
+- Nghĩ rằng dependency `def` không ảnh hưởng tới endpoint `async def`.
+
+## 14. Cách debug trong production
+
+1. **Loop lag metric**: nếu lag tăng cùng latency, có code block loop. Xem [Event Loop](../02-python-concurrency/event-loop.md#11-hành-vi-trong-production-loop-lag).
+2. **py-spy dump** trên worker chậm: thread chính nằm trong `requests`, `socket.recv` (blocking), `bcrypt`, `json` → tìm thấy thủ phạm.
+3. **asyncio debug mode** trên staging: log callback chạy quá 100 ms kèm vị trí.
+4. **Threadpool metric**: `limiter.borrowed_tokens` so với `total_tokens`; bằng nhau lâu dài → bão hòa.
+5. **Trace**: span của request có khoảng trống lớn trước span đầu tiên → chờ threadpool hoặc loop.
+
+## 15. Best Practices
+
+- `async def` khi toàn bộ I/O trong đường xử lý đều có client async; `def` khi dùng thư viện sync.
+- Đẩy phần blocking riêng lẻ bằng `to_thread`; đẩy CPU nặng ra khỏi request path.
+- Mọi lời gọi ra ngoài có timeout, bất kể sync hay async.
+- Đồng bộ kích thước threadpool, pool DB và số worker theo một ngân sách chung.
+- Đo loop lag và mức sử dụng threadpool như metric hạng nhất.
+
+## 16. Tóm tắt
+
+- `async def` chạy trên event loop; `def` chạy trong threadpool AnyIO 40 token mỗi worker; dependency tuân theo cùng quy tắc.
+- Hàm sync gọi bên trong `async def` chạy trên loop và block toàn worker.
+- Async phù hợp khi cả đường xử lý là non-blocking; sync phù hợp khi thư viện là blocking và concurrency vừa phải.
+- Threadpool, connection pool và CPU của loop là các giới hạn thật; async chỉ dời giới hạn chứ không xóa bỏ.
+- Loop lag và mức dùng threadpool là tín hiệu sớm nhất của cấu hình sai.
+
+## Liên quan
+
+- [AsyncIO](../02-python-concurrency/asyncio.md)
+- [Global Interpreter Lock](../02-python-concurrency/gil.md)
 - [Request Lifecycle](request-lifecycle.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Performance](performance.md)
+- [Async SQLAlchemy](../05-sqlalchemy/async-sqlalchemy.md)

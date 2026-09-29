@@ -1,211 +1,249 @@
 # Isolation Level
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Isolation level quyết định **mức độ một transaction nhìn thấy thay đổi của các transaction đồng thời**, và từ đó quyết định những **bất thường** (anomaly) nào có thể xảy ra. Mức càng cao, càng ít bất thường, nhưng càng nhiều xung đột phải xử lý (chờ hoặc retry).
 
-Isolation level quy định các anomaly được phép khi transaction đồng thời; PostgreSQL cung cấp Read Committed, Repeatable Read và Serializable.
+PostgreSQL hỗ trợ bốn mức theo chuẩn SQL, nhưng thực tế chỉ có ba hành vi khác nhau:
 
-## 2. Why does it matter?
+| Mức | Hành vi trong PostgreSQL |
+|---|---|
+| Read Uncommitted | Giống Read Committed (PostgreSQL không bao giờ cho đọc dữ liệu chưa commit) |
+| **Read Committed** (mặc định) | Snapshot mới cho mỗi câu lệnh |
+| **Repeatable Read** | Một snapshot cho cả transaction (snapshot isolation) |
+| **Serializable** | Snapshot isolation + phát hiện xung đột (SSI), đảm bảo kết quả như chạy tuần tự |
 
-Senior Engineer cần hiểu **Isolation Level** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Isolation level trả lời: "trong transaction của tôi, khi tôi đọc lại, tôi thấy thế giới ở thời điểm nào?" — ở mỗi câu lệnh (Read Committed), hay đóng băng từ đầu transaction (Repeatable Read). Serializable thêm một người trọng tài: nếu các transaction đồng thời tạo ra kết quả không thể có khi chạy tuần tự, một transaction bị hủy.
 
-Read Committed lấy snapshot mỗi statement; Repeatable Read dùng snapshot transaction; Serializable SSI phát hiện dangerous structure và có thể abort, nên application phải retry toàn transaction.
+Isolation level không phải công tắc "an toàn/không an toàn". Việc chọn mức nào bắt đầu từ câu hỏi: **invariant nào cần bảo vệ, và bất thường nào có thể phá nó?**
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
+## 3. Vì sao cần hiểu?
 
-## 4. Example
+Với mặc định Read Committed, nhiều pattern phổ biến có race condition:
+
+- Đọc số dư, kiểm tra đủ tiền, trừ tiền → mất cập nhật.
+- Kiểm tra "còn ít nhất một người trực" rồi cho một người nghỉ → cả hai người cùng nghỉ.
+- Đọc hai lần trong một báo cáo cho hai con số không khớp nhau.
+
+Hiểu anomaly giúp chọn công cụ đúng: câu lệnh nguyên tử, lock, constraint, hoặc isolation cao hơn.
+
+## 4. Các anomaly
+
+| Anomaly | Mô tả | RC | RR | Serializable |
+|---|---|---|---|---|
+| Dirty read | Đọc dữ liệu chưa commit của transaction khác | Không | Không | Không |
+| Non-repeatable read | Đọc lại một row, thấy giá trị khác (ai đó đã update và commit) | **Có** | Không | Không |
+| Phantom read | Chạy lại cùng điều kiện, thấy tập row khác (ai đó insert/delete) | **Có** | Không (PostgreSQL chặt hơn chuẩn) | Không |
+| Lost update | Hai transaction đọc-sửa-ghi cùng row, một cập nhật bị mất | **Có** (với pattern đọc rồi ghi giá trị tuyệt đối) | Không (lỗi serialization) | Không |
+| Write skew | Hai transaction đọc tập dữ liệu chồng nhau, ghi vào row khác nhau, cùng nhau phá invariant | **Có** | **Có** | Không |
+| Read-only anomaly | Transaction chỉ đọc thấy trạng thái không thể có trong mọi thứ tự tuần tự | Có | Có | Không |
+
+## 5. Read Committed
+
+Mỗi câu lệnh lấy snapshot mới tại thời điểm bắt đầu câu lệnh.
+
+### Non-repeatable read
 
 ```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
+-- T1
+BEGIN;
+SELECT total FROM claims WHERE id = 1;   -- 100
+                                          -- T2: UPDATE claims SET total = 150 WHERE id = 1; COMMIT;
+SELECT total FROM claims WHERE id = 1;   -- 150
+COMMIT;
 ```
 
-Với **Isolation Level**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+Báo cáo đọc tổng rồi đọc chi tiết có thể thấy hai con số không khớp.
 
-## 5. Production Use Case
+### UPDATE trong Read Committed: đọc lại phiên bản mới nhất
 
-Hai request cùng cấp warranty benefit cần row lock/atomic update hoặc Serializable retry; chỉ kiểm tra rồi ghi ở Read Committed có thể vi phạm invariant.
+Khi `UPDATE ... WHERE` gặp row đang bị transaction khác sửa, nó **chờ**. Khi transaction kia commit, PostgreSQL lấy **phiên bản mới nhất** của row, **kiểm tra lại điều kiện WHERE** trên phiên bản đó, rồi mới cập nhật. Cơ chế này (EvalPlanQual) làm cho câu lệnh nguyên tử an toàn:
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+```sql
+UPDATE products SET stock = stock - 1 WHERE id = 7 AND stock >= 1;
+```
 
-## 6. Common Problems
+Hai transaction đồng thời: transaction thứ hai chờ, thấy `stock` đã giảm, kiểm tra lại `stock >= 1`, và hoặc cập nhật trên giá trị mới, hoặc không cập nhật row nào.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Isolation Level | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Isolation Level, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Isolation Level.
-- **B3.** Which guarantees does Isolation Level provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Isolation Level?
-- **B5.** What is the most common misconception about Isolation Level?
-- **B6.** How would you test assumptions involving Isolation Level?
-- **B7.** Which edge cases or failure modes matter most for Isolation Level?
-- **B8.** How can Isolation Level affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Isolation Level?
-- **B10.** When is a different or simpler approach better than relying on Isolation Level?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Isolation Level triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Isolation Level is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Isolation Level. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Isolation Level fails first?
-- **S5.** A canary changes the behavior of Isolation Level; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Isolation Level constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Isolation Level meets concurrency or partial failure?
-- **L3.** What breaks first around Isolation Level at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Isolation Level?
-- **L5.** How would you benchmark or validate Isolation Level without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Isolation Level introduce?
-- **L7.** How would you change a poor decision around Isolation Level with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Isolation Level?
-- **L10.** How would you turn an incident involving Isolation Level into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Isolation level quy định các anomaly được phép khi transaction đồng thời; PostgreSQL cung cấp Read Committed, Repeatable Read và Serializable. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Isolation Level.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Isolation Level như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Isolation Level khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Isolation Level**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Isolation Level** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-
-Read Committed lấy snapshot mới mỗi statement, nên hai SELECT trong cùng transaction có thể thấy khác nhau. PostgreSQL Repeatable Read dùng transaction snapshot và ngăn nhiều anomaly nhưng concurrent write vẫn có serialization-style abort. Serializable dùng SSI theo dõi dependency nguy hiểm và có thể abort dù không lock mọi read.
-
-Isolation level không tự bảo vệ mọi business invariant nếu read/write pattern không nằm trong cùng transaction hoặc predicate không được theo dõi như kỳ vọng. Luôn mô tả anomaly cần ngăn: lost update, write skew, duplicate allocation; dùng atomic SQL, row lock, unique constraint, optimistic version hoặc Serializable + retry whole transaction.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+### Lost update trong Read Committed
 
 ```mermaid
-flowchart LR
-            SQL --> Plan["Planner decision for Isolation Level"]
-            Plan --> Executor
-            Executor --> Index[(Index pages)]
-            Executor --> Heap[(Heap pages)]
-            Executor --> Result
+sequenceDiagram
+    participant A as T1 Read Committed
+    participant DB as PostgreSQL
+    participant B as T2 Read Committed
+    A->>DB: SELECT balance FROM accounts WHERE id = 1
+    DB-->>A: 100
+    B->>DB: SELECT balance FROM accounts WHERE id = 1
+    DB-->>B: 100
+    A->>DB: UPDATE accounts SET balance = 70 WHERE id = 1
+    A->>DB: COMMIT
+    B->>DB: UPDATE accounts SET balance = 50 WHERE id = 1
+    Note over B,DB: B chờ A, rồi ghi đè 50 lên kết quả của A
+    B->>DB: COMMIT
+    Note over A,B: Rút 30 và rút 50 từ 100, số dư cuối là 50 thay vì 20
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: vấn đề không phải ở câu `UPDATE`, mà ở việc giá trị mới được **tính trong ứng dụng** từ lần đọc cũ. Database không biết `50` được tính từ `100`. Sửa bằng một trong các cách:
 
-## 16. Failure Scenario
+- `UPDATE accounts SET balance = balance - 50 WHERE id = 1 AND balance >= 50` (nguyên tử).
+- `SELECT ... FOR UPDATE` trước khi đọc (khóa row, T2 phải chờ T1 và đọc giá trị mới).
+- Optimistic locking với cột `version`.
+- Repeatable Read (T2 nhận lỗi serialization và phải retry).
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+## 6. Repeatable Read (snapshot isolation)
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Snapshot được lấy ở câu lệnh đầu tiên và dùng cho **cả transaction**. Mọi lần đọc đều thấy cùng một trạng thái.
 
-## 17. How I would debug this in production
+Khi transaction RR cố cập nhật row đã bị transaction khác sửa và commit **sau** khi snapshot của nó được lấy, PostgreSQL không thể "đọc lại phiên bản mới" (vì như vậy phá vỡ snapshot), nên báo lỗi:
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+```text
+ERROR: could not serialize access due to concurrent update
+SQLSTATE 40001
+```
 
-## 18. Common Misconceptions
+Ứng dụng phải **retry toàn bộ transaction**. Đây là cách RR ngăn lost update.
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+### Write skew: RR vẫn chưa đủ
 
-## 19. When NOT to use
+Invariant: mỗi ca phải có ít nhất một kỹ thuật viên trực.
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+```mermaid
+sequenceDiagram
+    participant A as T1 Repeatable Read: An xin nghỉ
+    participant DB as PostgreSQL
+    participant B as T2 Repeatable Read: Bình xin nghỉ
+    A->>DB: SELECT count(*) FROM on_call WHERE shift = 5 AND active
+    DB-->>A: 2
+    B->>DB: SELECT count(*) FROM on_call WHERE shift = 5 AND active
+    DB-->>B: 2
+    A->>DB: UPDATE on_call SET active = false WHERE tech = An
+    B->>DB: UPDATE on_call SET active = false WHERE tech = Binh
+    A->>DB: COMMIT thành công
+    B->>DB: COMMIT thành công
+    Note over A,B: Hai row khác nhau, không có xung đột ghi, ca 5 không còn ai trực
+```
 
-## 20. What interviewer may ask next
+Diễn giải: mỗi transaction đọc một tập dữ liệu (cả hai row), rồi ghi vào **row khác nhau**. Không có xung đột ghi-ghi, nên snapshot isolation không phát hiện. Kết quả cuối phá invariant dù mỗi transaction riêng lẻ đều đúng. Đây là **write skew**.
 
-1. **What guarantee does Isolation Level provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Sửa bằng:
 
-## 21. Check Your Understanding
+- **Serializable** (phát hiện và hủy một transaction).
+- **Khóa tập dữ liệu được đọc**: `SELECT ... FROM on_call WHERE shift = 5 FOR UPDATE` — cả hai transaction khóa cùng các row, transaction thứ hai phải chờ và thấy trạng thái mới.
+- **Materialize xung đột**: một row đại diện cho ca (`shifts`), mọi thay đổi trực ca đều `UPDATE shifts SET ... WHERE id = 5` — biến write skew thành xung đột ghi trên cùng một row.
+- **Constraint** nếu invariant diễn đạt được (exclusion constraint, trigger kiểm tra).
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Isolation Level** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 7. Serializable (SSI)
 
-<details>
-<summary>Answer</summary>
+PostgreSQL cài đặt Serializable bằng **Serializable Snapshot Isolation** (từ 9.1):
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+1. Mỗi transaction chạy với snapshot isolation như RR.
+2. Thêm vào đó, PostgreSQL theo dõi **quan hệ đọc-ghi** giữa các transaction đồng thời bằng predicate lock (`SIReadLock`) — ghi nhận "T1 đã đọc dữ liệu mà T2 sau đó ghi".
+3. Khi phát hiện một cấu trúc nguy hiểm (hai cạnh đọc-ghi liên tiếp tạo thành vòng có thể dẫn tới kết quả không tuần tự hóa được), một transaction bị hủy với lỗi `40001`.
 
-</details>
+Predicate lock **không chặn** ai; chúng chỉ được dùng để phát hiện. Không có deadlock phát sinh từ chúng.
 
-## 22. See also
+Đặc điểm:
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
+- Đảm bảo: nếu mọi transaction đều chạy ở Serializable và commit thành công, kết quả tương đương một thứ tự tuần tự nào đó. Không cần suy nghĩ về từng anomaly.
+- Chi phí: theo dõi predicate lock tốn memory và CPU; có **false positive** (hủy transaction dù thực ra không có vấn đề), tăng khi transaction đọc nhiều (seq scan khóa theo mức bảng/page).
+- Bắt buộc: ứng dụng phải có **retry toàn bộ transaction** cho lỗi `40001`.
+- Transaction chỉ đọc có thể khai báo `SERIALIZABLE READ ONLY DEFERRABLE` để chờ một snapshot an toàn và không bao giờ bị hủy — phù hợp cho báo cáo.
+
+## 8. Ví dụ: retry transaction trong Python
+
+```python
+import asyncio
+import random
+from sqlalchemy.exc import DBAPIError
+
+RETRYABLE = {"40001", "40P01"}   # serialization_failure, deadlock_detected
+
+async def run_serializable(sessionmaker, work, attempts: int = 5):
+    for attempt in range(1, attempts + 1):
+        async with sessionmaker() as session:
+            try:
+                async with session.begin():
+                    await session.connection(execution_options={"isolation_level": "SERIALIZABLE"})
+                    return await work(session)
+            except DBAPIError as exc:
+                code = getattr(exc.orig, "sqlstate", None)
+                if code not in RETRYABLE or attempt == attempts:
+                    raise
+        await asyncio.sleep(random.uniform(0, 0.05 * 2 ** attempt))   # backoff có jitter
+```
+
+- `work` phải chạy lại **toàn bộ** logic đọc và ghi, không dùng dữ liệu đọc từ lần thử trước.
+- Không có tác dụng phụ bên ngoài (gọi API, gửi email) bên trong `work` — chúng sẽ lặp lại mỗi lần retry.
+- Giới hạn số lần thử và dùng [backoff với jitter](../10-distributed-systems/retry.md).
+
+## 9. Hành vi trong production
+
+- **Phần lớn hệ thống chạy Read Committed** và bảo vệ invariant bằng câu lệnh nguyên tử, `FOR UPDATE`, constraint và optimistic version. Cách này dễ dự đoán hiệu năng.
+- **Serializable** phù hợp khi invariant phức tạp, liên quan nhiều row, khó diễn đạt bằng lock; và khi team sẵn sàng xây dựng retry chuẩn. Tỷ lệ lỗi `40001` tăng theo mức độ tranh chấp.
+- **Mức isolation được đặt theo transaction**, không nhất thiết toàn hệ thống: báo cáo nhất quán dùng RR read-only; nghiệp vụ nhạy cảm dùng Serializable; phần còn lại RC.
+- **Retry không có giới hạn** khi tranh chấp cao có thể tạo livelock và tải tăng vọt.
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Lost update | RC + đọc rồi ghi giá trị tính trong ứng dụng | Số liệu sai lệch, không có lỗi |
+| Write skew | RC/RR + invariant trên nhiều row | Invariant bị phá hiếm khi, dưới tải |
+| Lỗi 40001 không được xử lý | RR/Serializable không có retry | Request lỗi 500 ngẫu nhiên khi tranh chấp |
+| Retry lặp tác dụng phụ | Gọi API bên ngoài trong transaction retry | Email/thanh toán lặp |
+| Nhiều false positive | Serializable + seq scan lớn | Tỷ lệ 40001 cao dù ít xung đột thật |
+
+## 11. Trade-offs
+
+| Mức | Bảo vệ | Chi phí |
+|---|---|---|
+| Read Committed + lock/constraint tường minh | Invariant được chọn, rõ ràng | Phải nhận diện đúng mọi race; dễ sót |
+| Repeatable Read | Snapshot nhất quán, chống lost update | Lỗi serialization cần retry; vẫn có write skew |
+| Serializable | Mọi anomaly | Retry bắt buộc, overhead theo dõi, false positive |
+
+## 12. Sai lầm thường gặp
+
+- Nghĩ Repeatable Read chống được mọi race condition (còn write skew).
+- Dùng RR/Serializable mà không có retry.
+- Retry chỉ câu lệnh lỗi thay vì cả transaction.
+- Đặt tác dụng phụ bên ngoài bên trong transaction có retry.
+- Đổi isolation level toàn hệ thống mà không đo tỷ lệ lỗi và hiệu năng.
+
+## 13. Cách debug
+
+```sql
+-- Isolation hiện tại
+SHOW transaction_isolation;
+
+-- Số lỗi serialization/deadlock theo database (PostgreSQL 14+ có thêm thống kê theo loại trong log)
+SELECT datname, conflicts, deadlocks FROM pg_stat_database;
+```
+
+Log `SQLSTATE` của mọi exception database ở ứng dụng; metric số lần retry theo loại lỗi và theo endpoint.
+
+## 14. Best Practices
+
+- Bắt đầu từ invariant: xác định anomaly nào có thể phá nó.
+- Ưu tiên câu lệnh nguyên tử và constraint; dùng `FOR UPDATE` khi cần đọc-sửa-ghi.
+- Dùng Serializable cho nghiệp vụ có invariant phức tạp, luôn kèm retry toàn bộ transaction có giới hạn và jitter.
+- Giữ transaction ngắn để giảm xung đột ở mọi mức.
+- Báo cáo nhất quán dùng `REPEATABLE READ READ ONLY` hoặc `SERIALIZABLE READ ONLY DEFERRABLE`, tốt nhất trên replica.
+
+## 15. Tóm tắt
+
+- PostgreSQL có ba hành vi: Read Committed (snapshot mỗi câu lệnh), Repeatable Read (snapshot mỗi transaction), Serializable (SSI).
+- RC cho phép non-repeatable read, phantom, lost update (với đọc-rồi-ghi) và write skew.
+- RR chống lost update bằng lỗi serialization nhưng vẫn cho phép write skew.
+- Serializable phát hiện mọi anomaly và hủy transaction; ứng dụng bắt buộc retry toàn bộ transaction.
+- Chọn công cụ theo invariant: câu lệnh nguyên tử, lock, constraint, hoặc isolation cao hơn.
+
+## Liên quan
+
 - [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+- [Transaction](transaction.md)
+- [Locks](locks.md)
+- [Race Condition](../02-python-concurrency/race-condition.md)
+- [Data Consistency](../20-production-incidents/data-consistency.md)

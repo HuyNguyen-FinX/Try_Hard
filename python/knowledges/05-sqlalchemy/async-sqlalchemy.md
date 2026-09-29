@@ -1,210 +1,218 @@
-# Async Sqlalchemy
+# Async SQLAlchemy
 
-> **Phạm vi phỏng vấn:** SQLAlchemy · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+SQLAlchemy hỗ trợ asyncio qua `sqlalchemy.ext.asyncio`: `AsyncEngine`, `AsyncConnection`, `AsyncSession`. Kết hợp với driver async như **asyncpg** hoặc **psycopg (async)**, ứng dụng FastAPI có thể chờ database mà không block event loop.
 
-Async SQLAlchemy dùng asyncio-compatible dialect/driver để chờ network không block event loop; database vẫn thực thi query như cũ.
+Điểm đặc biệt: SQLAlchemy **không viết lại** toàn bộ ORM thành async. Phần lõi (ORM, unit of work, Core) vẫn là code đồng bộ; async được thêm vào bằng một **cầu nối dựa trên greenlet**. Hiểu cầu nối này giải thích lỗi nổi tiếng nhất của async SQLAlchemy: `MissingGreenlet`.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Async Sqlalchemy** để giữ transaction boundary đúng mà vẫn nhìn thấy chi phí SQL thực tế. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> AsyncSession là một lớp vỏ async bọc quanh Session đồng bộ. Khi bạn `await session.execute(...)`, SQLAlchemy chạy code đồng bộ bên trong một greenlet; mỗi khi code đó cần I/O, nó "nhảy ra" khỏi greenlet để `await` driver async, rồi "nhảy vào" lại. Cầu nối chỉ tồn tại **bên trong** các lời gọi có `await`. Bất kỳ I/O nào bị kích hoạt **bên ngoài** — như đọc một attribute lazy — không có cầu nối, và lỗi.
 
-## 3. How does it work?
+## 3. Vì sao cần async SQLAlchemy?
 
-AsyncSession không chia sẻ giữa concurrent task; implicit lazy I/O dễ gây lỗi/bất ngờ. Dùng explicit eager load, `async with`, pool nhỏ và không fan-out query vô hạn.
+Trong endpoint `async def`, gọi Session đồng bộ với driver đồng bộ (psycopg2) sẽ **block event loop** trong suốt thời gian chờ database — mọi request khác trên worker đứng yên. Xem [Sync vs Async Endpoint](../03-fastapi/sync-vs-async-endpoint.md). Có hai lựa chọn đúng:
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query count, pool wait, transaction age, fetched rows và p99 latency` và phân biệt symptom, bottleneck với root cause.
+1. Endpoint `def` + Session đồng bộ (chạy trong threadpool).
+2. Endpoint `async def` + `AsyncSession` + driver async.
 
-## 4. Example
+Lựa chọn 2 cho concurrency cao hơn (không bị giới hạn 40 thread) khi toàn bộ đường xử lý là async.
 
-```python
-from fastapi import Depends, FastAPI, HTTPException
+## 4. Cơ chế hoạt động: cầu nối greenlet
 
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Async Sqlalchemy**.
-
-## 5. Production Use Case
-
-FastAPI request dùng `asyncpg`/AsyncSession; TaskGroup không chạy nhiều operation đồng thời trên cùng session, mỗi unit-of-work có session riêng.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Async Sqlalchemy | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Async Sqlalchemy, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Async Sqlalchemy.
-- **B3.** Which guarantees does Async Sqlalchemy provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Async Sqlalchemy?
-- **B5.** What is the most common misconception about Async Sqlalchemy?
-- **B6.** How would you test assumptions involving Async Sqlalchemy?
-- **B7.** Which edge cases or failure modes matter most for Async Sqlalchemy?
-- **B8.** How can Async Sqlalchemy affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Async Sqlalchemy?
-- **B10.** When is a different or simpler approach better than relying on Async Sqlalchemy?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Async Sqlalchemy triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Async Sqlalchemy is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Async Sqlalchemy. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Async Sqlalchemy fails first?
-- **S5.** A canary changes the behavior of Async Sqlalchemy; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Async Sqlalchemy constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Async Sqlalchemy meets concurrency or partial failure?
-- **L3.** What breaks first around Async Sqlalchemy at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Async Sqlalchemy?
-- **L5.** How would you benchmark or validate Async Sqlalchemy without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Async Sqlalchemy introduce?
-- **L7.** How would you change a poor decision around Async Sqlalchemy with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Async Sqlalchemy?
-- **L10.** How would you turn an incident involving Async Sqlalchemy into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Async SQLAlchemy dùng asyncio-compatible dialect/driver để chờ network không block event loop; database vẫn thực thi query như cũ. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Async Sqlalchemy.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query count, pool wait, transaction age, fetched rows và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Async Sqlalchemy như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Async Sqlalchemy khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Async Sqlalchemy**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query count, pool wait, transaction age, fetched rows và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Async Sqlalchemy** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+**Greenlet** là coroutine cấp thấp (thư viện C) cho phép chuyển qua lại giữa các stack mà không cần `async/await` ở mọi tầng.
 
 ```mermaid
-flowchart LR
-            Request --> Session["Session / unit of work"]
-            Session --> Topic["Async Sqlalchemy"]
-            Topic --> SQL
-            SQL --> Pool --> PostgreSQL
+sequenceDiagram
+    participant EP as Endpoint async
+    participant AS as AsyncSession
+    participant G as Greenlet chạy code sync của ORM
+    participant D as asyncpg driver
+    participant L as Event loop
+    EP->>AS: await session.execute(stmt)
+    AS->>G: greenlet_spawn: chạy Session.execute đồng bộ trong greenlet
+    G->>G: Compile SQL, chuẩn bị tham số
+    G->>AS: Cần I/O: await_only(driver.fetch) chuyển về greenlet cha
+    AS->>D: await cursor.fetch(...)
+    D->>L: Chờ socket, event loop chạy request khác
+    L-->>D: Dữ liệu tới
+    D-->>AS: rows
+    AS->>G: Chuyển lại vào greenlet với kết quả
+    G->>G: Tạo object ORM, cập nhật identity map
+    G-->>AS: Kết quả
+    AS-->>EP: Result
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. `await session.execute()` gọi `greenlet_spawn`, chạy phương thức đồng bộ `Session.execute` bên trong một greenlet con.
+2. Code đồng bộ của ORM chạy bình thường cho tới khi cần I/O. Adapter của driver gọi `await_only(coroutine)`: hàm này **chuyển quyền** từ greenlet con về greenlet cha (nơi đang ở trong một coroutine thật), mang theo coroutine của driver.
+3. Greenlet cha `await` coroutine đó — event loop được giải phóng để chạy việc khác trong lúc chờ database.
+4. Khi có kết quả, greenlet cha chuyển lại vào greenlet con với kết quả; code đồng bộ tiếp tục như thể lời gọi I/O vừa trả về.
+5. Khi code đồng bộ xong, kết quả được trả ra ngoài.
 
-Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.
+Với người dùng, mọi thứ trông như async thuần. Chi phí của greenlet nhỏ so với I/O mạng.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 5. `MissingGreenlet`: vì sao và khi nào?
 
-## 17. How I would debug this in production
+```text
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called;
+can't call await_only() here. Was IO attempted in an unexpected place?
+```
 
-1. Bật SQL timing/query count có sampling.
-2. Xem pool checked-out/wait/timeout.
-3. Kiểm session scope, autoflush và transaction age.
-4. Tìm lazy load/N+1 và row amplification.
-5. So generated SQL + plan trước/sau.
+Lỗi xảy ra khi code đồng bộ của SQLAlchemy cần I/O nhưng **không đang chạy trong greenlet** do `greenlet_spawn` tạo ra — tức là I/O bị kích hoạt từ một thao tác không phải `await`. Các trường hợp phổ biến:
 
-## 18. Common Misconceptions
+| Tình huống | Vì sao cần I/O |
+|---|---|
+| Truy cập relationship chưa load: `claim.lines` | Lazy loading phát sinh SELECT từ việc đọc attribute |
+| Truy cập attribute sau commit với `expire_on_commit=True` | Attribute expired phải được tải lại |
+| Truy cập attribute có `deferred` chưa load | Tải cột bị hoãn |
+| Pydantic serialize ORM object có relationship chưa load | Serializer đọc attribute → lazy load |
 
-**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.
+Cách xử lý:
 
-## 19. When NOT to use
+1. **Eager load** mọi relationship sẽ dùng: `selectinload`, `joinedload`. Xem [N+1](n-plus-one.md).
+2. **`expire_on_commit=False`** trong `async_sessionmaker`.
+3. **`lazy="raise"`** trên relationship để lỗi rõ ràng hơn và buộc eager load tường minh.
+4. Khi thực sự cần lazy load một relationship: `await session.refresh(claim, ["lines"])`, hoặc mixin `AsyncAttrs` rồi `await claim.awaitable_attrs.lines`.
+5. Chạy một đoạn code ORM đồng bộ phức tạp: `await session.run_sync(fn)` — `fn` nhận Session đồng bộ và chạy bên trong greenlet, lazy load bên trong nó hoạt động.
 
-Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.
+## 6. Ví dụ: cấu hình và sử dụng
 
-## 20. What interviewer may ask next
+```python
+from contextlib import asynccontextmanager
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
-1. **What guarantee does Async Sqlalchemy provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+@asynccontextmanager
+async def lifespan(app):
+    engine = create_async_engine(
+        "postgresql+asyncpg://app@db/warranty",
+        pool_size=10,
+        max_overflow=5,
+        pool_timeout=3,
+        pool_pre_ping=True,
+        connect_args={"command_timeout": 5},        # timeout mỗi câu lệnh phía asyncpg
+    )
+    app.state.sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    yield
+    await engine.dispose()
 
-## 21. Check Your Understanding
+async def list_pending(session: AsyncSession, limit: int = 50) -> list[Claim]:
+    stmt = (
+        select(Claim)
+        .where(Claim.status == "pending")
+        .options(selectinload(Claim.lines), selectinload(Claim.dealer))
+        .order_by(Claim.created_at.desc())
+        .limit(limit)
+    )
+    return list((await session.scalars(stmt)).all())
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Async Sqlalchemy** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 7. Không dùng một AsyncSession đồng thời
 
-<details>
-<summary>Answer</summary>
+```python
+# SAI: hai task cùng dùng một session
+async with asyncio.TaskGroup() as tg:
+    tg.create_task(session.execute(q1))
+    tg.create_task(session.execute(q2))
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Một AsyncSession (và connection bên dưới) chỉ xử lý **một thao tác tại một thời điểm**. Dùng đồng thời gây lỗi kiểu "This session is provisioning a new connection; concurrent operations are not permitted" hoặc lỗi từ driver ("another operation is in progress"). Muốn query song song, mỗi task dùng Session riêng (và vì vậy mỗi task một connection riêng từ pool):
 
-</details>
+```python
+async def load(q):
+    async with sessionmaker() as s:
+        return (await s.execute(q)).all()
 
-## 22. See also
+async with asyncio.TaskGroup() as tg:
+    t1 = tg.create_task(load(q1))
+    t2 = tg.create_task(load(q2))
+```
+
+Cân nhắc: song song hóa nhân số connection mỗi request. Với tải cao, nó có thể làm cạn pool nhanh hơn là giảm latency.
+
+## 8. Engine, pool và event loop
+
+- Pool của AsyncEngine chứa connection asyncpg gắn với **event loop** đã tạo chúng. Không dùng một AsyncEngine qua nhiều event loop (ví dụ tạo engine ở module level rồi chạy trong test framework tạo loop mới cho mỗi test) — lỗi "attached to a different loop" hoặc treo. Tạo engine trong lifespan/fixture của đúng loop.
+- Mỗi worker process có loop riêng và engine riêng.
+- asyncpg dùng **prepared statement** và cache chúng theo connection. Với PgBouncer transaction mode (bản cũ không hỗ trợ prepared statement), phải tắt cache: `connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0}` (tham số cụ thể theo version driver/dialect). Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
+
+## 9. Cancellation và timeout
+
+Khi request bị cancel (client ngắt kết nối, `asyncio.timeout` hết hạn) trong lúc đang chờ query:
+
+1. `CancelledError` được ném vào tại điểm `await` trong driver.
+2. asyncpg cố gắng gửi yêu cầu hủy query tới PostgreSQL; connection có thể được đánh dấu không dùng được và bị loại khỏi pool.
+3. Transaction bị rollback khi Session đóng.
+
+Hệ quả: timeout ở tầng ứng dụng giải phóng coroutine, nhưng query có thể vẫn chạy trên PostgreSQL một lúc. Đặt thêm `statement_timeout` phía database để đảm bảo query dài bị dừng ở đó. Xem [Timeout](../10-distributed-systems/timeout.md).
+
+## 10. Hành vi trong production
+
+- **Lazy load bị chặn là điều tốt**: trong code sync, lazy load âm thầm gây N+1; trong async, nó thành lỗi — buộc eager load tường minh.
+- **Serialize ORM object**: Pydantic đọc attribute; mọi relationship trong response model phải được eager load trước khi return.
+- **Pool nhỏ vẫn đủ** nếu transaction ngắn: coroutine chỉ giữ connection trong lúc có transaction.
+- **CPU của event loop**: tạo object ORM (hydration) cho hàng nghìn row tốn CPU trên loop. Endpoint trả nhiều row nên select cột thay vì object đầy đủ.
+- **Trộn sync và async**: code cũ dùng Session sync trong endpoint async sẽ block loop. Kiểm tra mọi đường truy cập database khi chuyển sang async.
+
+## 11. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `MissingGreenlet` | Lazy load, attribute expired, deferred column | Exception khi đọc attribute hoặc serialize |
+| Concurrent operations error | Một AsyncSession dùng trong nhiều task | Lỗi từ SQLAlchemy/asyncpg khi gather |
+| Different loop | Engine tạo trên loop khác | Lỗi trong test, treo khi khởi động |
+| `prepared statement does not exist` | asyncpg cache + PgBouncer transaction mode cũ | Lỗi ngẫu nhiên sau khi thêm PgBouncer |
+| Event loop block | Dùng Session sync hoặc hydration nặng trong async | Loop lag cao |
+| Query tiếp tục chạy sau timeout | Không có `statement_timeout` | Load database cao dù client đã timeout |
+
+## 12. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| AsyncSession + asyncpg | Concurrency cao, không block loop | Phải eager load tường minh, không lazy load |
+| Session sync trong endpoint `def` | Quen thuộc, lazy load hoạt động | Giới hạn bởi threadpool |
+| `run_sync` | Tái sử dụng code ORM sync | Code trong đó vẫn phải ngắn |
+| `AsyncAttrs.awaitable_attrs` | Lazy load tường minh bằng `await` | Mỗi lần là một query — dễ tái tạo N+1 |
+
+## 13. Sai lầm thường gặp
+
+- Để `expire_on_commit=True` với AsyncSession.
+- Trả ORM object có relationship chưa load làm response.
+- Dùng `asyncio.gather` với cùng một AsyncSession.
+- Tạo AsyncEngine ở module level trong code chạy nhiều event loop.
+- Dùng driver sync (psycopg2) với `create_async_engine`.
+
+## 14. Cách debug
+
+- Traceback của `MissingGreenlet` chỉ ra attribute nào kích hoạt I/O; đó là relationship/cột cần eager load.
+- `sqlalchemy.inspect(obj).unloaded` liệt kê attribute chưa được tải.
+- Bật log SQL để xác nhận eager loading sinh đúng số query.
+- Loop lag metric để phát hiện đoạn đồng bộ nặng.
+
+## 15. Best Practices
+
+- `async_sessionmaker(engine, expire_on_commit=False)`; engine tạo trong lifespan.
+- Eager load mọi relationship được dùng; `lazy="raise"` để phát hiện sớm.
+- Một AsyncSession cho một task tại một thời điểm.
+- Timeout ở cả hai phía: `command_timeout` của driver và `statement_timeout` của PostgreSQL.
+- Endpoint trả nhiều dữ liệu: select cột thay vì object ORM.
+
+## 16. Tóm tắt
+
+- Async SQLAlchemy bọc ORM đồng bộ bằng cầu nối greenlet: code sync chạy trong greenlet, nhảy ra để `await` driver async khi cần I/O.
+- `MissingGreenlet` xuất hiện khi I/O bị kích hoạt ngoài `await` — thường là lazy load hoặc attribute expired.
+- Giải pháp: eager load, `expire_on_commit=False`, `lazy="raise"`, `run_sync` hoặc `awaitable_attrs` khi cần.
+- Một AsyncSession không dùng đồng thời; engine gắn với event loop đã tạo nó.
+- Cancel ở ứng dụng không đảm bảo query dừng ở database; cần `statement_timeout`.
+
+## Liên quan
 
 - [Session Lifecycle](session-lifecycle.md)
-- [Transactions](transaction.md)
-- [PostgreSQL Pooling](../04-database-postgresql/connection-pooling.md)
+- [N+1 Query](n-plus-one.md)
+- [AsyncIO](../02-python-concurrency/asyncio.md)
+- [Sync vs Async Endpoint](../03-fastapi/sync-vs-async-endpoint.md)
+- [Connection Pooling](../04-database-postgresql/connection-pooling.md)

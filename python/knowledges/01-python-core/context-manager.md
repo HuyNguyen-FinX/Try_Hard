@@ -1,211 +1,282 @@
 # Context Manager
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
-
-Context Manager là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Context Manager** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+Context manager là object định nghĩa hành động **khi vào** và **khi ra** khỏi một khối code, và đảm bảo hành động "khi ra" luôn chạy — dù khối code kết thúc bình thường, `return` giữa chừng, hay ném exception.
 
 ```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Context Manager',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+with open("report.csv", "w") as f:
+    f.write(data)
+# file chắc chắn đã đóng ở đây
 ```
 
-Ví dụ biến quyết định về **Context Manager** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Trong backend, context manager quản lý mọi tài nguyên có vòng đời: file, socket, lock, database session, transaction, connection lấy từ pool, span của distributed tracing, timeout, tài nguyên khởi tạo khi application khởi động (lifespan).
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Một shared library dùng Context Manager để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
+> Context manager là một cặp "mở — đóng" được ràng buộc với một khối code. Ra khỏi khối bằng bất kỳ đường nào thì "đóng" vẫn chạy.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+Nó là cách viết `try/finally` có tên, có thể tái sử dụng, và có thể quyết định số phận của exception.
 
-## 6. Common Problems
+## 3. Vì sao cần?
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+Python dùng [reference counting và GC](gc-reference-counting.md) để hủy object, nhưng **thời điểm** hủy không phải là hợp đồng của ngôn ngữ. Trên PyPy, file có thể không đóng trong nhiều giây; trên CPython, một cycle hoặc một traceback giữ reference cũng làm trễ việc đóng. Tài nguyên hệ thống thì khan hiếm:
 
-## 7. Trade-offs
+- File descriptor có giới hạn (`ulimit -n`).
+- Connection pool thường chỉ 10–20 connection mỗi process.
+- Lock không được nhả → deadlock.
+- Transaction không được commit/rollback → giữ lock row, chặn VACUUM.
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Context Manager | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Tài nguyên khan hiếm cần được giải phóng **tất định**, ngay khi hết dùng. Context manager là cơ chế chuẩn cho việc đó.
 
-## 8. Interview Questions
+## 4. Cơ chế hoạt động: giao thức
 
-### Basic / Mid-level (10)
+Một context manager có hai method:
 
-- **B1.** What is Context Manager, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Context Manager.
-- **B3.** Which guarantees does Context Manager provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Context Manager?
-- **B5.** What is the most common misconception about Context Manager?
-- **B6.** How would you test assumptions involving Context Manager?
-- **B7.** Which edge cases or failure modes matter most for Context Manager?
-- **B8.** How can Context Manager affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Context Manager?
-- **B10.** When is a different or simpler approach better than relying on Context Manager?
+- `__enter__(self)` — chạy khi vào khối; giá trị trả về được gán cho biến sau `as`.
+- `__exit__(self, exc_type, exc_value, traceback)` — chạy khi ra khỏi khối. Nếu khối kết thúc bình thường, ba tham số là `None`. Nếu trả về giá trị truthy, exception bị **nuốt**.
 
-### Production Scenarios (5)
+Câu lệnh `with` được dịch (theo đặc tả ngôn ngữ) gần như sau:
 
-- **S1.** A release involving Context Manager triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Context Manager is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Context Manager. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Context Manager fails first?
-- **S5.** A canary changes the behavior of Context Manager; success rate is flat but saturation rises. Promote or roll back?
+```python
+# with EXPR as VAR:
+#     BLOCK
 
-## 9. Senior-level Questions
+manager = EXPR
+enter = type(manager).__enter__
+exit_ = type(manager).__exit__
+value = enter(manager)
+try:
+    VAR = value
+    BLOCK
+except BaseException as exc:
+    if not exit_(manager, type(exc), exc, exc.__traceback__):
+        raise
+else:
+    exit_(manager, None, None, None)
+```
 
-- **L1.** How does Context Manager constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Context Manager meets concurrency or partial failure?
-- **L3.** What breaks first around Context Manager at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Context Manager?
-- **L5.** How would you benchmark or validate Context Manager without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Context Manager introduce?
-- **L7.** How would you change a poor decision around Context Manager with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Context Manager?
-- **L10.** How would you turn an incident involving Context Manager into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Context Manager là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Context Manager.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Context Manager như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Context Manager khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Context Manager**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Context Manager** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+Lưu ý: `__enter__` và `__exit__` được tra trên **type**, không phải instance — giống mọi [dunder method](dunder-methods.md).
 
 ```mermaid
-flowchart LR
-            Source["Python source"] --> Runtime["Context Manager runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+sequenceDiagram
+    participant C as Code gọi
+    participant CM as Context manager
+    participant B as Khối with
+    C->>CM: __enter__()
+    CM-->>C: tài nguyên, gán vào biến sau as
+    C->>B: chạy khối lệnh
+    alt Khối kết thúc bình thường hoặc return
+        B-->>C: xong
+        C->>CM: __exit__(None, None, None)
+    else Khối ném exception
+        B-->>C: exception
+        C->>CM: __exit__(type, exc, tb)
+        alt __exit__ trả về True
+            CM-->>C: exception bị nuốt, chạy tiếp sau with
+        else __exit__ trả về False hoặc None
+            CM-->>C: exception tiếp tục lan ra ngoài
+        end
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. `__enter__` được gọi trước; nếu nó raise, khối không chạy và `__exit__` **không** được gọi (tài nguyên chưa được lấy thành công).
+2. Khối lệnh chạy.
+3. Dù khối kết thúc thế nào, `__exit__` luôn được gọi.
+4. Nếu có exception, `__exit__` nhận thông tin exception và quyết định: trả truthy để nuốt, trả falsy để exception tiếp tục lan.
+5. Nếu chính `__exit__` raise exception mới, exception mới thay thế exception cũ (exception cũ được gắn vào `__context__`).
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+## 5. Viết context manager
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+### Dạng class
 
-## 17. How I would debug this in production
+```python
+import time
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+class Timer:
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
 
-## 18. Common Misconceptions
+    def __exit__(self, exc_type, exc, tb):
+        self.elapsed = time.perf_counter() - self.start
+        return False          # không nuốt exception
+```
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+### Dạng generator với `contextlib.contextmanager`
 
-## 19. When NOT to use
+```python
+from contextlib import contextmanager
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+@contextmanager
+def transaction(conn):
+    tx = conn.begin()
+    try:
+        yield tx              # thân with chạy ở đây
+    except BaseException:
+        tx.rollback()
+        raise                 # phải raise lại, nếu không exception bị nuốt
+    else:
+        tx.commit()
+```
 
-## 20. What interviewer may ask next
+`@contextmanager` biến generator thành context manager:
 
-1. **What guarantee does Context Manager provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+- `__enter__` gọi `next(gen)`, chạy đến `yield`, trả giá trị được yield.
+- `__exit__` khi không có exception: gọi `next(gen)` lần nữa; generator phải kết thúc (nếu `yield` lần thứ hai → `RuntimeError`).
+- `__exit__` khi có exception: `gen.throw(exc)` — exception xuất hiện **tại dòng `yield`** trong generator. Nếu generator bắt và không raise lại, exception bị nuốt.
 
-## 21. Check Your Understanding
+Cơ chế này dựa trực tiếp trên `throw()` của [generator](generators-iterators.md).
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Context Manager** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Async context manager
 
-<details>
-<summary>Answer</summary>
+Khi việc vào/ra cần `await` (mở connection async, commit async), dùng `__aenter__`/`__aexit__` và `async with`, hoặc `contextlib.asynccontextmanager`.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+```python
+from contextlib import asynccontextmanager
 
-</details>
+@asynccontextmanager
+async def db_session(sessionmaker):
+    session = sessionmaker()
+    try:
+        yield session
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+```
 
-## 22. See also
+## 6. Quản lý nhiều tài nguyên: `ExitStack`
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+Khi số tài nguyên chỉ biết lúc chạy, dùng `contextlib.ExitStack` (hoặc `AsyncExitStack`):
+
+```python
+from contextlib import ExitStack
+
+with ExitStack() as stack:
+    files = [stack.enter_context(open(p)) for p in paths]
+    merge(files)
+# mọi file được đóng theo thứ tự ngược với lúc mở
+```
+
+`ExitStack` là một ngăn xếp các callback dọn dẹp; khi thoát, nó gọi chúng theo thứ tự **LIFO**. FastAPI dùng chính cơ chế này (AsyncExitStack) để chạy phần dọn dẹp của các [dependency có `yield`](../03-fastapi/dependency-injection.md) theo thứ tự ngược với lúc khởi tạo.
+
+## 7. Ví dụ trong backend
+
+| Tài nguyên | Context manager |
+|---|---|
+| Transaction SQLAlchemy | `with Session() as s, s.begin(): ...` |
+| Lock | `with lock:` / `async with asyncio_lock:` |
+| Timeout async | `async with asyncio.timeout(2):` (3.11+) |
+| Tracing span | `with tracer.start_as_current_span("charge"):` |
+| HTTP client | `async with httpx.AsyncClient() as client:` |
+| Lifespan ứng dụng | `@asynccontextmanager async def lifespan(app): ... yield ...` |
+| Tạm đổi state | `unittest.mock.patch(...)`, `decimal.localcontext()` |
+| Bỏ qua exception cụ thể | `with contextlib.suppress(FileNotFoundError):` |
+
+### Lifespan của FastAPI
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.http = httpx.AsyncClient(timeout=2.0)
+    app.state.engine = create_async_engine(DB_URL, pool_size=10)
+    yield                                   # application phục vụ request
+    await app.state.http.aclose()           # chạy khi shutdown
+    await app.state.engine.dispose()
+
+app = FastAPI(lifespan=lifespan)
+```
+
+Phần trước `yield` chạy một lần khi worker khởi động; phần sau `yield` chạy khi worker nhận tín hiệu tắt. Đây là nơi đúng để tạo và đóng connection pool, không phải ở module level.
+
+## 8. Hành vi trong production
+
+**Phạm vi của context manager chính là thời gian giữ tài nguyên.** Transaction mở bằng `with session.begin()` giữ lock row và snapshot MVCC trong suốt khối. Đặt một HTTP call 3 giây trong khối đó nghĩa là giữ lock và connection thêm 3 giây — dưới tải, [connection pool](../04-database-postgresql/connection-pooling.md) cạn và lock chờ nhau dây chuyền. Nguyên tắc: khối `with` của tài nguyên khan hiếm chỉ chứa những việc cần tài nguyên đó.
+
+**Cancellation trong async.** Khi một task bị cancel (timeout, client ngắt kết nối), `CancelledError` xuất hiện tại điểm `await` hiện tại. `__aexit__` vẫn chạy, nhưng nếu phần dọn dẹp có `await` (ví dụ `await session.rollback()`), nó có thể bị cancel lần nữa hoặc bị timeout. Dọn dẹp async phải ngắn và chịu được việc bị gián đoạn; với dọn dẹp bắt buộc phải hoàn tất, cân nhắc `asyncio.shield` có giới hạn thời gian.
+
+**Lock và `await`.** `async with lock:` giữ lock qua mọi `await` bên trong. Một `await` gọi network trong vùng lock biến lock thành nút cổ chai tuần tự hóa mọi request.
+
+**Exception bị che.** Nếu `__exit__` ném exception trong lúc xử lý exception gốc, log chỉ thấy exception thứ hai (exception gốc nằm trong `__context__`). Dọn dẹp nên tự bắt lỗi của chính nó và log, không che lỗi gốc.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Exception biến mất | `__exit__` trả truthy, hoặc generator CM không `raise` lại | Lỗi không được log, dữ liệu sai lặng lẽ |
+| Connection pool cạn | Khối `with session` chứa I/O chậm không liên quan | Pool wait cao, DB không bận |
+| Lock contention | Giữ lock qua `await` network | Throughput giảm về mức tuần tự |
+| `RuntimeError: generator didn't stop` | `@contextmanager` yield hai lần | Lỗi khi thoát khối |
+| Rò tài nguyên khi shutdown | Tạo client/pool ở module level, không đóng | Cảnh báo "Unclosed client session", connection treo phía DB |
+| Rollback không chạy | `__aexit__` bị cancel giữa chừng | Transaction treo "idle in transaction" |
+
+## 10. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Class với `__enter__/__exit__` | Tường minh, có thể giữ state, tái sử dụng được nhiều lần | Dài hơn |
+| `@contextmanager` | Ngắn gọn, đọc tuần tự | Dùng một lần mỗi instance, dễ quên `raise` lại |
+| `try/finally` trực tiếp | Không cần abstraction | Lặp code, dễ sai khi nhiều tài nguyên |
+| `ExitStack` | Số tài nguyên động | Khó đọc hơn nếu lạm dụng |
+
+## 11. Sai lầm thường gặp
+
+- Dựa vào GC hoặc `__del__` để đóng tài nguyên.
+- Viết `@contextmanager` với `try/except` nhưng không `raise` lại.
+- Trả `True` từ `__exit__` "cho an toàn".
+- Mở transaction quá rộng: bao cả gọi API bên ngoài, xử lý file, gửi email.
+- Tạo tài nguyên dùng chung (engine, HTTP client) mỗi request thay vì một lần trong lifespan.
+- Quên rằng `__exit__` không chạy nếu `__enter__` raise.
+
+## 12. Khi nào nên dùng?
+
+- Mọi tài nguyên cần được giải phóng: file, socket, connection, lock, transaction, subprocess.
+- Tạm thay đổi state và phải khôi phục (patch, config tạm, thư mục làm việc).
+- Đo lường hoặc tracing cho một khối code.
+- Khởi tạo và dọn dẹp tài nguyên theo vòng đời application (lifespan).
+
+## 13. Khi nào không nên?
+
+- Logic không có hành động "đóng" — một function bình thường rõ ràng hơn.
+- Khi vòng đời tài nguyên không khớp với một khối code (ví dụ connection được trả về cho nơi khác sử dụng lâu dài) — cần quản lý ownership tường minh.
+
+## 14. Cách debug
+
+- `python -W error::ResourceWarning` hoặc `-X dev` để biến cảnh báo tài nguyên không đóng thành lỗi trong test.
+- Kiểm tra `exc.__context__` và `exc.__cause__` để tìm exception gốc bị che.
+- Với PostgreSQL, `SELECT pid, state, xact_start, query FROM pg_stat_activity WHERE state = 'idle in transaction'` để phát hiện transaction bị giữ mở.
+- Metric pool: số connection đang checkout và thời gian chờ checkout. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
+- `lsof -p <pid>` hoặc `/proc/<pid>/fd` để đếm file descriptor đang mở.
+
+## 15. Best Practices
+
+- Mọi tài nguyên khan hiếm đều đi qua context manager.
+- Giữ khối `with` của tài nguyên khan hiếm ngắn nhất có thể.
+- Trong generator context manager, luôn dùng `try/finally` hoặc `except: ...; raise`.
+- Chỉ nuốt exception khi đó là ý đồ rõ ràng (`contextlib.suppress` với exception cụ thể).
+- Khởi tạo tài nguyên dùng chung trong lifespan, đóng ở phần sau `yield`.
+- Phần dọn dẹp async phải ngắn và chịu được cancellation.
+
+## 16. Tóm tắt
+
+- Context manager ràng buộc hành động mở/đóng với một khối code; `__exit__` luôn chạy khi ra khỏi khối.
+- `__exit__` nhận thông tin exception và quyết định nuốt hay để lan tiếp.
+- `@contextmanager` dựa trên generator: exception được `throw` vào tại điểm `yield`.
+- `ExitStack` quản lý số tài nguyên động, dọn theo thứ tự LIFO; FastAPI dùng cơ chế này cho dependency có `yield`.
+- Phạm vi khối `with` chính là thời gian giữ tài nguyên; giữ nó ngắn là yếu tố quyết định hiệu năng dưới tải.
+
+## Liên quan
+
+- [Iterators và Generators](generators-iterators.md)
+- [Reference Counting và GC](gc-reference-counting.md)
+- [Session Lifecycle trong SQLAlchemy](../05-sqlalchemy/session-lifecycle.md)
+- [Dependency Injection trong FastAPI](../03-fastapi/dependency-injection.md)
+- [Synchronization](../02-python-concurrency/synchronization.md)

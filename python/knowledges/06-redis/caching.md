@@ -1,212 +1,200 @@
-# Caching
+# Caching: nền tảng
 
-> **Phạm vi phỏng vấn:** Redis · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Cache là một bản sao **tạm thời, có thể mất** của dữ liệu, đặt ở nơi truy cập nhanh hơn nguồn gốc. Mục đích: giảm latency cho người dùng và giảm tải cho nguồn dữ liệu đắt (database, service khác, tính toán nặng).
 
-Caching lưu kết quả có thể tái tạo gần consumer để giảm latency và load; khó nhất là invalidation, staleness và stampede.
+Cache là **derived state**: nó phải luôn có thể bị xóa và dựng lại từ **source of truth**. Nếu không chỉ ra được source of truth và chính sách chấp nhận dữ liệu cũ (staleness), cache đã âm thầm trở thành một database thứ hai — với độ bền và tính nhất quán kém hơn.
 
-## 2. Why does it matter?
+Tài liệu này mô tả nguyên lý chung. Các pattern đọc/ghi ở [Cache Patterns](cache-patterns.md); các sự cố đặc trưng ở [Cache Problems](cache-problems.md); cache ở mức kiến trúc hệ thống ở [Caching trong System Design](../11-system-design/caching.md).
 
-Senior Engineer cần hiểu **Caching** để giảm latency mà không biến cache thành single point of failure. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Cache là cuốn sổ tay ghi lại câu trả lời cho những câu hỏi hay gặp. Tra sổ tay nhanh hơn nhiều so với đi hỏi (database). Nhưng câu trả lời trong sổ có thể đã lỗi thời, và sổ có thể bị mất bất cứ lúc nào — bạn phải luôn biết cách đi hỏi lại.
 
-Cache-aside đọc cache rồi source; TTL giới hạn stale window. Dùng key version, TTL jitter, request coalescing và negative caching có kiểm soát.
+## 3. Vì sao cần cache?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `hit ratio, evictions, memory fragmentation, command latency và replication lag` và phân biệt symptom, bottleneck với root cause.
+| Không có cache | Có cache |
+|---|---|
+| Mỗi request đọc database: 5–50 ms | Cache hit: dưới 1 ms |
+| Database nhận toàn bộ tải đọc | Database chỉ nhận cache miss |
+| Tính toán lặp lại cho cùng input | Tính một lần, dùng nhiều lần |
+| Service phụ thuộc chậm/đắt gọi mỗi request | Gọi theo chu kỳ TTL |
 
-## 4. Example
+## 4. Hit ratio: con số quan trọng nhất
 
-```python
-from dataclasses import dataclass
+Với `h` là hit ratio:
 
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Caching',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+```text
+latency trung bình ≈ h × t_cache + (1 − h) × (t_cache + t_source)
+tải lên source     = (1 − h) × RPS
 ```
 
-Ví dụ biến quyết định về **Caching** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Ví dụ 10.000 RPS đọc:
 
-## 5. Production Use Case
+| Hit ratio | Request tới database mỗi giây |
+|---|---|
+| 90% | 1.000 |
+| 95% | 500 |
+| 99% | 100 |
+| 99.9% | 10 |
 
-Catalog cache hết hạn đồng loạt gây DB spike; thêm TTL jitter, single-flight, stale-while-revalidate và circuit breaker để degraded read thay vì outage.
+Từ 95% lên 99% giảm tải database **5 lần**. Ngược lại, hit ratio tụt từ 99% xuống 90% (vì deploy xóa cache, vì key hết hạn đồng loạt) làm tải database tăng **10 lần** ngay lập tức. Database được dimension theo tải **sau cache** sẽ sụp đổ khi cache mất tác dụng. Đây là gốc rễ của nhiều sự cố — xem [Redis Down](../20-production-incidents/redis-down.md).
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Caching | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Caching, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Caching.
-- **B3.** Which guarantees does Caching provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Caching?
-- **B5.** What is the most common misconception about Caching?
-- **B6.** How would you test assumptions involving Caching?
-- **B7.** Which edge cases or failure modes matter most for Caching?
-- **B8.** How can Caching affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Caching?
-- **B10.** When is a different or simpler approach better than relying on Caching?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Caching triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Caching is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Caching. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Caching fails first?
-- **S5.** A canary changes the behavior of Caching; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Caching constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Caching meets concurrency or partial failure?
-- **L3.** What breaks first around Caching at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Caching?
-- **L5.** How would you benchmark or validate Caching without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Caching introduce?
-- **L7.** How would you change a poor decision around Caching with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Caching?
-- **L10.** How would you turn an incident involving Caching into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Caching lưu kết quả có thể tái tạo gần consumer để giảm latency và load; khó nhất là invalidation, staleness và stampede. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Caching.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo hit ratio, evictions, memory fragmentation, command latency và replication lag; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Caching như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Caching khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Caching**, không chỉ “dùng để làm gì”.
-- Định lượng bằng hit ratio, evictions, memory fragmentation, command latency và replication lag và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Cache là derived state có thể mất và rebuild. Nếu không chỉ ra source of truth và stale policy, cache đã trở thành database thứ hai ngoài ý muốn.
-
-## 14. Internals Deep Dive
-
-Xem mỗi command theo time complexity, bytes/key, main execution path, TTL/eviction và durability/failover. Cache/lock/rate-limit có correctness khác nhau khi key mất hoặc replica được promote.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Cache nằm ở đâu?
 
 ```mermaid
 flowchart LR
-            Client --> Command["Caching command / pattern"]
-            Command --> EventLoop["Redis execution path"]
-            EventLoop --> Memory["In-memory data structure"]
-            Memory --> Persist["TTL / persistence / replication"]
+    Browser["Browser cache<br/>Cache-Control"] --> CDN["CDN / edge cache"]
+    CDN --> GW["API Gateway / reverse proxy cache"]
+    GW --> App["Ứng dụng"]
+    App --> L1["Cache trong process<br/>dict, cachetools"]
+    App --> L2["Cache phân tán<br/>Redis"]
+    L2 --> DB[("PostgreSQL<br/>shared_buffers là cache của chính nó")]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: mỗi tầng chặn bớt request trước khi chúng đi sâu hơn. Tầng càng gần người dùng càng nhanh và càng giảm tải nhiều, nhưng càng khó invalidate (không thể xóa cache trong trình duyệt của người dùng).
 
-## 16. Failure Scenario
+| Tầng | Latency | Chia sẻ giữa | Invalidate |
+|---|---|---|---|
+| In-process (L1) | Nanosecond–micro giây | Một worker process | Chỉ worker đó; N worker = N bản |
+| Redis (L2) | Dưới 1 ms qua mạng | Mọi instance | Một nơi, xóa được tức thì |
+| CDN | Gần người dùng | Mọi người dùng một vùng | Purge API, có độ trễ |
+| Browser | Không qua mạng | Một người dùng | Chỉ bằng TTL hoặc đổi URL |
 
-Redis timeout/down tạo cache miss storm hoặc mất coordination. Circuit-break nhanh, dùng stale/bounded fallback, rate-limit source of truth và warm cache dần; không retry mọi command đồng loạt.
+### Cache hai tầng
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Kết hợp L1 (in-process, TTL rất ngắn, vài giây) với L2 (Redis, TTL dài hơn) giảm cả latency lẫn tải lên Redis — đặc biệt hiệu quả cho [hot key](cache-problems.md#6-hot-key). Cái giá: L1 ở mỗi worker có thể cũ hơn L2 trong khoảng TTL của L1.
 
-## 17. How I would debug this in production
+## 6. Cái gì nên cache?
 
-1. Xem command p99/slowlog và client timeout.
-2. Đo memory/RSS/fragmentation/eviction/expired.
-3. Tìm hot/big key và O(N) command.
-4. Kiểm replication lag/failover/topology refresh.
-5. Circuit-break, bảo vệ source và verify warm-up.
+Nên cache khi dữ liệu:
 
-## 18. Common Misconceptions
+- **Đọc nhiều hơn ghi rất nhiều** (danh mục sản phẩm, cấu hình, quy tắc bảo hành).
+- **Đắt để tính hoặc lấy** (tổng hợp, gọi service ngoài, query join nhiều bảng).
+- **Chấp nhận được việc cũ** trong một khoảng thời gian xác định.
+- **Có phân phối truy cập lệch** — một phần nhỏ key nhận phần lớn traffic, nên cache nhỏ đạt hit ratio cao.
 
-**Sai:** Redis ở RAM nên mọi command đều nhanh và có thể làm primary store mặc định. **Đúng:** complexity/big key/main execution path và durability model vẫn quan trọng.
+Không nên cache (hoặc phải rất cẩn thận):
 
-## 19. When NOT to use
+- Dữ liệu yêu cầu đọc chính xác tuyệt đối tại thời điểm quyết định (số dư khi trừ tiền, tồn kho khi đặt hàng) — quyết định phải dựa trên source of truth.
+- Dữ liệu thay đổi liên tục mà hit ratio thấp.
+- Dữ liệu cá nhân nhạy cảm mà không có kiểm soát truy cập và mã hóa phù hợp.
 
-Không thêm cache nếu query đã nhanh, traffic thấp hoặc invalidation cost vượt lợi ích; không dùng lock Redis thay DB invariant.
+## 7. Thiết kế cache key
 
-## 20. What interviewer may ask next
+```text
+{service}:{entity}:{version}:{tenant}:{id}[:{variant}]
+warranty:coverage:v3:t42:vin:WVWZZZ1KZAW000001
+```
 
-1. **What guarantee does Caching provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+- **Namespace** theo service/entity để tránh va chạm và để xóa theo nhóm.
+- **Version** trong key: đổi format dữ liệu hoặc logic → tăng version, key cũ tự hết hạn, không đọc nhầm dữ liệu format cũ trong lúc rolling deploy.
+- **Tenant** trong key cho hệ thống multi-tenant — thiếu nó là rò rỉ dữ liệu giữa tenant.
+- **Mọi input ảnh hưởng tới kết quả** phải nằm trong key (ngôn ngữ, quyền của người xem, tham số lọc). Thiếu một input → trả dữ liệu của người này cho người khác.
+- Giữ key ngắn vừa phải; key cũng tốn memory.
 
-## 21. Check Your Understanding
+## 8. Ví dụ: cache-aside cơ bản
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Caching** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+```python
+import json
+import redis.asyncio as redis
 
-<details>
-<summary>Answer</summary>
+async def get_coverage(r: redis.Redis, repo, tenant_id: int, vin: str) -> dict:
+    key = f"warranty:coverage:v3:t{tenant_id}:vin:{vin}"
+    cached = await r.get(key)
+    if cached is not None:
+        return json.loads(cached)                        # hit
+    coverage = await repo.load_coverage(tenant_id, vin)  # miss: đọc source of truth
+    await r.set(key, json.dumps(coverage), ex=300)       # TTL 5 phút
+    return coverage
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Đây là pattern phổ biến nhất; chi tiết, các biến thể và các race condition của nó ở [Cache Patterns](cache-patterns.md). Code production cần thêm: xử lý Redis lỗi (fallback về DB có giới hạn), single-flight chống stampede, TTL jitter.
 
-</details>
+## 9. Bên trong hệ thống xảy ra gì với một request đọc?
 
-## 22. See also
+```mermaid
+sequenceDiagram
+    participant API
+    participant R as Redis
+    participant DB as PostgreSQL
+    API->>R: GET key
+    alt Cache hit
+        R-->>API: Giá trị, dưới 1ms
+    else Cache miss
+        R-->>API: nil
+        API->>DB: SELECT
+        DB-->>API: Dữ liệu, 5 đến 50ms
+        API->>R: SET key value EX ttl
+    end
+    Note over API,R: Redis lỗi hoặc timeout: fallback DB có giới hạn, không treo request
+```
 
-- [Redis Internals](redis-internals.md)
+Diễn giải: cache miss tốn **nhiều hơn** không có cache (thêm một round trip tới Redis). Cache chỉ có lợi khi hit ratio đủ cao. Khi Redis lỗi, request không được treo chờ Redis — timeout ngắn và quyết định rõ ràng: fallback về database (có rate limit để không làm sập database) hoặc trả lỗi.
+
+## 10. Hành vi trong production
+
+- **Cache lạnh sau deploy/restart**: hit ratio 0%, database nhận toàn bộ tải. Warm-up các key nóng trước khi nhận traffic, hoặc tăng dần traffic.
+- **Memory đầy**: Redis bắt đầu evict theo policy. Hit ratio giảm từ từ, không có lỗi rõ ràng. Theo dõi `evicted_keys`. Xem [TTL và Eviction](ttl.md).
+- **Tính nhất quán**: người dùng sửa dữ liệu rồi thấy dữ liệu cũ — cần invalidation khi ghi, không chỉ TTL.
+- **Serialize tốn CPU**: object lớn serialize/deserialize mỗi request có thể tốn hơn cả query database nhanh.
+
+## 11. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Database quá tải khi cache mất | DB dimension theo tải sau cache | Redis down/flush → DB CPU 100% |
+| Dữ liệu sai người | Key thiếu tenant/quyền/tham số | Người dùng thấy dữ liệu người khác |
+| Dữ liệu cũ kéo dài | Không invalidate khi ghi, TTL dài | Khiếu nại "đã sửa mà không thấy" |
+| Cache vô dụng | Hit ratio thấp (key quá cụ thể, TTL quá ngắn) | Latency tăng thay vì giảm |
+| Request treo | Không timeout cho Redis | Latency tăng khi Redis chậm |
+
+## 12. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| TTL dài | Hit ratio cao | Dữ liệu cũ lâu hơn |
+| TTL ngắn | Dữ liệu mới hơn | Nhiều miss, nhiều tải DB |
+| Invalidate khi ghi | Dữ liệu mới gần tức thì | Code phức tạp, race condition |
+| In-process cache | Nhanh nhất, không mạng | N bản, khó invalidate, tốn memory worker |
+| Redis cache | Chia sẻ, invalidate một nơi | Round trip mạng, thêm dependency |
+
+## 13. Sai lầm thường gặp
+
+- Dùng cache để che giấu query chậm thay vì sửa query.
+- Cache dữ liệu dùng để ra quyết định cần chính xác tuyệt đối.
+- Không có kế hoạch khi cache không có mặt.
+- Thiếu tenant hoặc tham số trong key.
+- Không đo hit ratio.
+
+## 14. Cách debug
+
+- Hit ratio: `keyspace_hits / (keyspace_hits + keyspace_misses)` từ `INFO stats` (toàn server); tốt hơn là metric hit/miss theo **loại key** ở ứng dụng.
+- `evicted_keys`, `expired_keys` theo thời gian.
+- Tải database tương quan với hit ratio: nếu DB tăng khi hit ratio giảm, cache đang che tải thật.
+- Latency của Redis từ phía client (histogram), không chỉ từ `INFO`.
+
+## 15. Best Practices
+
+- Xác định source of truth và cửa sổ staleness chấp nhận được cho mỗi loại dữ liệu cache.
+- Key có namespace, version, tenant và mọi input ảnh hưởng tới kết quả.
+- Đo hit ratio theo loại key; capacity plan database cho trường hợp cache mất tác dụng một phần.
+- Timeout ngắn cho Redis; fallback có giới hạn.
+- Kết hợp TTL với invalidate khi ghi cho dữ liệu người dùng tự sửa.
+
+## 16. Tóm tắt
+
+- Cache là bản sao tạm thời, có thể mất, của source of truth; phải luôn dựng lại được.
+- Hit ratio quyết định tải lên source: 99% so với 95% là chênh lệch 5 lần tải database.
+- Cache tồn tại ở nhiều tầng: browser, CDN, gateway, in-process, Redis.
+- Key phải chứa mọi input ảnh hưởng tới kết quả, cùng namespace, version và tenant.
+- Hệ thống phải được thiết kế cho lúc cache lạnh hoặc không có mặt.
+
+## Liên quan
+
 - [Cache Patterns](cache-patterns.md)
-- [Redis Outage](../20-senior-scenarios/redis-down.md)
-- [Distributed Lock](../10-distributed-systems/distributed-lock.md)
+- [Cache Problems](cache-problems.md)
+- [TTL, Expiration và Eviction](ttl.md)
+- [Caching trong System Design](../11-system-design/caching.md)
+- [Redis Down](../20-production-incidents/redis-down.md)

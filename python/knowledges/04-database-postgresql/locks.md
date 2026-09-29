@@ -1,207 +1,224 @@
-# Locks
+# Locks trong PostgreSQL
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+[MVCC](mvcc.md) cho phép đọc và ghi không chặn nhau, nhưng không giải quyết mọi xung đột. PostgreSQL vẫn cần **lock** để:
 
-Locks là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness.
+- Ngăn hai transaction cùng sửa một row cùng lúc.
+- Ngăn cấu trúc bảng bị thay đổi (`ALTER TABLE`, `DROP`) trong khi có người đang đọc/ghi.
+- Cho phép ứng dụng tự khóa tường minh (`SELECT ... FOR UPDATE`, advisory lock).
 
-## 2. Why does it matter?
+Có ba nhóm lock chính:
 
-Senior Engineer cần hiểu **Locks** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+| Nhóm | Đối tượng | Ví dụ |
+|---|---|---|
+| **Table-level lock** | Cả bảng (relation) | `ALTER TABLE` lấy `ACCESS EXCLUSIVE` |
+| **Row-level lock** | Một row | `UPDATE`, `SELECT ... FOR UPDATE` |
+| **Advisory lock** | Một số nguyên do ứng dụng định nghĩa | `pg_advisory_xact_lock(42)` |
 
-## 3. How does it work?
+Phần lớn sự cố liên quan tới lock trong production không phải là deadlock, mà là **chờ lock dây chuyền**: một câu lệnh vô hại chờ một lock, và vô số câu lệnh khác xếp hàng phía sau nó.
 
-Reason từ access pattern và invariant; kiểm tra planner estimate/actual, tuple/page/WAL, lock/snapshot và tác động vacuum/replication thay vì chỉ nhìn SQL text.
+## 2. Mental Model
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
+> Lock là hàng đợi trước một cánh cửa. Có những loại vé cho phép nhiều người vào cùng lúc (đọc) và những loại vé đòi hỏi phòng trống hoàn toàn (thay đổi cấu trúc). Người đến sau phải xếp hàng **sau** người đang chờ, kể cả khi vé của họ tương thích với người đang ở trong phòng.
 
-## 4. Example
+Quy tắc "xếp hàng sau người đang chờ" là nguồn gốc của nhiều sự cố.
 
-```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
-```
+## 3. Vì sao cần hiểu lock?
 
-Với **Locks**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+- Migration `ALTER TABLE` nhỏ có thể làm đứng toàn bộ service.
+- `SELECT ... FOR UPDATE` là công cụ chống [race condition](../02-python-concurrency/race-condition.md), nhưng dùng sai gây chờ đợi và [deadlock](deadlock.md).
+- Job queue trong PostgreSQL cần `SKIP LOCKED` để nhiều worker không tranh nhau.
+- Chẩn đoán "database không bận nhưng query chậm" thường là chờ lock.
 
-## 5. Production Use Case
+## 4. Table-level lock
 
-Warranty workload dùng Locks trên dữ liệu production-like; quyết định được kiểm chứng bằng EXPLAIN buffers, lock wait, WAL/IO và p99.
+PostgreSQL có 8 mode lock mức bảng. Các câu lệnh thường gặp:
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+| Mode | Lấy bởi | Xung đột với |
+|---|---|---|
+| `ACCESS SHARE` | `SELECT` | Chỉ `ACCESS EXCLUSIVE` |
+| `ROW SHARE` | `SELECT ... FOR UPDATE/SHARE` | `EXCLUSIVE`, `ACCESS EXCLUSIVE` |
+| `ROW EXCLUSIVE` | `INSERT`, `UPDATE`, `DELETE`, `MERGE` | `SHARE` và các mode mạnh hơn |
+| `SHARE UPDATE EXCLUSIVE` | `VACUUM`, `ANALYZE`, `CREATE INDEX CONCURRENTLY`, một số `ALTER TABLE` | Chính nó và các mode mạnh hơn |
+| `SHARE` | `CREATE INDEX` (không concurrently) | `ROW EXCLUSIVE` — **chặn mọi ghi** |
+| `SHARE ROW EXCLUSIVE` | `CREATE TRIGGER`, một số `ALTER TABLE` | Ghi và DDL |
+| `EXCLUSIVE` | `REFRESH MATERIALIZED VIEW CONCURRENTLY` | Mọi thứ trừ `ACCESS SHARE` |
+| `ACCESS EXCLUSIVE` | Phần lớn `ALTER TABLE`, `DROP`, `TRUNCATE`, `VACUUM FULL`, `REINDEX` (không concurrently) | **Mọi thứ**, kể cả `SELECT` |
 
-## 6. Common Problems
+Điểm cần nhớ: `SELECT` chỉ xung đột với `ACCESS EXCLUSIVE`; `INSERT/UPDATE/DELETE` không xung đột với nhau ở mức bảng (xung đột xảy ra ở mức row).
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Locks | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Locks, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Locks.
-- **B3.** Which guarantees does Locks provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Locks?
-- **B5.** What is the most common misconception about Locks?
-- **B6.** How would you test assumptions involving Locks?
-- **B7.** Which edge cases or failure modes matter most for Locks?
-- **B8.** How can Locks affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Locks?
-- **B10.** When is a different or simpler approach better than relying on Locks?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Locks triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Locks is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Locks. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Locks fails first?
-- **S5.** A canary changes the behavior of Locks; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Locks constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Locks meets concurrency or partial failure?
-- **L3.** What breaks first around Locks at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Locks?
-- **L5.** How would you benchmark or validate Locks without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Locks introduce?
-- **L7.** How would you change a poor decision around Locks with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Locks?
-- **L10.** How would you turn an incident involving Locks into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Locks là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Locks.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Locks như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Locks khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Locks**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Locks** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Reason đồng thời ở logical SQL, planner/executor tree, heap/index page, buffer/WAL và MVCC/lock. Một query nhanh đơn lẻ có thể chậm dưới concurrency vì pool, cache, I/O và lock wait.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Bên trong hệ thống xảy ra gì: ALTER TABLE làm đứng service
 
 ```mermaid
-flowchart LR
-            SQL --> Plan["Planner decision for Locks"]
-            Plan --> Executor
-            Executor --> Index[(Index pages)]
-            Executor --> Heap[(Heap pages)]
-            Executor --> Result
+sequenceDiagram
+    participant R as Báo cáo: SELECT chạy 5 phút
+    participant M as Migration: ALTER TABLE ADD COLUMN
+    participant Q as Lock queue của bảng claims
+    participant A as API: SELECT và UPDATE bình thường
+    R->>Q: Giữ ACCESS SHARE
+    M->>Q: Xin ACCESS EXCLUSIVE, xung đột với R, phải chờ
+    A->>Q: Xin ACCESS SHARE
+    Note over Q: Tương thích với R, nhưng phải xếp hàng SAU M
+    A->>Q: Mọi request API tiếp theo cũng xếp hàng
+    Note over A: Pool cạn, API timeout trong 5 phút
+    R->>Q: Báo cáo xong, nhả lock
+    M->>Q: Lấy ACCESS EXCLUSIVE, chạy vài ms, nhả
+    A->>Q: Hàng đợi được giải phóng
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Một query dài đang giữ `ACCESS SHARE` (chỉ đọc).
+2. Migration xin `ACCESS EXCLUSIVE` — xung đột, nên chờ.
+3. Request API bình thường xin `ACCESS SHARE`. Nó **tương thích** với báo cáo đang chạy, nhưng lock manager của PostgreSQL xếp nó **sau** yêu cầu `ACCESS EXCLUSIVE` đang chờ, để tránh migration chờ mãi (starvation).
+4. Mọi request tiếp theo xếp hàng. Connection pool của API cạn, service ngừng phản hồi.
+5. Bản thân `ALTER TABLE ADD COLUMN` (không default hoặc default không đổi từ PostgreSQL 11) chỉ cần vài ms — nhưng nó đã gây downtime 5 phút vì **chờ** lock.
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+Phòng tránh:
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+```sql
+SET lock_timeout = '2s';
+ALTER TABLE claims ADD COLUMN reviewed_at timestamptz;
+```
 
-## 17. How I would debug this in production
+Nếu không lấy được lock trong 2 giây, migration thất bại (và có thể retry sau), thay vì chặn mọi người. Đây là quy tắc bắt buộc cho migration trên bảng production.
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+## 6. Row-level lock
 
-## 18. Common Misconceptions
+`UPDATE` và `DELETE` tự động khóa row bị sửa cho tới khi transaction kết thúc. Transaction khác muốn sửa cùng row phải chờ.
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+`SELECT` có thể khóa tường minh:
 
-## 19. When NOT to use
+| Mode | Dùng khi | Chặn |
+|---|---|---|
+| `FOR UPDATE` | Sẽ cập nhật hoặc xóa row, kể cả cột khóa | Mọi row lock khác |
+| `FOR NO KEY UPDATE` | Sẽ cập nhật cột không phải khóa (tự động dùng bởi `UPDATE` thông thường) | Mọi lock trừ `FOR KEY SHARE` |
+| `FOR SHARE` | Cần row không bị đổi, nhiều người cùng giữ được | Update, delete |
+| `FOR KEY SHARE` | Chỉ cần khóa không bị đổi/xóa (dùng bởi kiểm tra foreign key) | Delete và update cột khóa |
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+Row lock không được lưu trong bộ nhớ chung (sẽ tốn vô hạn với hàng triệu row); nó được ghi **vào chính tuple** qua trường `xmax` và bit trạng thái. Khi nhiều transaction cùng giữ lock chia sẻ trên một row, PostgreSQL tạo một **MultiXact** ID. Hệ quả: khóa nhiều row làm **ghi** vào page (sinh WAL, làm bẩn page).
 
-## 20. What interviewer may ask next
+### Foreign key và lock
 
-1. **What guarantee does Locks provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Insert vào bảng con (`claim_lines` với FK tới `claims`) lấy `FOR KEY SHARE` trên row cha để đảm bảo row cha không bị xóa trong lúc đó. Nhiều transaction insert dòng con cho cùng một claim → nhiều key-share lock trên cùng row cha → MultiXact. Cập nhật cột không phải khóa trên row cha vẫn được (nhờ phân biệt `NO KEY UPDATE`), nhưng xóa row cha phải chờ.
 
-## 21. Check Your Understanding
+### NOWAIT và SKIP LOCKED
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Locks** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+```sql
+-- Không chờ: lỗi ngay nếu row đang bị khóa
+SELECT * FROM claims WHERE id = 1 FOR UPDATE NOWAIT;
 
-<details>
-<summary>Answer</summary>
+-- Job queue: mỗi worker lấy job chưa bị ai khóa
+WITH next_job AS (
+    SELECT id FROM jobs
+    WHERE status = 'queued'
+    ORDER BY priority DESC, created_at
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE jobs SET status = 'running', started_at = now(), worker = $1
+FROM next_job WHERE jobs.id = next_job.id
+RETURNING jobs.*;
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+`SKIP LOCKED` bỏ qua row đang bị transaction khác khóa. Nhiều worker chạy câu lệnh này đồng thời mà không lấy trùng job và không chờ nhau. Đây là nền tảng của các job queue dựa trên PostgreSQL. Cần partial index trên `(priority, created_at) WHERE status = 'queued'` và autovacuum tích cực vì bảng job có nhiều dead tuple.
 
-</details>
+## 7. Advisory lock
 
-## 22. See also
+Lock trên một số nguyên (hoặc cặp số) do ứng dụng tự đặt ý nghĩa. PostgreSQL không gắn nó với row hay bảng nào.
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
+```sql
+-- Mức transaction: tự nhả khi transaction kết thúc
+SELECT pg_advisory_xact_lock(hashtext('recompute-dealer-42'));
+
+-- Thử lấy, không chờ
+SELECT pg_try_advisory_xact_lock(hashtext('nightly-settlement'));
+```
+
+- **Mức transaction** (`pg_advisory_xact_lock`): an toàn, tự nhả.
+- **Mức session** (`pg_advisory_lock`): giữ tới khi gọi unlock hoặc session đóng. Với connection pool (và đặc biệt PgBouncer transaction mode), session lock dễ bị "rò" sang request khác dùng lại connection. Tránh dùng với pool.
+
+Advisory lock hữu ích để đảm bảo chỉ một instance chạy một job định kỳ, hoặc tuần tự hóa xử lý theo một khóa nghiệp vụ, **khi các bên đều dùng cùng một database**. Nó thường đáng tin cậy hơn distributed lock qua Redis cho phạm vi này vì gắn với vòng đời transaction/session của chính database lưu dữ liệu. Xem [Distributed Lock](../10-distributed-systems/distributed-lock.md).
+
+## 8. Hành vi trong production
+
+- **Chờ lock ẩn trong latency**: query "chậm" nhưng database không tốn CPU, không I/O — thường là chờ lock. `pg_stat_activity.wait_event_type = 'Lock'`.
+- **Row nóng (hot row)**: một row được cập nhật bởi mọi request (counter toàn cục, số dư của một tài khoản tổng) tuần tự hóa toàn bộ throughput ghi. Giải pháp: chia counter thành nhiều row và cộng khi đọc, hoặc gom cập nhật qua queue.
+- **Transaction dài giữ row lock**: mọi transaction muốn sửa các row đó phải chờ, dây chuyền.
+- **DDL trong giờ cao điểm**: ngay cả câu lệnh DDL nhanh cũng có thể gây xếp hàng như mục 5.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Service đứng khi migration | DDL chờ `ACCESS EXCLUSIVE`, request xếp hàng sau | Nhiều backend chờ lock trên cùng bảng, một backend DDL ở đầu |
+| Throughput ghi thấp | Hot row | Nhiều backend chờ `transactionid` |
+| Chờ lâu không rõ lý do | Transaction `idle in transaction` giữ row lock | `pg_blocking_pids` trỏ tới session idle |
+| Advisory lock không được nhả | Session lock với connection pool | Job không bao giờ chạy lại |
+| Deadlock | Khóa row theo thứ tự khác nhau | Lỗi `40P01`, xem [Deadlock](deadlock.md) |
+
+## 10. Trade-offs
+
+| Cách | Lợi ích | Chi phí |
+|---|---|---|
+| Câu lệnh nguyên tử (`UPDATE ... WHERE`) | Khóa ngắn nhất | Chỉ cho logic đơn giản |
+| `SELECT FOR UPDATE` | Logic đọc-sửa-ghi an toàn | Chờ đợi, rủi ro deadlock |
+| `NOWAIT` | Fail nhanh, không treo | Ứng dụng phải xử lý lỗi và retry |
+| `SKIP LOCKED` | Worker song song không tranh nhau | Không đảm bảo thứ tự tuyệt đối |
+| Advisory lock | Điều phối theo khóa nghiệp vụ | Phải kỷ luật về quy ước key và phạm vi |
+
+## 11. Sai lầm thường gặp
+
+- Chạy migration không có `lock_timeout`.
+- `CREATE INDEX` không `CONCURRENTLY` trên bảng đang ghi.
+- `SELECT FOR UPDATE` rồi gọi dịch vụ bên ngoài trong khi giữ lock.
+- Dùng session advisory lock qua connection pool.
+- Thiết kế một row counter dùng chung cho mọi request.
+
+## 12. Cách debug
+
+```sql
+-- Ai đang bị chặn, bởi ai, và câu lệnh gì
+SELECT a.pid,
+       pg_blocking_pids(a.pid) AS blocked_by,
+       a.wait_event_type, a.wait_event,
+       now() - a.query_start AS waiting,
+       left(a.query, 80) AS query
+FROM pg_stat_activity a
+WHERE cardinality(pg_blocking_pids(a.pid)) > 0
+ORDER BY waiting DESC;
+
+-- Lock đang được giữ và đang chờ trên một bảng
+SELECT l.pid, l.mode, l.granted, a.state, left(a.query, 60)
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.relation = 'claims'::regclass
+ORDER BY l.granted DESC;
+```
+
+Bật `log_lock_waits = on` để log mọi lần chờ lock vượt `deadlock_timeout` (mặc định 1 giây). Trong sự cố, kết thúc backend gây chặn bằng `pg_cancel_backend(pid)` (hủy câu lệnh) hoặc `pg_terminate_backend(pid)` (đóng session) — sau khi đã xác định đúng nó.
+
+## 13. Best Practices
+
+- Mọi migration đặt `lock_timeout` ngắn và retry; tạo index bằng `CONCURRENTLY`.
+- Giữ transaction ngắn; không làm I/O bên ngoài khi giữ lock.
+- Ưu tiên câu lệnh nguyên tử; dùng `FOR UPDATE` khi thực sự cần đọc-sửa-ghi.
+- Dùng `SKIP LOCKED` cho hàng đợi công việc.
+- Tránh hot row; phân tán hoặc gom cập nhật.
+- Advisory lock mức transaction thay vì mức session khi có connection pool.
+
+## 14. Tóm tắt
+
+- MVCC tránh xung đột đọc-ghi; lock xử lý xung đột ghi-ghi và thay đổi cấu trúc.
+- Table-level lock có 8 mode; `SELECT` chỉ xung đột với `ACCESS EXCLUSIVE`, thứ mà phần lớn `ALTER TABLE` cần.
+- Yêu cầu lock đang chờ chặn cả những yêu cầu tương thích đến sau — nguồn gốc của downtime khi migration; `lock_timeout` là phòng thủ chính.
+- Row lock được lưu trong tuple; `FOR UPDATE`, `NOWAIT`, `SKIP LOCKED` là công cụ cho ứng dụng.
+- Advisory lock điều phối theo khóa nghiệp vụ, nên dùng mức transaction khi có pool.
+
+## Liên quan
+
 - [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+- [Deadlock](deadlock.md)
+- [Transaction](transaction.md)
+- [Isolation Level](isolation-level.md)
+- [Distributed Lock](../10-distributed-systems/distributed-lock.md)

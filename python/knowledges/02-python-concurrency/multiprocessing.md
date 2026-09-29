@@ -1,213 +1,213 @@
 # Multiprocessing
 
-> **Phạm vi phỏng vấn:** Python Concurrency · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Multiprocessing chạy code trên nhiều **process** độc lập. Mỗi process có vùng memory riêng, interpreter riêng và [GIL](gil.md) riêng, nên các process thực sự chạy song song trên nhiều core. Đây là cách chuẩn để có parallelism cho code Python thuần CPU-bound trên CPython có GIL.
 
-Multiprocessing là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python.
+Trong backend, multiprocessing xuất hiện ở hai dạng:
 
-## 2. Why does it matter?
+- **Kiến trúc**: Gunicorn/Uvicorn chạy nhiều worker process; Celery dùng prefork pool. Mỗi worker là một process.
+- **Trong code**: `ProcessPoolExecutor`, `multiprocessing.Pool` để chia một tác vụ CPU nặng ra nhiều core.
 
-Senior Engineer cần hiểu **Multiprocessing** để chọn đúng execution model, bảo vệ shared state và giữ tail latency ổn định. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Cái giá của isolation: process không chia sẻ object. Mọi dữ liệu truyền qua lại phải được **serialize** (pickle), gửi qua pipe, và deserialize — chi phí có thể lớn hơn chính công việc.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Xác định execution unit (coroutine/thread/process), điểm yield/preemption, shared state và propagation của exception/cancellation; mọi fan-out phải có bound.
+> Mỗi process là một văn phòng riêng với nhân viên, bàn ghế, tài liệu riêng. Các văn phòng làm việc thật sự song song. Muốn chuyển tài liệu giữa hai văn phòng phải photocopy, đóng gói và gửi thư — không thể đưa tay qua bàn.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `event-loop lag, queue depth, context switch, CPU saturation và p99 latency` và phân biệt symptom, bottleneck với root cause.
+Hệ quả:
 
-## 4. Example
+- Không có race condition trên Python object (vì không chia sẻ), nhưng có race trên tài nguyên chung bên ngoài (database, file, Redis).
+- Mỗi process tốn memory riêng: N process ≈ N lần memory (trừ phần chia sẻ copy-on-write).
+- Dữ liệu càng lớn, chi phí truyền càng lớn.
 
-```python
-from dataclasses import dataclass
+## 3. Vì sao cần?
 
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
+- Tính toán CPU-bound bằng Python thuần: parse file lớn, biến đổi dữ liệu, tính toán nghiệp vụ phức tạp, tạo báo cáo.
+- Dùng hết core của máy cho web server (worker process).
+- Cô lập lỗi: một process crash (segfault trong C extension, memory leak) không kéo theo process khác.
+- Giới hạn tài nguyên theo process (restart sau N task để thu hồi memory).
 
-decision = Decision(
-    topic='Multiprocessing',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
+## 4. Cơ chế hoạt động: start method
 
-Ví dụ biến quyết định về **Multiprocessing** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Cách tạo process con ảnh hưởng mạnh tới hành vi:
 
-## 5. Production Use Case
-
-Service xử lý vehicle telemetry áp dụng Multiprocessing, đo loop lag/queue age/CPU rồi giới hạn concurrency theo capacity downstream.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
+| Start method | Cách làm | Ưu điểm | Nhược điểm |
 |---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Multiprocessing | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+| `fork` | Sao chép process cha bằng `fork()` | Rất nhanh; con kế thừa memory copy-on-write | Không an toàn khi cha có nhiều thread (lock bị giữ); kế thừa cả tài nguyên không mong muốn (socket, connection) |
+| `spawn` | Khởi động interpreter mới, import lại module chính | An toàn, sạch | Chậm (import lại mọi thứ); cần `if __name__ == "__main__":` |
+| `forkserver` | Một server process sạch được fork sớm; con được fork từ server đó | An toàn hơn fork, nhanh hơn spawn | Chỉ có trên Unix |
 
-## 8. Interview Questions
+> **Ghi chú version:** Mặc định: Windows luôn `spawn`; macOS `spawn` từ 3.8; Linux `fork` cho tới 3.13 và `forkserver` từ 3.14. Code phụ thuộc vào việc con "thấy" biến global của cha (chỉ đúng với `fork`) sẽ hỏng khi đổi version hoặc platform. Luôn chọn start method tường minh bằng `multiprocessing.get_context("spawn")` khi hành vi quan trọng.
 
-### Basic / Mid-level (10)
-
-- **B1.** What is Multiprocessing, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Multiprocessing.
-- **B3.** Which guarantees does Multiprocessing provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Multiprocessing?
-- **B5.** What is the most common misconception about Multiprocessing?
-- **B6.** How would you test assumptions involving Multiprocessing?
-- **B7.** Which edge cases or failure modes matter most for Multiprocessing?
-- **B8.** How can Multiprocessing affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Multiprocessing?
-- **B10.** When is a different or simpler approach better than relying on Multiprocessing?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Multiprocessing triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Multiprocessing is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Multiprocessing. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Multiprocessing fails first?
-- **S5.** A canary changes the behavior of Multiprocessing; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Multiprocessing constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Multiprocessing meets concurrency or partial failure?
-- **L3.** What breaks first around Multiprocessing at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Multiprocessing?
-- **L5.** How would you benchmark or validate Multiprocessing without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Multiprocessing introduce?
-- **L7.** How would you change a poor decision around Multiprocessing with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Multiprocessing?
-- **L10.** How would you turn an incident involving Multiprocessing into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Multiprocessing là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Multiprocessing.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo event-loop lag, queue depth, context switch, CPU saturation và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Multiprocessing như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Multiprocessing khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Multiprocessing**, không chỉ “dùng để làm gì”.
-- Định lượng bằng event-loop lag, queue depth, context switch, CPU saturation và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Process đổi shared-memory convenience lấy isolation và multi-core parallelism; dữ liệu qua boundary phải serialize/copy hoặc dùng shared memory có synchronization.
-
-## 14. Internals Deep Dive
-
-Xác định ai schedule work (OS hay event loop), unit nào có stack/heap riêng, điểm preemption/yield, memory nào được chia sẻ và exception/cancellation đi đâu. Bound concurrency trước khi tối ưu throughput.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Luồng xử lý: ProcessPoolExecutor
 
 ```mermaid
 flowchart LR
-            Work["Multiprocessing workload"] --> Scheduler["OS / Python scheduler"]
-            Scheduler --> Running["Running execution unit"]
-            Running -->|wait / yield| Waiting
-            Waiting -->|ready| Scheduler
-            Running --> Shared["Shared state + synchronization"]
+    subgraph Parent["Process cha"]
+        S["submit(fn, data)"] --> P1["pickle fn theo tên và pickle data"]
+        P1 --> CQ["Call queue qua pipe"]
+        RQ["Result queue"] --> U2["unpickle kết quả"]
+        U2 --> Fut["Future.set_result"]
+    end
+    subgraph Worker["Worker process"]
+        CQ --> U1["unpickle"]
+        U1 --> Run["Chạy fn trên core riêng, GIL riêng"]
+        Run --> P2["pickle kết quả"]
+        P2 --> RQ
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. `submit` serialize function (bằng **tên đầy đủ** `module.qualname`, không phải bytecode) và argument bằng pickle.
+2. Dữ liệu đi qua pipe tới một worker process.
+3. Worker import module chứa function (nếu chưa), unpickle argument, chạy function.
+4. Kết quả được pickle, gửi ngược qua pipe.
+5. Một management thread trong process cha nhận kết quả, unpickle, và hoàn tất Future.
 
-Dưới load, blocking call, unbounded fan-out, race hoặc lock contention làm queue/loop lag tăng. Áp deadline, semaphore/pool bound, structured cancellation và tách CPU work khỏi event loop.
+Mỗi mũi tên qua biên process là **copy dữ liệu**. Với input 200 MB, process cha tốn thời gian pickle, pipe truyền 200 MB, worker tốn thời gian unpickle — và cả hai phía đều giữ một bản trong memory.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+### Yêu cầu của pickle
 
-## 17. How I would debug this in production
+- Function phải định nghĩa ở **module level** để import được theo tên. Lambda, function lồng nhau, closure không pickle được.
+- Argument và kết quả phải pickle được: không truyền connection, lock, file handle, generator.
+- Exception trong worker được pickle và raise lại ở `future.result()`; exception tùy biến phải pickle được.
 
-1. Phân loại CPU-bound, blocking I/O hay async I/O.
-2. Xem per-core CPU, event-loop lag, thread/process/queue depth.
-3. Capture stack/profile của execution unit đang giữ CPU/lock.
-4. Kiểm semaphore, timeout, cancellation và shared-state invariant.
-5. Load test lại với bounded concurrency.
+## 6. Ví dụ
 
-## 18. Common Misconceptions
+```python
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 
-**Sai:** concurrency luôn là parallelism và thêm worker luôn tăng throughput. **Đúng:** queueing, GIL, locks và downstream capacity có thể làm p99 tệ hơn.
+def score_claims(batch: list[dict]) -> list[float]:
+    # CPU-bound: tính điểm rủi ro bằng Python thuần
+    return [compute_risk(c) for c in batch]
 
-## 19. When NOT to use
+def score_all(claims: list[dict], batch_size: int = 5_000) -> list[float]:
+    batches = [claims[i:i + batch_size] for i in range(0, len(claims), batch_size)]
+    ctx = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=4, mp_context=ctx, max_tasks_per_child=100) as pool:
+        results = pool.map(score_claims, batches)
+    return [score for batch in results for score in batch]
 
-Không thêm concurrency khi workload nhỏ hoặc downstream đã saturated; model tuần tự đơn giản có thể đúng và dễ vận hành hơn.
+if __name__ == "__main__":
+    ...
+```
 
-## 20. What interviewer may ask next
+- Gửi theo **batch** thay vì từng claim: chi phí pickle/IPC cố định mỗi lần gửi được chia cho 5.000 phần tử.
+- `max_tasks_per_child` (3.11+) tái tạo worker sau N task để giới hạn memory leak/fragmentation.
+- `if __name__ == "__main__":` bắt buộc với `spawn`/`forkserver`: worker import lại module chính; không có guard, worker sẽ tự tạo pool mới đệ quy.
 
-1. **What guarantee does Multiprocessing provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+## 7. Giao tiếp giữa process
 
-## 21. Check Your Understanding
+| Cơ chế | Cách hoạt động | Dùng khi |
+|---|---|---|
+| `Queue` / `Pipe` | Pickle qua pipe; `Queue` có feeder thread nền | Truyền message vừa và nhỏ |
+| `shared_memory` (3.8+) | Vùng memory OS dùng chung, truy cập như buffer | Mảng số lớn (kết hợp NumPy), tránh copy |
+| `Value` / `Array` | Kiểu C trong shared memory, có lock | Vài biến đếm đơn giản |
+| `Manager` | Server process giữ object, các process khác gọi qua proxy | Chia sẻ dict/list phức tạp; chậm vì mỗi thao tác là một IPC |
+| Hệ thống ngoài (Redis, DB, object storage) | Qua network | Dữ liệu lớn, nhiều máy, cần bền vững |
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Multiprocessing** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Với dữ liệu lớn, cách hiệu quả thường là **không truyền dữ liệu**, chỉ truyền tham chiếu: đường dẫn file, key trong object storage, khoảng ID trong database; worker tự đọc.
 
-<details>
-<summary>Answer</summary>
+## 8. Hành vi trong production
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+**Prefork server.** Gunicorn master fork worker; mỗi worker phục vụ request độc lập. Master theo dõi và restart worker chết. Worker không chia sẻ cache trong memory — cache in-process có N bản, và invalidation chỉ ảnh hưởng một worker.
 
-</details>
+**Connection không được kế thừa an toàn.** Với `fork`, process con kế thừa socket của connection pool cha. Hai process dùng chung một socket database làm hỏng giao thức. Tạo engine/pool **sau** khi fork (trong hook `post_fork` hoặc lifespan của worker), hoặc gọi `engine.dispose()` trong process con.
 
-## 22. See also
+**Memory nhân theo số process.** 8 worker × 500 MB = 4 GB. Copy-on-write sau fork giúp ban đầu, nhưng refcount và GC dần làm page bị copy (xem [Python Memory Model](../01-python-core/python-memory-model.md)).
 
-- [AsyncIO](asyncio.md)
-- [Event Loop](event-loop.md)
-- [FastAPI Sync vs Async](../03-fastapi/sync-vs-async-endpoint.md)
-- [CPU vs I/O](cpu-vs-io-bound.md)
+**Worker chết.** Nếu một worker của `ProcessPoolExecutor` bị OOM kill hoặc segfault, pool trở thành `BrokenProcessPool` và mọi Future đang chờ đều lỗi. Celery prefork phát hiện worker chết và tạo lại, nhưng task đang chạy có thể được giao lại hoặc mất tùy cấu hình ack. Xem [Broker và Worker](../07-celery/broker-worker.md).
+
+**Signal và shutdown.** SIGTERM gửi tới process cha phải được truyền tới con; process con mồ côi (orphan) hoặc zombie xuất hiện khi cha không `join`/`wait`. Trong container, PID 1 cần xử lý signal và reap zombie (dùng `tini` hoặc `--init`). Xem [Docker Production](../12-docker/production-best-practices.md).
+
+## 9. Khi scale lên thì chuyện gì xảy ra?
+
+**Amdahl's Law**: nếu 20% công việc là tuần tự (đọc input, gộp kết quả, IPC), tốc độ tối đa dù có vô hạn core chỉ là 5×.
+
+| Số process | Tăng tốc lý tưởng | Thực tế thường gặp | Lý do |
+|---|---|---|---|
+| 2 | 2× | ~1.8× | Chi phí IPC nhỏ |
+| 4 | 4× | ~3.2× | Phần tuần tự bắt đầu lộ rõ |
+| 16 | 16× | ~6× | IPC, memory bandwidth, phần tuần tự |
+| Nhiều hơn số core | — | Chậm hơn | Context switch, cạnh tranh cache |
+
+Trong Kubernetes, "số core" là CPU limit của container, không phải số core của node. Tạo 16 process trong pod có `limits.cpu: 2` chỉ làm CPU bị throttle. Xem [Resource Limit](../13-kubernetes/resource-limit.md).
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `PicklingError` | Truyền lambda/closure/object chứa lock | Lỗi khi submit |
+| Tạo process đệ quy | Thiếu `if __name__ == "__main__"` với spawn | Process tăng vô hạn, lỗi `RuntimeError` bootstrapping |
+| Chậm hơn tuần tự | Dữ liệu truyền lớn so với tính toán | CPU của process cha cao ở pickle |
+| Process con treo | Fork khi thread khác giữ lock | Worker không tiến triển |
+| Hỏng giao thức DB | Chia sẻ connection qua fork | Lỗi protocol ngẫu nhiên, dữ liệu lẫn lộn |
+| `BrokenProcessPool` | Worker bị kill (OOM) | Mọi task đang chờ lỗi cùng lúc |
+| Hành vi khác giữa môi trường | Start method khác (Linux vs macOS, 3.13 vs 3.14) | Biến global không thấy trong worker |
+
+## 11. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| ProcessPoolExecutor | Parallelism trong một job, API đơn giản | Pickle/IPC, không bền vững, chết cùng process cha |
+| Task queue (Celery) | Bền vững, retry, scale theo máy | Hạ tầng broker, độ trễ cao hơn, cần idempotency |
+| Thư viện native (NumPy, Polars) | Nhanh hơn nhiều, có thể song song nội bộ | Phải diễn đạt bài toán theo API của thư viện |
+| Thread (free-threaded build) | Chia sẻ memory, parallelism | Ecosystem đang chuyển đổi, cần lock cẩn thận |
+
+## 12. Sai lầm thường gặp
+
+- Dùng process cho I/O-bound, trả chi phí IPC và memory mà không cần.
+- Gửi từng phần tử nhỏ thay vì batch.
+- Truyền dataset lớn qua argument thay vì truyền tham chiếu.
+- Dựa vào biến global được kế thừa qua `fork`.
+- Tạo process pool mới cho mỗi request web (chi phí khởi động rất lớn).
+- Chạy process pool bên trong web worker vốn đã là nhiều process, dẫn tới số process vượt xa số core.
+
+## 13. Khi nào nên dùng?
+
+- CPU-bound Python thuần, dữ liệu truyền nhỏ so với lượng tính toán.
+- Cần cô lập crash hoặc memory của thư viện không ổn định.
+- Batch job chạy trên một máy lớn.
+
+## 14. Khi nào không nên dùng?
+
+- I/O-bound: dùng thread hoặc AsyncIO.
+- Dữ liệu cần chia sẻ và cập nhật liên tục giữa các worker: dùng hệ thống ngoài hoặc thiết kế lại.
+- Tác vụ cần độ tin cậy, retry, phân tán nhiều máy: dùng task queue.
+- Bài toán diễn đạt được bằng thư viện vectorized.
+
+## 15. Cách debug trong production
+
+- `ps -ef --forest` hoặc `pstree -p <pid>` để xem cây process, phát hiện orphan/zombie.
+- `py-spy dump --pid <child_pid>` cho từng worker.
+- Đo thời gian pickle: profile process cha; nếu `pickle.dumps` chiếm phần lớn, giảm dữ liệu truyền.
+- Theo dõi RSS/PSS mỗi process và sự kiện OOM kill (`dmesg`, event của Kubernetes).
+- Log PID trong mọi dòng log để phân biệt worker.
+
+## 16. Best Practices
+
+- Chọn start method tường minh; viết code không phụ thuộc biến global kế thừa.
+- Gửi batch, truyền tham chiếu thay vì dữ liệu lớn.
+- Tạo pool một lần và tái sử dụng; đặt `max_workers` theo CPU limit thật.
+- Tạo connection/client trong process con, không kế thừa qua fork.
+- Dùng `max_tasks_per_child` hoặc `--max-tasks-per-child` (Celery) để giới hạn memory tích lũy.
+- Với công việc cần bền vững, dùng task queue thay vì process pool trong web worker.
+
+## 17. Tóm tắt
+
+- Mỗi process có memory, interpreter và GIL riêng — parallelism thật cho Python thuần.
+- Dữ liệu qua biên process phải pickle và copy; chi phí IPC quyết định có đáng chia hay không.
+- Start method (fork, spawn, forkserver) ảnh hưởng tới an toàn và hành vi; mặc định trên Linux đổi sang forkserver từ 3.14.
+- Memory nhân theo số process; connection không được chia sẻ qua fork.
+- Amdahl's Law giới hạn tốc độ; số process hữu ích bị giới hạn bởi CPU limit thật.
+
+## Liên quan
+
+- [Global Interpreter Lock](gil.md)
+- [Threading](threading.md)
+- [CPU-bound, I/O-bound và chọn execution model](cpu-vs-io-bound.md)
+- [Python Memory Model](../01-python-core/python-memory-model.md)
+- [Celery Architecture](../07-celery/architecture.md)

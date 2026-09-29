@@ -1,211 +1,235 @@
-# Performance
+# Hiệu năng của ứng dụng FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+"FastAPI nhanh" là nhận định về **framework overhead**: phần thời gian mà Starlette, Pydantic và Uvicorn tốn cho mỗi request là nhỏ. Nhưng latency và throughput của một service thực tế được quyết định bởi **toàn bộ đường đi** của request: hàng đợi trước application, event loop, threadpool, validation, serialization, connection pool, database, cache, service phụ thuộc, và network.
 
-FastAPI performance là kết quả toàn path: queue, event loop/thread pool, validation/serialization, pool, DB/cache/downstream và network.
+Tối ưu hiệu năng là tìm ra **tài nguyên nào bão hòa đầu tiên** ở mức tải mục tiêu, rồi quyết định có nên làm nó rộng hơn, rẻ hơn, hay đi vòng qua nó.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Performance** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Đo p50/p95/p99, loop lag, thread/pool wait và saturation; loại blocking/ N+1 trước tăng worker. Worker count theo benchmark/memory và connection budget, không theo công thức CPU mù.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Performance**.
-
-## 5. Production Use Case
-
-Load test 20k RPS dùng traffic distribution/cache-cold/failure; stream/chunk response lớn và cap fan-out để p99 không sập.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Performance | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Performance, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Performance.
-- **B3.** Which guarantees does Performance provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Performance?
-- **B5.** What is the most common misconception about Performance?
-- **B6.** How would you test assumptions involving Performance?
-- **B7.** Which edge cases or failure modes matter most for Performance?
-- **B8.** How can Performance affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Performance?
-- **B10.** When is a different or simpler approach better than relying on Performance?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Performance triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Performance is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Performance. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Performance fails first?
-- **S5.** A canary changes the behavior of Performance; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Performance constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Performance meets concurrency or partial failure?
-- **L3.** What breaks first around Performance at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Performance?
-- **L5.** How would you benchmark or validate Performance without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Performance introduce?
-- **L7.** How would you change a poor decision around Performance with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Performance?
-- **L10.** How would you turn an incident involving Performance into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** FastAPI performance là kết quả toàn path: queue, event loop/thread pool, validation/serialization, pool, DB/cache/downstream và network. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Performance.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Performance như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Performance khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Performance**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Performance** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+> Một request là một chuỗi hàng đợi nối tiếp. Throughput của cả chuỗi bằng throughput của khâu hẹp nhất; latency bằng tổng thời gian phục vụ cộng tổng thời gian **chờ** ở mỗi khâu. Khi một khâu gần bão hòa, thời gian chờ ở đó tăng vọt.
 
 ```mermaid
 flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Performance"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+    LB["Load balancer"] --> AQ["Accept queue"]
+    AQ --> EL["Event loop CPU"]
+    EL --> TP["Threadpool 40"]
+    EL --> DBP["DB pool"]
+    TP --> DBP
+    DBP --> DB[("PostgreSQL")]
+    EL --> HP["HTTP client pool"]
+    HP --> Dep["Service ngoài"]
+    EL --> RC["Redis pool"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: mỗi hộp là một tài nguyên có giới hạn và có hàng đợi phía trước. Request có thể chờ ở accept queue (worker bận), chờ loop rảnh, chờ thread, chờ connection DB, chờ lock trong DB, chờ service ngoài. Chỉ số trung bình che giấu những hàng đợi này; p95/p99 và metric "wait time" của từng pool làm lộ chúng.
 
-## 16. Failure Scenario
+## 3. Vì sao cần phương pháp, không phải mẹo?
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+Các "mẹo" (dùng orjson, bật uvloop, tăng worker) chỉ hiệu quả khi chúng nhắm vào đúng bottleneck. Tăng worker khi bottleneck là database làm tệ hơn: nhiều connection hơn, tranh chấp lock hơn. Đổi sang async khi bottleneck là CPU không cải thiện gì.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Quy trình đúng: **đo baseline → tìm bottleneck → thay đổi một thứ → đo lại**.
 
-## 17. How I would debug this in production
+## 4. Phân rã chi phí của một request
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+Ví dụ một request `GET /claims/{id}` điển hình:
 
-## 18. Common Misconceptions
+| Giai đoạn | Chạy ở đâu | Chi phí điển hình |
+|---|---|---|
+| TLS, routing ở LB | Load balancer | 1–3 ms |
+| Parse HTTP, tạo scope | Event loop | vài chục µs |
+| Middleware (3–5 cái) | Event loop | 0.05–0.5 ms |
+| Giải dependency, verify JWT | Event loop hoặc threadpool | 0.1–1 ms |
+| Validation input | Event loop (Rust) | vài µs tới vài ms tùy payload |
+| Lấy connection từ pool | Chờ | 0 ms nếu rảnh; không giới hạn nếu cạn |
+| Query DB | Chờ I/O | 1–50 ms |
+| Gọi service khác | Chờ I/O | 10–200 ms |
+| Serialize response | Event loop | vài µs tới hàng chục ms với response lớn |
+| Ghi response | Event loop | nhỏ |
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+Phần **chạy trên event loop** quyết định giới hạn CPU của một worker. Phần **chờ** quyết định latency và số request đồng thời cần giữ.
 
-## 19. When NOT to use
+## 5. Các đòn bẩy hiệu năng
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+### Tầng framework và server
 
-## 20. What interviewer may ask next
+- **uvloop + httptools**: cài `uvicorn[standard]`; giảm overhead event loop và parse HTTP.
+- **Serialize trực tiếp bằng Pydantic**: khai báo `response_model`/return type để FastAPI serialize bằng Pydantic core; tránh `jsonable_encoder` thủ công trên cấu trúc lớn.
+- **Middleware**: ít và nhẹ; pure ASGI middleware cho đường nóng. Xem [Middleware](middleware.md).
+- **Dependency**: `async def` cho dependency không I/O để tránh chuyển thread.
 
-1. **What guarantee does Performance provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+### Tầng dữ liệu (thường là đòn bẩy lớn nhất)
 
-## 21. Check Your Understanding
+- Loại bỏ [N+1 query](../05-sqlalchemy/n-plus-one.md); chỉ `SELECT` cột cần thiết; index đúng. Xem [Query Optimization](../04-database-postgresql/query-optimization.md).
+- Transaction ngắn; không giữ connection trong lúc gọi service ngoài.
+- Cache kết quả đọc nhiều bằng Redis với chiến lược rõ ràng. Xem [Cache Patterns](../06-redis/cache-patterns.md).
+- Pagination bằng cursor thay vì offset lớn. Xem [Pagination](../08-api-design/pagination.md).
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Performance** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Tầng concurrency
 
-<details>
-<summary>Answer</summary>
+- Gọi dependency độc lập **đồng thời** (`TaskGroup`) thay vì tuần tự.
+- Mọi lời gọi ra ngoài có timeout và giới hạn concurrency.
+- Đẩy công việc CPU nặng ra khỏi request path.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+### Tầng payload
 
-</details>
+- Response nhỏ: không trả dữ liệu client không dùng; pagination.
+- Nén ở LB/CDN thay vì trong Python.
+- Upload/download lớn qua pre-signed URL của object storage thay vì đi qua API.
 
-## 22. See also
+## 6. Ví dụ: tuần tự và đồng thời
 
-- [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
+```python
+# Trước: 45 + 60 + 30 = 135 ms chờ tuần tự
+@app.get("/vehicles/{vin}/summary")
+async def summary(vin: str, deps: Deps):
+    vehicle = await deps.vehicles.get(vin)
+    warranty = await deps.warranty.coverage(vin)
+    recalls = await deps.recalls.open_for(vin)
+    return build_summary(vehicle, warranty, recalls)
+
+# Sau: max(45, 60, 30) = 60 ms
+@app.get("/vehicles/{vin}/summary")
+async def summary(vin: str, deps: Deps):
+    async with asyncio.TaskGroup() as tg:
+        vehicle = tg.create_task(deps.vehicles.get(vin))
+        warranty = tg.create_task(deps.warranty.coverage(vin))
+        recalls = tg.create_task(deps.recalls.open_for(vin))
+    return build_summary(vehicle.result(), warranty.result(), recalls.result())
+```
+
+Lưu ý: ba lời gọi đồng thời có thể dùng ba connection DB cùng lúc nếu chúng cùng dùng database, và một `AsyncSession` **không** được dùng đồng thời từ nhiều task. Mỗi task cần session riêng, hoặc gộp thành một query.
+
+## 7. Khi scale lên thì chuyện gì xảy ra?
+
+Giả định: mỗi request tốn 3 ms CPU trên loop, 1–2 query DB (tổng 8 ms), đôi khi gọi một service ngoài 40 ms; mỗi worker pool DB 10 connection.
+
+### 100 RPS
+
+- CPU: 0.3 core. Một pod 2 worker là thừa.
+- DB: ~1 query đồng thời trung bình.
+- Không có hàng đợi đáng kể; p99 ≈ thời gian phục vụ.
+- Rủi ro chính: code blocking lẻ tẻ chưa lộ ra vì tải thấp.
+
+### 1.000 RPS
+
+- CPU: 3 core → cần ~5 worker ở 60–70% utilization.
+- DB: 1.000 × 1.5 query × 8 ms ≈ 12 connection bận trung bình; tổng pool 5 × 10 = 50, đủ.
+- Bottleneck bắt đầu lộ: query chậm nhất (không index, N+1), CPU serialize của endpoint trả list lớn.
+- Cache bắt đầu có ý nghĩa cho dữ liệu đọc nhiều.
+
+### 10.000 RPS
+
+- CPU: 30 core → ~50 worker, ví dụ 13 pod × 4 worker.
+- Connection: 50 worker × 10 = 500 connection tới PostgreSQL — vượt ngưỡng hợp lý của một instance. Cần **PgBouncer** (transaction pooling) hoặc giảm pool mỗi worker.
+- DB: 15.000 query/giây — cần cache hit ratio cao, read replica cho đọc chấp nhận stale, query tối ưu. Write path có thể thành bottleneck.
+- Service ngoài: 10.000 × tỷ lệ gọi — cần kiểm tra quota/rate limit của họ; cần [circuit breaker](../10-distributed-systems/circuit-breaker.md) và timeout chặt.
+- Load balancer, NAT, số kết nối outbound bắt đầu là vấn đề.
+
+### 20.000 RPS
+
+- Mọi thứ ở mức 10.000 nhân đôi; database primary gần như chắc chắn là giới hạn cho write.
+- Cần: tách read/write, partition hoặc shard dữ liệu nóng, đưa write không cần đồng bộ qua queue, rate limit và load shedding để bảo vệ core.
+- Hot key trong cache (một sản phẩm hot) có thể làm bão hòa một node Redis. Xem [Cache Problems](../06-redis/cache-problems.md).
+- Chi phí cold start và deploy: rolling update 60 pod cần thời gian; warm-up cache và pool.
+
+Bottleneck di chuyển từ **code của ứng dụng** (100–1.000 RPS) sang **tài nguyên dùng chung** (DB, cache, dependency) ở mức cao hơn. Xem phân tích chi tiết trong [High Traffic](../20-production-incidents/high-traffic.md) và [Database Scaling](../11-system-design/database-scaling.md).
+
+## 8. Failure Chain: tăng tải làm service sụp đổ
+
+```mermaid
+flowchart TD
+    A["Traffic tăng 3 lần trong đợt khuyến mãi"] --> B["Query chậm nhất chiếm connection lâu hơn"]
+    B --> C["DB pool mỗi worker đầy, request chờ pool"]
+    C --> D["Latency tăng, request in-flight tăng"]
+    D --> E["HPA thêm pod theo CPU"]
+    E --> F["Pod mới mở thêm connection tới DB"]
+    F --> G["DB chạm max_connections, CPU DB 100 phần trăm"]
+    G --> H["Mọi query chậm, timeout"]
+    H --> I["Client và LB retry"]
+    I --> J["Tải lên DB tăng thêm, sụp đổ"]
+```
+
+Diễn giải:
+
+1. Tải tăng làm lộ query chậm; connection bị giữ lâu hơn.
+2. Pool cạn, request xếp hàng chờ connection — CPU của pod không cao, nhưng latency cao.
+3. Autoscaler (nếu theo CPU hoặc latency) thêm pod. Mỗi pod mới mang theo pool riêng → tổng connection tăng.
+4. Database, vốn là bottleneck thật, nhận thêm connection và query → chậm hơn.
+5. Timeout sinh retry → tải càng tăng.
+
+Cách phá vòng: giới hạn tổng connection (PgBouncer), giới hạn autoscale theo capacity của DB, [load shedding](../10-distributed-systems/backpressure.md) khi pool wait vượt ngưỡng, retry có budget và jitter, và tối ưu query gốc.
+
+## 9. Bottleneck thường gặp
+
+| Bottleneck | Dấu hiệu | Hướng xử lý |
+|---|---|---|
+| Blocking code trong `async def` | Loop lag cao, mọi endpoint chậm | Đổi thư viện async hoặc `to_thread` |
+| CPU event loop | CPU worker ~100%, loop lag tăng dần theo tải | Thêm worker, giảm CPU/request (serialize, validate) |
+| Threadpool | Endpoint `def` chậm, CPU thấp | Async hóa, tăng token có tính toán, timeout |
+| DB pool | Pool wait cao, DB không bận | Transaction ngắn hơn, tăng pool trong giới hạn |
+| DB CPU/IO | Query chậm, DB CPU cao | Index, tối ưu query, cache, replica |
+| Service ngoài | Span HTTP dài | Timeout, cache, gọi đồng thời, circuit breaker |
+| Payload lớn | CPU serialize, băng thông | Pagination, field selection, nén ở LB |
+
+## 10. Trade-offs
+
+| Tối ưu | Lợi ích | Chi phí |
+|---|---|---|
+| Cache | Giảm tải DB, latency thấp | Stale data, invalidation, thêm failure mode |
+| Thêm worker/pod | Nhiều CPU hơn | Nhiều connection hơn, chi phí hạ tầng |
+| Read replica | Tách tải đọc | Replication lag, đọc dữ liệu cũ |
+| Gọi đồng thời | Latency thấp | Nhiều connection đồng thời, phức tạp khi lỗi |
+| Pre-computation (materialized view, bảng tổng hợp) | Đọc rất nhanh | Dữ liệu trễ, chi phí ghi |
+
+## 11. Sai lầm thường gặp
+
+- Benchmark endpoint "hello world" rồi kết luận về hiệu năng service.
+- Load test với dữ liệu nhỏ, cache nóng, một user — không giống production.
+- Chỉ nhìn latency trung bình.
+- Tăng worker/pod khi bottleneck là database.
+- Tối ưu vi mô (orjson, uvloop) trước khi sửa N+1 query.
+
+## 12. Cách debug trong production
+
+Đi theo thứ tự, từ ngoài vào trong:
+
+1. **RPS và phân bố latency** (p50/p95/p99) theo route; tách route chậm.
+2. **Error rate và loại lỗi** (timeout, 503, 500).
+3. **Saturation của worker**: CPU mỗi worker, loop lag, request in-flight, threadpool đang dùng.
+4. **Memory và GC**: RSS mỗi worker, GC pause nếu có spike định kỳ.
+5. **Pool**: DB pool in-use và wait time; HTTP client pool; Redis pool.
+6. **Database**: query latency theo loại (`pg_stat_statements`), lock wait, CPU/IO, connection count.
+7. **Cache**: hit ratio, latency Redis, key hot.
+8. **Dependency**: latency và error của từng service ngoài.
+9. **Trace** của request chậm cụ thể: span nào dài, khoảng trống nào lớn.
+10. **Profile** worker đang nóng bằng `py-spy` nếu CPU là vấn đề.
+
+Chi tiết quy trình ở [Performance Debugging](../17-performance-reliability/performance-debugging.md) và [API Slow](../20-production-incidents/api-slow.md).
+
+## 13. Best Practices
+
+- Đặt mục tiêu (SLO) cho p95/p99 và throughput trước khi tối ưu.
+- Load test với dữ liệu và traffic giống production, tăng tải dần để tìm điểm gãy.
+- Ưu tiên tối ưu tầng dữ liệu; sau đó concurrency; sau cùng là framework.
+- Tính connection budget toàn hệ thống; giới hạn autoscale theo capacity của tài nguyên dùng chung.
+- Mọi pool có metric wait time; mọi dependency có timeout.
+- Theo dõi loop lag cùng với latency.
+
+## 14. Tóm tắt
+
+- Framework overhead của FastAPI nhỏ; hiệu năng thực tế do toàn đường đi của request quyết định.
+- Request là chuỗi hàng đợi; khâu hẹp nhất quyết định throughput, thời gian chờ quyết định tail latency.
+- Phần chạy trên event loop giới hạn CPU mỗi worker; phần chờ giới hạn bởi pool và dependency.
+- Khi scale từ 100 lên 20.000 RPS, bottleneck di chuyển từ code ứng dụng sang database, cache và dependency.
+- Thêm pod khi database là bottleneck có thể gây sụp đổ dây chuyền.
+
+## Liên quan
+
+- [Kiến trúc FastAPI](architecture.md)
+- [Sync vs Async Endpoint](sync-vs-async-endpoint.md)
 - [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Performance Debugging](../17-performance-reliability/performance-debugging.md)
+- [Load Testing](../17-performance-reliability/load-testing.md)
+- [High Traffic](../20-production-incidents/high-traffic.md)

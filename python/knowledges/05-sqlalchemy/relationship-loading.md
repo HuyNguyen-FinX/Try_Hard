@@ -1,210 +1,195 @@
-# Relationship Loading
+# Relationship Loading và tải dữ liệu lớn
 
-> **Phạm vi phỏng vấn:** SQLAlchemy · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Khi một object ORM có quan hệ với object khác (`Claim.dealer`, `Claim.lines`), SQLAlchemy phải quyết định **khi nào** và **bằng cách nào** tải dữ liệu liên quan. Quyết định này gọi là **loading strategy**. Chọn sai dẫn tới [N+1](n-plus-one.md), tích Descartes, tải dữ liệu thừa, hoặc hết memory.
 
-Relationship loading strategy quyết định thời điểm và SQL shape để lấy object graph: lazy, joined, select-in hoặc explicit.
+Tài liệu này mô tả các strategy cho relationship, cách hoãn tải cột lớn, và cách đọc tập dữ liệu lớn hơn memory.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Relationship Loading** để giữ transaction boundary đúng mà vẫn nhìn thấy chi phí SQL thực tế. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> Loading strategy trả lời hai câu hỏi: dữ liệu liên quan được tải **lúc nào** (ngay cùng query chính, hay khi có người truy cập), và **bằng bao nhiêu query** (JOIN chung, query phụ với IN, hay một query mỗi object).
 
-## 3. How does it work?
+## 3. Các strategy cho relationship
 
-Joined load giảm round trip nhưng cartesian amplification với nhiều collection; select-in thêm query có bounded IDs; lazy tiện nhưng che I/O. Chọn theo cardinality/access path.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query count, pool wait, transaction age, fetched rows và p99 latency` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Relationship Loading**.
-
-## 5. Production Use Case
-
-Claim detail joined-load one-to-one policy và select-in line items; list endpoint chỉ projection field cần thiết.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
+| Strategy | Khi tải | Số query | Cách làm |
 |---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Relationship Loading | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+| `select` (lazy, mặc định) | Khi truy cập attribute | 1 mỗi object | `SELECT ... WHERE id = ?` |
+| `joined` | Cùng query chính | 0 thêm | `LEFT OUTER JOIN` |
+| `selectin` | Ngay sau query chính | 1 mỗi relationship (chia batch) | `SELECT ... WHERE parent_id IN (...)` |
+| `subquery` | Ngay sau query chính | 1 mỗi relationship | Lặp lại query gốc làm subquery — legacy, thường thay bằng `selectin` |
+| `immediate` | Ngay khi load object | 1 mỗi object | Như lazy nhưng tải ngay |
+| `raise` | Không bao giờ ngầm | — | Truy cập chưa load → exception |
+| `noload` | Không bao giờ | — | Attribute rỗng |
+| `write_only` (2.0) | Không tải collection | — | Chỉ cho phép thêm/xóa và query tường minh — cho collection rất lớn |
 
-## 8. Interview Questions
+Strategy có thể đặt **mặc định** trên `relationship(lazy=...)` và **ghi đè theo query** bằng `.options(...)`. Thực hành tốt: mặc định `raise` hoặc `select`, và mỗi query khai báo eager load mình cần.
 
-### Basic / Mid-level (10)
-
-- **B1.** What is Relationship Loading, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Relationship Loading.
-- **B3.** Which guarantees does Relationship Loading provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Relationship Loading?
-- **B5.** What is the most common misconception about Relationship Loading?
-- **B6.** How would you test assumptions involving Relationship Loading?
-- **B7.** Which edge cases or failure modes matter most for Relationship Loading?
-- **B8.** How can Relationship Loading affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Relationship Loading?
-- **B10.** When is a different or simpler approach better than relying on Relationship Loading?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Relationship Loading triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Relationship Loading is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Relationship Loading. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Relationship Loading fails first?
-- **S5.** A canary changes the behavior of Relationship Loading; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Relationship Loading constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Relationship Loading meets concurrency or partial failure?
-- **L3.** What breaks first around Relationship Loading at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Relationship Loading?
-- **L5.** How would you benchmark or validate Relationship Loading without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Relationship Loading introduce?
-- **L7.** How would you change a poor decision around Relationship Loading with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Relationship Loading?
-- **L10.** How would you turn an incident involving Relationship Loading into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Relationship loading strategy quyết định thời điểm và SQL shape để lấy object graph: lazy, joined, select-in hoặc explicit. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Relationship Loading.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query count, pool wait, transaction age, fetched rows và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Relationship Loading như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Relationship Loading khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Relationship Loading**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query count, pool wait, transaction age, fetched rows và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Relationship Loading** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. Luồng xử lý: joined và selectin
 
 ```mermaid
-flowchart LR
-            Request --> Session["Session / unit of work"]
-            Session --> Topic["Relationship Loading"]
-            Topic --> SQL
-            SQL --> Pool --> PostgreSQL
+flowchart TB
+    subgraph Joined["joinedload(Claim.lines)"]
+        J1["SELECT claims LEFT JOIN claim_lines"] --> J2["Kết quả: mỗi claim lặp lại theo số line"]
+        J2 --> J3["ORM gộp row trùng thành object, cần unique()"]
+    end
+    subgraph Selectin["selectinload(Claim.lines)"]
+        S1["SELECT claims WHERE ..."] --> S2["Lấy danh sách claim id"]
+        S2 --> S3["SELECT claim_lines WHERE claim_id IN (...)"]
+        S3 --> S4["Gắn line vào đúng claim"]
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. **joined**: một round trip. Nhưng mỗi claim có 10 line → mỗi claim xuất hiện 10 lần trong kết quả. Hai collection (10 lines, 5 attachments) → 50 row mỗi claim. Dữ liệu truyền qua mạng và công việc gộp tăng nhanh.
+2. **selectin**: hai round trip, không nhân row. Danh sách `IN` được chia batch (mặc định 500 khóa mỗi query) khi có nhiều object.
 
-Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.
+Quy tắc thực hành:
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+| Quan hệ | Strategy thường phù hợp |
+|---|---|
+| Many-to-one (`claim.dealer`) | `joinedload` (inner join nếu non-null: `innerjoin=True`) hoặc `selectinload` |
+| One-to-many nhỏ (`claim.lines`) | `selectinload` |
+| Nhiều collection cùng lúc | `selectinload` cho từng cái |
+| Collection rất lớn (`dealer.claims`) | `write_only`/`dynamic`, query tường minh có phân trang |
+| Chỉ cần vài cột | Select cột, không load object |
 
-## 17. How I would debug this in production
+### Eager load lồng nhau
 
-1. Bật SQL timing/query count có sampling.
-2. Xem pool checked-out/wait/timeout.
-3. Kiểm session scope, autoflush và transaction age.
-4. Tìm lazy load/N+1 và row amplification.
-5. So generated SQL + plan trước/sau.
+```python
+stmt = select(Dealer).options(
+    selectinload(Dealer.claims).selectinload(Claim.lines),
+    joinedload(Dealer.region),
+)
+```
 
-## 18. Common Misconceptions
+Mỗi tầng một query `IN`. Kiểm tra bằng log SQL rằng số query đúng như dự kiến.
 
-**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.
+## 5. Hoãn tải cột lớn
 
-## 19. When NOT to use
+Bảng có cột lớn ít dùng (JSONB payload, text mô tả dài):
 
-Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.
+```python
+from sqlalchemy.orm import deferred, load_only, undefer
 
-## 20. What interviewer may ask next
+class Claim(Base):
+    ...
+    raw_payload: Mapped[dict] = mapped_column(JSONB, deferred=True)   # không tải mặc định
 
-1. **What guarantee does Relationship Loading provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+# Chỉ tải vài cột
+stmt = select(Claim).options(load_only(Claim.id, Claim.status, Claim.created_at))
 
-## 21. Check Your Understanding
+# Tải cột deferred khi cần
+stmt = select(Claim).options(undefer(Claim.raw_payload)).where(Claim.id == claim_id)
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Relationship Loading** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Truy cập cột deferred chưa được tải sẽ phát sinh query (lazy) — cũng gây `MissingGreenlet` với async. Kết hợp với `raiseload` cho cột: `load_only(..., raiseload=True)`.
 
-<details>
-<summary>Answer</summary>
+## 6. Đọc tập dữ liệu lớn
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Mặc định, `session.execute(stmt).all()` tải **toàn bộ** kết quả vào memory: driver đọc hết row, ORM tạo mọi object, identity map giữ tất cả. Với 5 triệu row, process hết memory.
 
-</details>
+### `yield_per`: stream theo batch
 
-## 22. See also
+```python
+stmt = select(Claim).where(Claim.created_at < cutoff).execution_options(yield_per=1_000)
+for partition in session.execute(stmt).scalars().partitions():
+    process(partition)        # mỗi lần 1.000 object
+```
 
+- `yield_per` bật **server-side cursor** (với driver hỗ trợ): PostgreSQL gửi row theo từng batch thay vì một lần.
+- ORM tạo object theo batch.
+- Với async: `await session.stream_scalars(stmt.execution_options(yield_per=1000))` và `async for`.
+
+Lưu ý:
+
+- Cursor mở giữ **connection và transaction** trong suốt quá trình duyệt. Duyệt chậm (gọi API cho mỗi batch) → giữ connection lâu, giữ snapshot (ảnh hưởng VACUUM). Xem [MVCC](../04-database-postgresql/mvcc.md).
+- Identity map vẫn giữ object đã tải; với job rất dài, xử lý theo khoảng khóa chính và Session mới mỗi lô thường an toàn hơn. Xem [Session Lifecycle](session-lifecycle.md#7-scope-của-session).
+- Eager load collection với `yield_per`: `selectinload` hoạt động theo từng batch; `joinedload` collection không tương thích.
+
+### Không cần object: dùng Core
+
+Export 5 triệu row ra CSV không cần change tracking hay identity map:
+
+```python
+stmt = select(Claim.id, Claim.vin, Claim.total).where(...).execution_options(yield_per=5_000)
+for row in session.execute(stmt):
+    writer.writerow(row)
+```
+
+Nhanh hơn nhiều lần so với tạo object ORM.
+
+## 7. Làm mới dữ liệu đã có trong identity map
+
+Identity map trả về object đã có trong Session thay vì tạo lại từ row mới. Query lại cùng row **không cập nhật** attribute đã load (trừ khi đã expire). Khi cần dữ liệu mới nhất:
+
+- `await session.refresh(obj)` — tải lại object.
+- `.execution_options(populate_existing=True)` — ghi đè attribute của object có sẵn bằng dữ liệu từ query.
+- Session ngắn (mỗi request) tránh được phần lớn vấn đề này.
+
+## 8. Hành vi trong production
+
+- Endpoint danh sách thay đổi theo thời gian (thêm field vào response) — strategy loading phải được cập nhật theo; test đếm query giữ chúng đồng bộ.
+- `joinedload` trên collection trong query có `LIMIT` từng là nguồn kết quả sai trong ORM cũ (LIMIT áp dụng lên row đã join); SQLAlchemy bọc query chính trong subquery để xử lý, nhưng plan có thể kém hiệu quả. `selectinload` tránh được vấn đề.
+- Collection hàng chục nghìn phần tử (`dealer.claims`) **không bao giờ** nên được load toàn bộ vào một object.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| N+1 | Lazy mặc định trong vòng lặp | Hàng trăm query giống nhau |
+| Tích Descartes | `joinedload` nhiều collection | Query trả số row khổng lồ, memory spike |
+| OOM | `.all()` trên tập lớn | Worker bị kill khi chạy job |
+| Giữ connection lâu | `yield_per` + xử lý chậm | Pool wait, `idle in transaction` |
+| Dữ liệu cũ | Identity map trong Session dài | Giá trị không phản ánh thay đổi mới |
+| Collection khổng lồ | Load `dealer.claims` | Endpoint chậm, memory tăng |
+
+## 10. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Lazy | Không tải thứ không dùng | N+1 |
+| joined | Một round trip | Nhân row |
+| selectin | Không nhân row, ổn định | Thêm round trip mỗi relationship |
+| deferred/load_only | Ít dữ liệu truyền | Truy cập cột chưa load gây query hoặc lỗi |
+| yield_per | Memory cố định | Giữ connection/transaction lâu |
+| Core rows | Nhanh nhất | Không có object ORM |
+
+## 11. Sai lầm thường gặp
+
+- Đặt `lazy="joined"` mặc định cho mọi relationship — mọi query đều JOIN, kể cả khi không cần.
+- Load collection lớn qua relationship thay vì query có phân trang.
+- Dùng `.all()` cho job xử lý hàng triệu row.
+- Duyệt `yield_per` trong khi gọi dịch vụ ngoài cho từng row.
+
+## 12. Cách debug
+
+- Log SQL để xem số query và hình dạng JOIN.
+- `EXPLAIN ANALYZE` cho query `IN` lớn của `selectinload`.
+- Theo dõi RSS của worker khi chạy job đọc lớn.
+- `sqlalchemy.inspect(obj).unloaded` để kiểm tra attribute nào chưa được tải.
+
+## 13. Best Practices
+
+- Mặc định relationship `lazy="raise"` (hoặc `select` với kỷ luật), eager load theo từng query.
+- `selectinload` cho collection, `joinedload` cho many-to-one.
+- `write_only` cho collection lớn; query tường minh có phân trang.
+- `load_only`/`deferred` cho cột lớn ít dùng.
+- `yield_per` hoặc Core rows cho tập dữ liệu lớn; Session theo lô cho job dài.
+
+## 14. Tóm tắt
+
+- Loading strategy quyết định khi nào và bằng bao nhiêu query dữ liệu liên quan được tải.
+- `selectinload` là lựa chọn an toàn cho collection; `joinedload` cho many-to-one; lazy gây N+1.
+- `deferred`, `load_only` giảm dữ liệu cột; `write_only` cho collection lớn.
+- `yield_per` stream dữ liệu lớn theo batch nhưng giữ connection và transaction suốt quá trình.
+- Identity map trả object có sẵn; dùng `refresh` hoặc `populate_existing` khi cần dữ liệu mới.
+
+## Liên quan
+
+- [N+1 Query](n-plus-one.md)
 - [Session Lifecycle](session-lifecycle.md)
-- [Transactions](transaction.md)
-- [PostgreSQL Pooling](../04-database-postgresql/connection-pooling.md)
+- [Async SQLAlchemy](async-sqlalchemy.md)
+- [Iterators và Generators](../01-python-core/generators-iterators.md)
+- [Performance](performance.md)

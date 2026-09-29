@@ -1,210 +1,199 @@
-# ORM Vs Raw SQL
+# ORM, Core và Raw SQL
 
-> **Phạm vi phỏng vấn:** SQLAlchemy · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+SQLAlchemy cung cấp ba mức trừu tượng để làm việc với database:
 
-ORM tối ưu mapping/unit-of-work/productivity; raw SQL cho phép kiểm soát plan, bulk/CTE/window và database-specific feature. Đây không phải lựa chọn loại trừ tuyệt đối.
+| Mức | Là gì | Ví dụ |
+|---|---|---|
+| **ORM** | Ánh xạ class Python ↔ bảng; Session theo dõi object và sinh SQL | `session.get(Claim, 1)`, `claim.status = "approved"` |
+| **Core** | Ngôn ngữ biểu thức SQL bằng Python; không có object tracking | `select(claims.c.id).where(claims.c.status == "pending")` |
+| **Raw SQL** | Chuỗi SQL với tham số được bind | `text("SELECT ... WHERE id = :id")` |
 
-## 2. Why does it matter?
+Ba mức này không loại trừ nhau. Một ứng dụng tốt thường dùng ORM cho logic nghiệp vụ ghi dữ liệu, Core/ORM `select` cho truy vấn đọc, và SQL thuần cho vài truy vấn đặc thù.
 
-Senior Engineer cần hiểu **ORM Vs Raw SQL** để giữ transaction boundary đúng mà vẫn nhìn thấy chi phí SQL thực tế. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
-
-SQLAlchemy Core/ORM cùng tạo SQL; chi phí nằm ở query shape, hydration/identity map và round trip. Chọn per use case, giữ transaction/repository boundary chung và inspect generated SQL.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query count, pool wait, transaction age, fetched rows và p99 latency` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **ORM Vs Raw SQL**.
-
-## 5. Production Use Case
-
-CRUD claim dùng ORM; báo cáo aggregate lớn dùng Core/raw SQL đã profile, vẫn parameterized và integration-tested trên PostgreSQL.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh ORM Vs Raw SQL | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is ORM Vs Raw SQL, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind ORM Vs Raw SQL.
-- **B3.** Which guarantees does ORM Vs Raw SQL provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of ORM Vs Raw SQL?
-- **B5.** What is the most common misconception about ORM Vs Raw SQL?
-- **B6.** How would you test assumptions involving ORM Vs Raw SQL?
-- **B7.** Which edge cases or failure modes matter most for ORM Vs Raw SQL?
-- **B8.** How can ORM Vs Raw SQL affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of ORM Vs Raw SQL?
-- **B10.** When is a different or simpler approach better than relying on ORM Vs Raw SQL?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving ORM Vs Raw SQL triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around ORM Vs Raw SQL is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to ORM Vs Raw SQL. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving ORM Vs Raw SQL fails first?
-- **S5.** A canary changes the behavior of ORM Vs Raw SQL; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does ORM Vs Raw SQL constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when ORM Vs Raw SQL meets concurrency or partial failure?
-- **L3.** What breaks first around ORM Vs Raw SQL at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using ORM Vs Raw SQL?
-- **L5.** How would you benchmark or validate ORM Vs Raw SQL without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can ORM Vs Raw SQL introduce?
-- **L7.** How would you change a poor decision around ORM Vs Raw SQL with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for ORM Vs Raw SQL?
-- **L10.** How would you turn an incident involving ORM Vs Raw SQL into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** ORM tối ưu mapping/unit-of-work/productivity; raw SQL cho phép kiểm soát plan, bulk/CTE/window và database-specific feature. Đây không phải lựa chọn loại trừ tuyệt đối. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của ORM Vs Raw SQL.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query count, pool wait, transaction age, fetched rows và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng ORM Vs Raw SQL như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh ORM Vs Raw SQL khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của ORM Vs Raw SQL**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query count, pool wait, transaction age, fetched rows và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **ORM Vs Raw SQL** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+> ORM là trợ lý quản lý hồ sơ: bạn làm việc với hồ sơ (object), trợ lý lo việc ghi sổ (SQL). Core là bàn phím SQL có kiểm tra cú pháp. Raw SQL là viết tay. Càng lên cao, càng tiện và an toàn cho logic nghiệp vụ; càng xuống thấp, càng kiểm soát được chính xác database làm gì.
 
 ```mermaid
-flowchart LR
-            Request --> Session["Session / unit of work"]
-            Session --> Topic["ORM Vs Raw SQL"]
-            Topic --> SQL
-            SQL --> Pool --> PostgreSQL
+flowchart TB
+    ORM["ORM: Session, unit of work, identity map, relationship"] --> Core["Core: select, insert, update, compiler, compiled cache"]
+    Text["Raw SQL: text với bind parameter"] --> Core
+    Core --> Dialect["Dialect postgresql: sinh cú pháp riêng của PostgreSQL"]
+    Dialect --> Driver["DBAPI driver: asyncpg hoặc psycopg"]
+    Driver --> Pool["Connection pool của Engine"]
+    Pool --> PG[("PostgreSQL")]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. ORM không nói chuyện trực tiếp với database: nó chuyển thao tác trên object thành biểu thức Core.
+2. Raw SQL qua `text()` cũng đi qua Core để bind tham số và thực thi.
+3. Dialect chuyển biểu thức thành cú pháp PostgreSQL cụ thể (`RETURNING`, `ON CONFLICT`, kiểu dữ liệu).
+4. Driver gửi câu lệnh qua connection lấy từ pool của Engine.
 
-Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.
+Mỗi tầng đi xuống bỏ bớt một lớp trừu tượng — và bỏ bớt chi phí của lớp đó.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 3. Vì sao cần hiểu các mức?
 
-## 17. How I would debug this in production
+- ORM tiện nhưng có chi phí: tạo object, identity map, change tracking, lazy loading ẩn.
+- Truy vấn phân tích, báo cáo, thao tác hàng loạt thường nhanh hơn nhiều khi không qua object.
+- Raw SQL ghép chuỗi sai cách mở ra SQL injection.
 
-1. Bật SQL timing/query count có sampling.
-2. Xem pool checked-out/wait/timeout.
-3. Kiểm session scope, autoflush và transaction age.
-4. Tìm lazy load/N+1 và row amplification.
-5. So generated SQL + plan trước/sau.
+## 4. ORM: điểm mạnh
 
-## 18. Common Misconceptions
+- **Unit of work**: sửa nhiều object, commit một lần; ORM sinh INSERT/UPDATE/DELETE đúng thứ tự phụ thuộc.
+- **Identity map**: mỗi row một object trong Session — tránh mâu thuẫn.
+- **Relationship**: điều hướng giữa object, cascade khi xóa.
+- **Domain model**: đặt quy tắc nghiệp vụ trong method của class (`claim.approve(...)`).
+- **Optimistic locking** (`version_id_col`), event hook, type mapping.
 
-**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.
+## 5. Core: truy vấn tường minh không cần object
 
-## 19. When NOT to use
+```python
+from sqlalchemy import func, select
 
-Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.
+stmt = (
+    select(Claim.dealer_id, func.count().label("pending"), func.sum(Claim.total).label("amount"))
+    .where(Claim.status == "pending")
+    .group_by(Claim.dealer_id)
+    .order_by(func.sum(Claim.total).desc())
+    .limit(20)
+)
+rows = (await session.execute(stmt)).all()      # Row tuple, không phải object Claim
+```
 
-## 20. What interviewer may ask next
+Cú pháp `select()` của SQLAlchemy 2.0 dùng chung cho ORM và Core. Chọn **entity** (`select(Claim)`) → nhận object ORM; chọn **cột/biểu thức** → nhận `Row` nhẹ.
 
-1. **What guarantee does ORM Vs Raw SQL provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Core hỗ trợ CTE, window function, `INSERT ... ON CONFLICT` (qua `sqlalchemy.dialects.postgresql.insert`), `RETURNING`, `LATERAL` — đủ cho phần lớn nhu cầu mà không cần viết chuỗi SQL.
 
-## 21. Check Your Understanding
+## 6. Raw SQL: khi nào và cách an toàn
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **ORM Vs Raw SQL** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+```python
+from sqlalchemy import text
 
-<details>
-<summary>Answer</summary>
+stmt = text("""
+    SELECT d.id, d.name, t.claims_7d
+    FROM dealers d
+    CROSS JOIN LATERAL (
+        SELECT count(*) AS claims_7d FROM claims c
+        WHERE c.dealer_id = d.id AND c.created_at > now() - interval '7 days'
+    ) t
+    WHERE d.region = :region
+""")
+rows = (await session.execute(stmt, {"region": region})).all()
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+- **Luôn** dùng tham số bind (`:region`) — giá trị được driver gửi tách biệt với câu SQL.
+- **Không bao giờ** ghép chuỗi hoặc f-string với dữ liệu người dùng: `text(f"... WHERE region = '{region}'")` là [SQL injection](../16-security/sql-injection.md).
+- Tên cột/bảng động (sắp xếp theo cột người dùng chọn) không bind được — dùng whitelist.
 
-</details>
+Dùng raw SQL khi: truy vấn phức tạp dễ đọc hơn ở dạng SQL, cần tính năng đặc thù PostgreSQL mà Core không có sẵn, hoặc đã tối ưu bằng tay và muốn giữ nguyên chính xác.
 
-## 22. See also
+## 7. Bulk operations
 
+### Insert nhiều row
+
+```python
+from sqlalchemy import insert
+
+await session.execute(insert(ClaimLine), [
+    {"claim_id": 1, "part_code": "A1", "quantity": 2},
+    {"claim_id": 1, "part_code": "B7", "quantity": 1},
+    # ... hàng nghìn dict
+])
+```
+
+SQLAlchemy 2.0 dùng cơ chế "insertmanyvalues": gom nhiều row thành các câu `INSERT ... VALUES (...), (...), ...` theo lô, nhanh hơn nhiều so với `session.add()` từng object rồi flush (vốn phải theo dõi từng object).
+
+### Update/delete hàng loạt
+
+```python
+from sqlalchemy import update
+
+await session.execute(
+    update(Claim)
+    .where(Claim.status == "pending", Claim.created_at < cutoff)
+    .values(status="expired")
+)
+```
+
+Một câu `UPDATE` thay vì tải mọi object rồi sửa từng cái. Lưu ý: object tương ứng đang nằm trong Session có thể không phản ánh thay đổi (SQLAlchemy có tùy chọn `synchronize_session` để đồng bộ trong phạm vi hạn chế). Với bảng lớn, chia theo lô ([Large Table Design](../04-database-postgresql/large-table-design.md#8-quyết-định-5-backfill-và-thao-tác-hàng-loạt)).
+
+## 8. Bên trong hệ thống xảy ra gì: chi phí của ORM
+
+Tải 10.000 row bằng `select(Claim)`:
+
+1. Driver nhận row từ PostgreSQL.
+2. Với mỗi row, ORM tra identity map bằng primary key.
+3. Nếu chưa có, tạo instance, gán mọi attribute, khởi tạo state tracking (`InstanceState`).
+4. Thêm vào identity map.
+
+Bước 2–4 là Python thuần, lặp 10.000 lần. Tải cùng dữ liệu dưới dạng `Row` (chọn cột) bỏ qua phần lớn công việc này — nhanh hơn nhiều lần và ít memory hơn. Với endpoint async, đây là CPU chạy trên event loop. Xem [Performance](performance.md).
+
+## 9. Hành vi trong production
+
+- Đường **ghi** nghiệp vụ (tạo claim, duyệt, đổi trạng thái): ORM phù hợp — logic phức tạp, số object nhỏ, cần nhất quán.
+- Đường **đọc** danh sách và báo cáo: select cột, hoặc ORM với `load_only`, eager load tường minh.
+- **Batch/ETL**: Core bulk insert/update, `yield_per`, raw SQL cho logic tập hợp.
+- Nhiều team gói truy cập dữ liệu sau **repository**: ORM hay SQL là chi tiết bên trong; tầng service không quan tâm.
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| SQL injection | Ghép chuỗi vào `text()` | Lỗ hổng bảo mật; query bất thường trong log |
+| Chậm khi tải nhiều | Tạo object ORM cho hàng chục nghìn row | CPU cao ở hydration, memory tăng |
+| Session không đồng bộ sau bulk update | Object trong identity map giữ giá trị cũ | Logic đọc thấy trạng thái cũ sau update |
+| Query ẩn | Lazy loading, attribute expire | N+1, `MissingGreenlet` |
+| SQL khó bảo trì | Raw SQL dài không test | Lỗi khi đổi schema |
+
+## 11. Trade-offs
+
+| Tiêu chí | ORM | Core | Raw SQL |
+|---|---|---|---|
+| Năng suất với logic nghiệp vụ | Cao | Trung bình | Thấp |
+| Kiểm soát SQL chính xác | Trung bình | Cao | Cao nhất |
+| Hiệu năng đọc tập lớn | Thấp | Cao | Cao |
+| An toàn trước injection | Cao | Cao | Phụ thuộc kỷ luật |
+| Refactor khi đổi schema | Dễ (type, IDE) | Dễ | Khó |
+| Chi phí ẩn | Lazy load, hydration | Ít | Không |
+
+## 12. Sai lầm thường gặp
+
+- "ORM chậm nên dùng raw SQL cho mọi thứ" — mất lợi ích unit of work và an toàn kiểu.
+- "Luôn dùng ORM object" — kể cả cho export hàng triệu row.
+- f-string trong `text()`.
+- `session.add()` hàng trăm nghìn object để import.
+- Update hàng loạt bằng vòng lặp load-modify-flush.
+
+## 13. Cách debug
+
+- Log SQL để xem ORM thực sự sinh ra gì.
+- `str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))` để xem SQL cuối cùng (chỉ dùng để debug).
+- Profile (`py-spy`) để tách thời gian chờ database khỏi thời gian tạo object.
+
+## 14. Best Practices
+
+- ORM cho đường ghi nghiệp vụ; select cột hoặc Core cho đường đọc nặng và báo cáo.
+- Bulk insert/update bằng `insert()`/`update()` của 2.0.
+- Raw SQL chỉ với tham số bind; tên động qua whitelist.
+- Đóng gói truy cập dữ liệu trong repository để có thể đổi cách cài đặt mà không ảnh hưởng nghiệp vụ.
+- Test truy vấn quan trọng trên PostgreSQL thật.
+
+## 15. Tóm tắt
+
+- SQLAlchemy có ba mức: ORM (object + unit of work), Core (biểu thức SQL), raw SQL (`text()`).
+- ORM tiện cho logic ghi nghiệp vụ; chi phí là tạo object và query ẩn.
+- Core/select cột nhanh hơn nhiều cho đọc tập lớn và báo cáo.
+- Bulk operation của 2.0 thay cho vòng lặp add/load-modify.
+- Raw SQL luôn dùng tham số bind để tránh SQL injection.
+
+## Liên quan
+
+- [Performance](performance.md)
 - [Session Lifecycle](session-lifecycle.md)
-- [Transactions](transaction.md)
-- [PostgreSQL Pooling](../04-database-postgresql/connection-pooling.md)
+- [SQL nâng cao](../04-database-postgresql/sql-advanced.md)
+- [SQL Injection](../16-security/sql-injection.md)
+- [Hexagonal Architecture](../09-software-architecture/hexagonal-architecture.md)

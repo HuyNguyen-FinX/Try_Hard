@@ -1,54 +1,80 @@
-# PostgreSQL
+# 04 — PostgreSQL
 
-Module này được học theo **Why → How → Internals → Flow → Failure → Trade-off → Production**. Không đọc alphabet; đi theo dependency dưới đây và tự vẽ lại diagram trước khi xem.
+## Module này học gì?
 
-## Learning order
+PostgreSQL từ bên trong: kiến trúc process và memory, cách dữ liệu nằm trên disk, WAL, vòng đời một query từ parser tới executor, index và các loại index, cách đọc execution plan, cách planner chọn scan và join, transaction, MVCC, isolation level, VACUUM, lock, deadlock, connection pooling, partitioning, replication, và thiết kế bảng lớn.
 
-[Index](index.md) → [Explain Analyze](explain-analyze.md) → [Transaction](transaction.md) → [Isolation Level](isolation-level.md) → [PostgreSQL MVCC](mvcc.md) → [Connection Pooling](connection-pooling.md)
+## Tại sao cần học?
 
-## Must know
+Database thường là thành phần **có trạng thái** duy nhất và là bottleneck đầu tiên khi hệ thống lớn lên. Sai lầm ở tầng database không chỉ làm chậm hệ thống mà còn có thể làm **sai dữ liệu**: lost update, write skew, đơn hàng trùng. Hầu hết sự cố "API chậm", "database CPU cao", "service đứng khi deploy" đều quy về một trong các chủ đề của module này.
 
-- [Index](index.md)
-- [Explain Analyze](explain-analyze.md)
-- [Transaction](transaction.md)
-- [Isolation Level](isolation-level.md)
-- [PostgreSQL MVCC](mvcc.md)
-- [Connection Pooling](connection-pooling.md)
+## Thứ tự nên đọc
 
-## Nice to know / second pass
+**Nền tảng**
 
-- [Database Fundamentals](database-fundamentals.md)
-- [PostgreSQL Index Types: B-tree, Hash, GIN, GiST, BRIN](btree-hash-gin-gist-brin.md)
-- [Query Optimization](query-optimization.md)
-- [Locks](locks.md)
-- [Deadlock](deadlock.md)
-- [Partitioning](partitioning.md)
-- [Replication](replication.md)
-- [Large Table Design](large-table-design.md)
+1. [PostgreSQL Fundamentals: process, memory, storage, WAL](database-fundamentals.md)
+2. [Query Lifecycle: parser → planner → executor](query-lifecycle.md)
 
-## Recommended exercises
+**Đọc dữ liệu nhanh**
 
-1. Giải thích mỗi Must-know topic trong 2 phút, không nhìn note; interviewer hỏi “why?” ít nhất ba lần.
-2. Vẽ request/data/failure flow từ trí nhớ và đánh dấu source of truth, queue, timeout, retry, metric.
-3. Chọn một production incident liên quan **PostgreSQL**, trình bày mitigation trước root cause và long-term prevention.
-4. Load/fault test một assumption: bottleneck, duplicate, stale state hoặc dependency outage.
+3. [Index](index.md)
+4. [Các loại index: B-tree, Hash, GIN, GiST, BRIN](btree-hash-gin-gist-brin.md)
+5. [EXPLAIN ANALYZE](explain-analyze.md)
+6. [Query Optimization](query-optimization.md)
+7. [SQL nâng cao](sql-advanced.md)
 
-## All topics
+**Đúng đắn khi đồng thời**
 
-- [Database Fundamentals](database-fundamentals.md)
-- [Index](index.md)
-- [PostgreSQL Index Types: B-tree, Hash, GIN, GiST, BRIN](btree-hash-gin-gist-brin.md)
-- [Explain Analyze](explain-analyze.md)
-- [Query Optimization](query-optimization.md)
-- [Transaction](transaction.md)
-- [Isolation Level](isolation-level.md)
-- [PostgreSQL MVCC](mvcc.md)
-- [Locks](locks.md)
-- [Deadlock](deadlock.md)
-- [Partitioning](partitioning.md)
-- [Replication](replication.md)
-- [Connection Pooling](connection-pooling.md)
-- [Large Table Design](large-table-design.md)
-- [SQL Interview](sql-interview.md)
+8. [Transaction](transaction.md)
+9. [MVCC](mvcc.md)
+10. [Isolation Level](isolation-level.md)
+11. [Locks](locks.md)
+12. [Deadlock](deadlock.md)
 
-[← Main Dashboard](../README.md)
+**Vận hành và quy mô**
+
+13. [VACUUM, ANALYZE và Bloat](vacuum-bloat.md)
+14. [Connection Pooling](connection-pooling.md)
+15. [Partitioning](partitioning.md)
+16. [Replication](replication.md)
+17. [Thiết kế bảng lớn](large-table-design.md)
+
+## Các concept phụ thuộc nhau thế nào?
+
+```mermaid
+flowchart TD
+    FUND["Fundamentals: page, tuple, WAL"] --> QL["Query Lifecycle"]
+    QL --> IDX["Index"]
+    IDX --> TYPES["Loại index"]
+    QL --> EXP["EXPLAIN"]
+    IDX --> EXP
+    EXP --> OPT["Query Optimization"]
+    FUND --> TX["Transaction"]
+    TX --> MVCC["MVCC"]
+    MVCC --> ISO["Isolation Level"]
+    MVCC --> VAC["VACUUM và Bloat"]
+    TX --> LOCK["Locks"]
+    LOCK --> DL["Deadlock"]
+    FUND --> POOL["Connection Pooling"]
+    VAC --> PART["Partitioning"]
+    FUND --> REP["Replication"]
+    OPT --> LARGE["Large Table Design"]
+    PART --> LARGE
+    POOL --> APP["FastAPI và SQLAlchemy"]
+```
+
+Cách đọc diagram:
+
+1. **Fundamentals** giải thích page, tuple header (`xmin`/`xmax`) và WAL — nền cho cả nhánh hiệu năng lẫn nhánh đúng đắn.
+2. **Nhánh hiệu năng**: query lifecycle → index → EXPLAIN → optimization.
+3. **Nhánh đúng đắn**: transaction → MVCC → isolation level; transaction → lock → deadlock.
+4. **Nhánh vận hành**: MVCC sinh dead tuple → VACUUM; bảng lớn → partition; process-per-connection → pooling; WAL → replication.
+5. Connection pooling nối trực tiếp với cách FastAPI và SQLAlchemy dùng database.
+
+## File quan trọng nhất
+
+[MVCC](mvcc.md), [Index](index.md), [EXPLAIN ANALYZE](explain-analyze.md), [Connection Pooling](connection-pooling.md). Bốn file này giải thích phần lớn hành vi PostgreSQL mà backend engineer gặp hằng ngày.
+
+---
+
+[← FastAPI](../03-fastapi/README.md) · [Knowledge map](../../README.md) · [SQLAlchemy →](../05-sqlalchemy/README.md)

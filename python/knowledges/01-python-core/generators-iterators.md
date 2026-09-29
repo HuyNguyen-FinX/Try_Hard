@@ -1,211 +1,253 @@
-# Generators Iterators
+# Iterators và Generators
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+**Iterator** là cơ chế chung để duyệt tuần tự qua dữ liệu, từng phần tử một, mà không cần biết dữ liệu nằm ở đâu: list trong memory, dòng trong file, row từ database cursor, message từ queue. Vòng `for`, comprehension, `sum()`, `list()`, unpacking đều dựa trên giao thức iterator.
 
-Generators Iterators là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+**Generator** là cách viết iterator bằng một function có `yield`. Điểm đặc biệt: function có thể **tạm dừng** giữa chừng, giữ nguyên toàn bộ trạng thái, và **tiếp tục** từ đúng chỗ đó ở lần gọi sau. Cơ chế tạm dừng/tiếp tục này cũng chính là nền tảng của coroutine và [AsyncIO](../02-python-concurrency/asyncio.md).
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Generators Iterators** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+- **Iterable** là thứ có thể sinh ra iterator (list, dict, file, range). Có thể duyệt nhiều lần.
+- **Iterator** là con trỏ đang di chuyển trên dữ liệu. Chỉ đi tiến, dùng một lần; hết thì hết.
+- **Generator** là function được "đóng băng" giữa chừng: mỗi `next()` cho nó chạy đến `yield` kế tiếp rồi đóng băng lại.
 
-## 3. How does it work?
+> Generator không tính trước kết quả. Nó tính **khi được hỏi**, từng phần tử một. Vì vậy memory của nó không phụ thuộc số phần tử.
 
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
+## 3. Vì sao cần?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
+- **Memory giới hạn.** Xử lý file 20 GB, bảng 100 triệu row, export CSV lớn mà memory mỗi worker vẫn cố định.
+- **Lazy evaluation.** Chỉ tính phần tử cần dùng; dừng sớm khi tìm thấy kết quả.
+- **Pipeline.** Ghép các bước đọc → parse → lọc → gom batch → ghi thành chuỗi generator, mỗi bước chỉ biết đầu vào và đầu ra.
+- **Streaming.** Trả response từng phần cho client (CSV, log, token của LLM) thay vì đợi toàn bộ.
 
-## 4. Example
+## 4. Cơ chế hoạt động: giao thức iterator
+
+Giao thức gồm hai method:
+
+- `iterable.__iter__()` trả về một iterator.
+- `iterator.__next__()` trả phần tử kế tiếp, hoặc raise `StopIteration` khi hết. Iterator cũng có `__iter__` trả về chính nó.
+
+Vòng `for` thực chất là:
 
 ```python
-from dataclasses import dataclass
+# for item in data:
+#     process(item)
 
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Generators Iterators',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+it = iter(data)                 # gọi data.__iter__()
+while True:
+    try:
+        item = next(it)         # gọi it.__next__()
+    except StopIteration:
+        break
+    process(item)
 ```
 
-Ví dụ biến quyết định về **Generators Iterators** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Hệ quả quan trọng: iterator chỉ dùng được **một lần**.
 
-## 5. Production Use Case
+```python
+rows = (r for r in fetch())     # generator expression → iterator
+total = sum(r.amount for r in rows)
+count = len(list(rows))         # 0 — rows đã cạn, không báo lỗi
+```
 
-Một shared library dùng Generators Iterators để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
+## 5. Generator hoạt động thế nào?
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+```python
+def read_batches(path, size):
+    batch = []
+    with open(path) as f:
+        for line in f:
+            batch.append(line.rstrip("\n"))
+            if len(batch) == size:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+```
 
-## 6. Common Problems
+Gọi `read_batches("big.csv", 1000)` **không chạy dòng code nào** trong thân function. Nó trả về một generator object. Code chỉ chạy khi có `next()`.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+```mermaid
+stateDiagram-v2
+    [*] --> Created: gọi function, nhận generator object
+    Created --> Running: next() hoặc send(None)
+    Running --> Suspended: gặp yield, trả giá trị cho caller
+    Suspended --> Running: next() hoặc send(value)
+    Suspended --> Running: throw(exc) ném exception tại điểm yield
+    Running --> Closed: return hoặc hết thân function, raise StopIteration
+    Running --> Closed: exception không được bắt
+    Suspended --> Closed: close() ném GeneratorExit tại điểm yield
+    Closed --> [*]
+```
 
-## 7. Trade-offs
+Diễn giải các trạng thái:
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Generators Iterators | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+1. **Created**: generator object đã tồn tại, frame đã được tạo nhưng chưa thực thi lệnh nào.
+2. **Running**: `next()` làm frame chạy tiếp từ vị trí đã lưu.
+3. **Suspended**: gặp `yield`, giá trị được trả cho caller; vị trí lệnh hiện tại, toàn bộ local variable (`batch`, `f`, `line`) và cả khối `with` đang mở được giữ nguyên trong frame.
+4. Lần `next()` tiếp theo tiếp tục ngay sau `yield`.
+5. **Closed**: khi function return, generator raise `StopIteration`. Khi `close()` được gọi (tường minh hoặc khi generator bị hủy), `GeneratorExit` được ném vào tại điểm `yield`, khối `finally`/`with` bên trong chạy để dọn dẹp.
 
-## 8. Interview Questions
+`inspect.getgeneratorstate(gen)` trả về một trong bốn trạng thái `GEN_CREATED`, `GEN_RUNNING`, `GEN_SUSPENDED`, `GEN_CLOSED`.
 
-### Basic / Mid-level (10)
+## 6. Internals: frame được giữ lại
 
-- **B1.** What is Generators Iterators, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Generators Iterators.
-- **B3.** Which guarantees does Generators Iterators provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Generators Iterators?
-- **B5.** What is the most common misconception about Generators Iterators?
-- **B6.** How would you test assumptions involving Generators Iterators?
-- **B7.** Which edge cases or failure modes matter most for Generators Iterators?
-- **B8.** How can Generators Iterators affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Generators Iterators?
-- **B10.** When is a different or simpler approach better than relying on Generators Iterators?
+Function thông thường: gọi → tạo frame → chạy hết → hủy frame. Generator: frame được gắn vào generator object và **sống sót qua các lần tạm dừng**.
 
-### Production Scenarios (5)
+> **Ghi chú version:** Từ CPython 3.11, interpreter frame của generator được lưu ngay trong generator object thay vì một frame object riêng. Ngữ nghĩa không đổi.
 
-- **S1.** A release involving Generators Iterators triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Generators Iterators is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Generators Iterators. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Generators Iterators fails first?
-- **S5.** A canary changes the behavior of Generators Iterators; success rate is flat but saturation rises. Promote or roll back?
+Khi gặp lệnh `YIELD_VALUE`, interpreter:
 
-## 9. Senior-level Questions
+1. Lấy giá trị trên đỉnh value stack làm kết quả trả về cho caller.
+2. Lưu instruction pointer và value stack trong frame của generator.
+3. Thoát khỏi eval loop cho frame này, quay về frame của caller.
 
-- **L1.** How does Generators Iterators constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Generators Iterators meets concurrency or partial failure?
-- **L3.** What breaks first around Generators Iterators at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Generators Iterators?
-- **L5.** How would you benchmark or validate Generators Iterators without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Generators Iterators introduce?
-- **L7.** How would you change a poor decision around Generators Iterators with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Generators Iterators?
-- **L10.** How would you turn an incident involving Generators Iterators into a durable prevention mechanism?
+Khi `next()`/`send()` được gọi, interpreter đưa frame của generator trở lại eval loop và tiếp tục từ instruction pointer đã lưu. Không có thread nào được tạo, không có gì chạy song song — chỉ là một frame được "tạm cất" rồi "lấy ra".
 
-## 10. Short Answers
+### `send`, `throw`, `close`
 
-**B1.** Generators Iterators là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
+- `gen.send(value)`: tiếp tục generator, và biểu thức `yield` bên trong nhận giá trị `value`. Đây là cách truyền dữ liệu **vào** generator.
+- `gen.throw(exc)`: ném exception vào tại điểm `yield`.
+- `gen.close()`: ném `GeneratorExit` để generator dọn dẹp.
 
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Generators Iterators.
+### `yield from` và nguồn gốc của coroutine
 
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
+`yield from sub` (PEP 380) ủy quyền cho generator con: mọi `next`, `send`, `throw` được chuyển thẳng xuống `sub`, và giá trị `return` của `sub` trở thành giá trị của biểu thức `yield from`.
 
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
+Trước Python 3.5, asyncio viết coroutine bằng generator và `yield from`. `async def`/`await` sau này là cú pháp riêng, nhưng cơ chế bên dưới giống hệt: coroutine là một frame có thể tạm dừng, `await` ủy quyền xuống awaitable giống `yield from`, và event loop gọi `coro.send(None)` để tiếp tục nó. Hiểu generator là đã hiểu một nửa AsyncIO. Xem [Coroutine, Task và Future](../02-python-concurrency/coroutine-task-future.md).
 
-**B5.** Lỗi phổ biến là dùng Generators Iterators như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Generators Iterators khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Generators Iterators**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Generators Iterators** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 7. Luồng xử lý: pipeline generator
 
 ```mermaid
 flowchart LR
-            Source["Python source"] --> Runtime["Generators Iterators runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+    File["File 20 GB"] --> R["read_lines<br/>yield từng dòng"]
+    R --> P["parse<br/>yield dict"]
+    P --> F["filter_valid<br/>bỏ dòng lỗi"]
+    F --> B["batched 1000"]
+    B --> W["bulk insert DB"]
+    W -. "next() kéo dữ liệu ngược lên" .-> B
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Consumer cuối cùng (bước ghi DB) gọi `next()` trên `batched`.
+2. `batched` gọi `next()` trên `filter_valid` 1000 lần; mỗi lần `filter_valid` kéo từ `parse`, `parse` kéo từ `read_lines`.
+3. Tại mọi thời điểm, trong memory chỉ có tối đa một batch 1000 phần tử và vài dòng đang xử lý. Memory không phụ thuộc kích thước file.
+4. Dữ liệu được **kéo** (pull) từ cuối pipeline, nên tốc độ của bước chậm nhất tự động điều tiết cả pipeline — một dạng backpressure tự nhiên.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+```python
+import csv
+from itertools import batched   # Python 3.12+
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+def read_rows(path):
+    with open(path, newline="") as f:
+        yield from csv.DictReader(f)
 
-## 17. How I would debug this in production
+def valid(rows):
+    for row in rows:
+        if row.get("vin"):
+            yield row
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+for chunk in batched(valid(read_rows("claims.csv")), 1000):
+    repository.bulk_insert(chunk)
+```
 
-## 18. Common Misconceptions
+## 8. Generator expression và comprehension
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+```python
+squares_list = [x * x for x in range(10_000_000)]   # tạo list 10 triệu phần tử ngay
+squares_gen = (x * x for x in range(10_000_000))    # generator, gần như không tốn memory
+total = sum(x * x for x in range(10_000_000))       # không tạo list trung gian
+```
 
-## 19. When NOT to use
+Dùng list khi cần duyệt nhiều lần, truy cập theo index, hoặc biết `len`. Dùng generator khi chỉ duyệt một lần và dữ liệu lớn.
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+`itertools` cung cấp các khối xây dựng lazy: `islice` (lấy một đoạn), `chain` (nối), `groupby` (gom nhóm liên tiếp — dữ liệu phải được sắp xếp theo key trước), `tee` (tách thành nhiều iterator, tốn memory nếu các nhánh lệch nhau), `batched` (3.12+).
 
-## 20. What interviewer may ask next
+## 9. Async generator
 
-1. **What guarantee does Generators Iterators provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+`async def` có `yield` tạo **async generator**, duyệt bằng `async for`. Dùng khi mỗi bước lấy dữ liệu cần `await` (đọc từ database async, stream từ HTTP).
 
-## 21. Check Your Understanding
+```python
+async def stream_events(client):
+    async with client.stream("GET", "/events") as response:
+        async for line in response.aiter_lines():
+            yield parse(line)
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Generators Iterators** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Async generator có vấn đề dọn dẹp riêng: nếu consumer dừng giữa chừng, khối `async with` bên trong chỉ đóng khi generator được `aclose()`. Không thể chạy code async trong lúc GC hủy object, nên asyncio phải theo dõi async generator chưa đóng và đóng chúng khi loop shutdown. Dùng `contextlib.aclosing(gen)` để đảm bảo đóng tất định.
 
-<details>
-<summary>Answer</summary>
+## 10. Hành vi trong production
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+**Streaming response.** FastAPI/Starlette `StreamingResponse` nhận generator hoặc async generator. Generator đồng bộ được chạy trong threadpool để không block event loop; async generator chạy trên event loop — nếu nó làm việc CPU nặng hoặc blocking giữa các `yield`, mọi request khác trên worker bị chậm.
 
-</details>
+**Generator giữ tài nguyên mở.** Generator đọc từ DB cursor giữ connection và transaction mở **suốt thời gian consumer còn chưa đọc xong**. Nếu consumer là client HTTP tải chậm, một connection bị chiếm hàng phút. Với nhiều client như vậy, connection pool cạn. Cân nhắc: đọc theo batch rồi đóng transaction, hoặc export ra object storage rồi trả link.
 
-## 22. See also
+**Dọn dẹp muộn.** Generator dừng giữa chừng không được đóng ngay; `finally` bên trong chỉ chạy khi generator bị `close()` hoặc bị GC hủy. Với CPython, thường là ngay khi mất reference cuối; nhưng nếu generator nằm trong cycle hoặc chạy trên PyPy, việc dọn dẹp có thể trễ không xác định.
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+**Không thread-safe.** Hai thread cùng gọi `next()` trên một generator sẽ gặp `ValueError: generator already executing`. Không chia sẻ generator giữa các thread; dùng `queue.Queue` nếu cần phân phối công việc.
+
+**Iterator cạn lặng lẽ.** Truyền cùng một iterator cho hai hàm: hàm thứ hai nhận dữ liệu rỗng, không có lỗi. Bug này thường xuất hiện khi refactor từ list sang generator để tiết kiệm memory.
+
+## 11. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Dữ liệu "biến mất" | Duyệt iterator hai lần | Lần duyệt thứ hai rỗng, tổng bằng 0 |
+| Connection pool cạn | Generator giữ cursor/transaction trong lúc stream | Pool wait tăng khi có download lớn |
+| File/socket không đóng | Generator dừng giữa chừng không được close | "Too many open files", `ResourceWarning` |
+| Event loop bị block | Async generator làm việc nặng giữa các `yield` | Latency tăng cho request khác trong lúc stream |
+| `groupby` cho kết quả sai | Dữ liệu chưa sắp xếp theo key | Cùng key xuất hiện ở nhiều nhóm |
+| `ValueError: generator already executing` | Generator dùng chung giữa thread | Lỗi không ổn định dưới tải |
+
+## 12. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| List (eager) | Duyệt nhiều lần, có `len`, index, debug dễ | Memory tỷ lệ với dữ liệu |
+| Generator (lazy) | Memory cố định, bắt đầu xử lý sớm | Dùng một lần, khó debug, giữ tài nguyên mở lâu |
+| Batch generator | Cân bằng giữa overhead mỗi phần tử và memory | Phải chọn kích thước batch |
+| Materialize rồi xử lý | Đơn giản, tách I/O khỏi xử lý | Không dùng được với dữ liệu lớn hơn memory |
+
+## 13. Sai lầm thường gặp
+
+- Nghĩ gọi generator function sẽ chạy code ngay.
+- Tái sử dụng iterator đã cạn.
+- Dùng `list(gen)` "cho tiện" và mất toàn bộ lợi ích memory.
+- Để generator giữ transaction mở trong lúc chờ client hoặc gọi service khác.
+- Nhầm `return value` trong generator là giá trị được `yield` (nó trở thành `StopIteration.value`).
+- Quên `aclose()` với async generator dừng giữa chừng.
+
+## 14. Cách debug
+
+- `inspect.getgeneratorstate(gen)` / `inspect.getasyncgenstate(agen)` để biết generator đang ở trạng thái nào.
+- `gen.gi_frame.f_lineno` để biết generator đang dừng ở dòng nào (khi chưa closed).
+- Bật `python -W error::ResourceWarning` trong test để phát hiện file/socket không đóng.
+- Với connection pool cạn, đối chiếu thời lượng request streaming với thời gian connection bị checkout.
+- Với asyncio, bật debug mode (`PYTHONASYNCIODEBUG=1`) để thấy cảnh báo async generator không được đóng và callback chạy quá lâu.
+
+## 15. Best Practices
+
+- Dùng generator cho dữ liệu lớn, duyệt một lần; dùng list cho dữ liệu nhỏ cần duyệt nhiều lần.
+- Xử lý theo batch thay vì từng phần tử khi mỗi bước có overhead cố định (insert DB, gọi API).
+- Đóng generator tường minh khi dừng sớm: `with contextlib.closing(gen)` hoặc `aclosing` cho async.
+- Không giữ tài nguyên khan hiếm (connection, lock, transaction) qua các điểm `yield` phụ thuộc tốc độ của bên ngoài.
+- Đặt tên rõ ràng để người đọc biết đó là iterator dùng một lần (`iter_rows`, `stream_events`).
+
+## 16. Tóm tắt
+
+- Iterable sinh iterator; iterator trả từng phần tử qua `__next__` và dùng một lần.
+- Generator là function có thể tạm dừng tại `yield`, giữ nguyên frame và tiếp tục sau.
+- Gọi generator function không chạy code; code chỉ chạy khi có `next()`.
+- Pipeline generator giữ memory cố định và tự điều tiết theo bước chậm nhất.
+- Cơ chế tạm dừng/tiếp tục frame của generator chính là nền của coroutine trong AsyncIO.
+- Generator giữ mọi tài nguyên đang mở trong frame cho đến khi được đóng.
+
+## Liên quan
+
+- [CPython Runtime](cpython-runtime.md)
+- [Context Manager](context-manager.md)
+- [Coroutine, Task và Future](../02-python-concurrency/coroutine-task-future.md)
+- [AsyncIO](../02-python-concurrency/asyncio.md)
+- [Relationship Loading và yield_per](../05-sqlalchemy/relationship-loading.md)

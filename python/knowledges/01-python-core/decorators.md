@@ -1,211 +1,319 @@
 # Decorators
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
-
-Decorators là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Decorators** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+Decorator là một callable nhận vào một function (hoặc class) và trả về một callable thay thế. Cú pháp `@decorator` chỉ là cách viết ngắn:
 
 ```python
-from dataclasses import dataclass
+@timed
+def load_user(user_id): ...
 
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Decorators',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+# tương đương chính xác với
+def load_user(user_id): ...
+load_user = timed(load_user)
 ```
 
-Ví dụ biến quyết định về **Decorators** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Decorator có mặt ở khắp nơi trong backend Python: `@app.get` của FastAPI, `@app.task` của Celery, `@pytest.fixture`, `@functools.lru_cache`, `@property`, `@dataclass`, retry, đo thời gian, kiểm tra quyền. Không có phép màu nào: decorator chỉ dựa trên ba tính chất của Python — function là object, closure giữ state, và `@` là cú pháp gán lại name.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Một shared library dùng Decorators để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
+> Decorator thay thế function gốc bằng một function khác, thường là một **wrapper** bọc quanh function gốc. Name `load_user` sau khi decorate trỏ tới wrapper, không còn trỏ tới function bạn viết.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+Có hai thời điểm tách biệt:
 
-## 6. Common Problems
+- **Decoration time** — khi câu lệnh `def` chạy (thường lúc import module). Decorator được gọi đúng **một lần**.
+- **Call time** — mỗi lần code gọi `load_user(...)`. Wrapper được gọi, và wrapper quyết định có gọi function gốc hay không, gọi thế nào.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+## 3. Vì sao cần decorator?
 
-## 7. Trade-offs
+Decorator giải quyết bài toán **cross-cutting concern**: logic lặp lại ở nhiều function nhưng không thuộc về nghiệp vụ của function đó — đo thời gian, log, retry, cache, kiểm tra quyền, đăng ký route. Thay vì chèn cùng một đoạn code vào 50 function, bạn viết một lần và áp dụng bằng một dòng.
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Decorators | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Cái giá là một tầng gián tiếp: khi đọc function, bạn phải biết decorator làm gì với nó.
 
-## 8. Interview Questions
+## 4. Nền tảng: first-class function và closure
 
-### Basic / Mid-level (10)
+Function trong Python là object thông thường:
 
-- **B1.** What is Decorators, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Decorators.
-- **B3.** Which guarantees does Decorators provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Decorators?
-- **B5.** What is the most common misconception about Decorators?
-- **B6.** How would you test assumptions involving Decorators?
-- **B7.** Which edge cases or failure modes matter most for Decorators?
-- **B8.** How can Decorators affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Decorators?
-- **B10.** When is a different or simpler approach better than relying on Decorators?
+```python
+def greet(name):
+    return f"hi {name}"
 
-### Production Scenarios (5)
+f = greet                 # gán cho name khác
+f("An")                   # gọi qua name khác
+handlers = {"greet": greet}   # lưu trong dict
+greet.__name__            # 'greet' — có attribute
+```
 
-- **S1.** A release involving Decorators triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Decorators is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Decorators. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Decorators fails first?
-- **S5.** A canary changes the behavior of Decorators; success rate is flat but saturation rises. Promote or roll back?
+Vì function là object, nó có thể được **truyền vào** một function khác và được **trả về** từ function khác. Kết hợp với [closure](closures.md) — function trong giữ reference tới biến của function ngoài — ta có decorator:
 
-## 9. Senior-level Questions
+```python
+import functools
+import time
 
-- **L1.** How does Decorators constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Decorators meets concurrency or partial failure?
-- **L3.** What breaks first around Decorators at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Decorators?
-- **L5.** How would you benchmark or validate Decorators without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Decorators introduce?
-- **L7.** How would you change a poor decision around Decorators with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Decorators?
-- **L10.** How would you turn an incident involving Decorators into a durable prevention mechanism?
+def timed(func):                          # nhận function gốc
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):         # function thay thế
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)  # func lấy từ closure
+        finally:
+            elapsed = time.perf_counter() - start
+            print(f"{func.__qualname__} took {elapsed * 1000:.1f} ms")
+    return wrapper                        # trả về function thay thế
+```
 
-## 10. Short Answers
+`wrapper` giữ `func` trong closure cell. Mỗi lần gọi `timed(some_func)` tạo một `wrapper` mới với cell riêng trỏ tới `some_func`.
 
-**B1.** Decorators là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Decorators.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Decorators như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Decorators khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Decorators**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Decorators** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Luồng xử lý: decoration time và call time
 
 ```mermaid
-flowchart LR
-            Source["Python source"] --> Runtime["Decorators runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+sequenceDiagram
+    participant Mod as Module đang import
+    participant Dec as timed
+    participant W as wrapper
+    participant F as load_user gốc
+    Note over Mod: Decoration time, chạy một lần
+    Mod->>Mod: def load_user tạo function object F
+    Mod->>Dec: timed(F)
+    Dec->>W: tạo wrapper, closure giữ F
+    Dec-->>Mod: trả về W
+    Mod->>Mod: bind name load_user vào W
+    Note over Mod: Call time, mỗi lần gọi
+    Mod->>W: load_user(42)
+    W->>W: ghi thời điểm bắt đầu
+    W->>F: F(42)
+    F-->>W: kết quả
+    W->>W: đo thời gian, log
+    W-->>Mod: kết quả
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Khi module được import, `def load_user` tạo function object gốc.
+2. Ngay sau đó `timed` được gọi với function gốc. `timed` tạo `wrapper`, đóng gói function gốc trong closure, và trả `wrapper` về.
+3. Name `load_user` trong module được gắn vào `wrapper`. Function gốc chỉ còn truy cập được qua closure (và `wrapper.__wrapped__` nếu dùng `functools.wraps`).
+4. Mỗi lần gọi `load_user(42)`, thực chất là gọi `wrapper(42)`. Wrapper làm việc trước, gọi function gốc, làm việc sau, rồi trả kết quả.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+Hệ quả: code bên trong decorator nhưng **ngoài** wrapper chạy lúc import. Nếu decorator đọc config, kết nối network hoặc đăng ký vào registry, những việc đó xảy ra lúc import.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 6. Decorator có argument
 
-## 17. How I would debug this in production
+`@retry(times=3)` có thêm một tầng: `retry(times=3)` được gọi trước, trả về decorator thực sự.
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+```python
+def retry(times: int, exceptions: tuple[type[Exception], ...]):
+    def decorator(func):                          # tầng 2: decorator thật
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):             # tầng 3: wrapper
+            for attempt in range(1, times + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions:
+                    if attempt == times:
+                        raise
+        return wrapper
+    return decorator                              # tầng 1 trả decorator
 
-## 18. Common Misconceptions
+@retry(times=3, exceptions=(ConnectionError,))
+def fetch(): ...
+# tương đương: fetch = retry(times=3, exceptions=(ConnectionError,))(fetch)
+```
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+Ba tầng closure: `wrapper` thấy `func` (tầng 2) và `times`, `exceptions` (tầng 1). Decorator retry thực tế cần thêm backoff, jitter và giới hạn tổng thời gian — xem [Retry](../10-distributed-systems/retry.md); ví dụ trên chỉ minh họa cấu trúc.
 
-## 19. When NOT to use
+## 7. `functools.wraps` giải quyết vấn đề gì?
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+Không có `wraps`, function sau khi decorate mang danh tính của wrapper:
 
-## 20. What interviewer may ask next
+```python
+load_user.__name__        # 'wrapper'
+load_user.__doc__         # None
+inspect.signature(load_user)   # (*args, **kwargs)
+```
 
-1. **What guarantee does Decorators provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+`functools.wraps(func)` sao chép `__module__`, `__name__`, `__qualname__`, `__doc__`, `__annotations__` (và `__type_params__` từ 3.12) từ function gốc sang wrapper, cập nhật `__dict__`, và gán `wrapper.__wrapped__ = func`.
 
-## 21. Check Your Understanding
+Vì sao điều này quan trọng trong backend:
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Decorators** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+| Hệ thống | Phụ thuộc vào |
+|---|---|
+| FastAPI | `inspect.signature` (đi theo `__wrapped__`) để biết tham số, dependency, kiểu dữ liệu. Mất signature → FastAPI không biết endpoint nhận gì |
+| Celery | Tên task mặc định từ `__module__` + `__name__`; tên sai gây trùng hoặc không tìm thấy task |
+| Log, metric, trace | Tên function để gắn nhãn |
+| pickle | Serialize function bằng tên đầy đủ |
+| pytest, debugger, docs | `__name__`, `__doc__`, signature |
 
-<details>
-<summary>Answer</summary>
+## 8. Decorator cho async function
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Decorator đồng bộ áp lên coroutine function sẽ đo sai:
 
-</details>
+```python
+@timed                      # wrapper đồng bộ
+async def fetch_user(): ...
 
-## 22. See also
+await fetch_user()
+```
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+`wrapper` gọi `func(...)` — với coroutine function, lời gọi chỉ **tạo coroutine object** và trả về ngay, chưa chạy gì. `timed` đo khoảng thời gian gần bằng 0, rồi caller `await` coroutine bên ngoài wrapper.
+
+Decorator cho async phải có wrapper async:
+
+```python
+import inspect
+
+def timed(func):
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                record(func.__qualname__, time.perf_counter() - start)
+        return async_wrapper
+
+    @functools.wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            record(func.__qualname__, time.perf_counter() - start)
+    return sync_wrapper
+```
+
+Ngược lại, decorator có wrapper async nhưng bên trong làm việc blocking (`time.sleep`, `requests.get`) sẽ block event loop. Xem [Sync vs Async Endpoint](../03-fastapi/sync-vs-async-endpoint.md).
+
+## 9. Nhiều decorator chồng nhau
+
+```python
+@a
+@b
+def f(): ...
+# f = a(b(f))
+```
+
+- **Áp dụng** từ dưới lên: `b` bọc `f` trước, `a` bọc kết quả.
+- **Thực thi** từ ngoài vào: gọi `f()` chạy phần "trước" của `a`, rồi của `b`, rồi `f`, rồi phần "sau" của `b`, rồi của `a`.
+
+Thứ tự quan trọng trong thực tế:
+
+```python
+@app.get("/orders/{order_id}")
+@require_role("admin")          # phải nằm DƯỚI @app.get
+async def get_order(order_id: int): ...
+```
+
+`@app.get` đăng ký function **nó nhận được** vào router. Nếu `require_role` nằm trên `@app.get`, router đăng ký function chưa được bọc — kiểm tra quyền không bao giờ chạy. Và `require_role` phải dùng `functools.wraps` để FastAPI vẫn đọc được signature. Trong FastAPI, kiểm tra quyền thường nên làm bằng [dependency](../03-fastapi/dependency-injection.md) thay vì decorator.
+
+## 10. Decorator không bọc function
+
+Không phải decorator nào cũng trả wrapper. Một số chỉ **đăng ký** function rồi trả về nguyên bản:
+
+```python
+ROUTES = {}
+
+def route(path):
+    def decorator(func):
+        ROUTES[path] = func      # side effect lúc import
+        return func              # trả nguyên function gốc
+    return decorator
+```
+
+`@app.get`, `@app.task`, `@pytest.fixture`, `@atexit.register` đều thuộc dạng này (kèm thêm xử lý). Hệ quả: route/task chỉ tồn tại nếu module chứa nó **được import**. Quên import module → endpoint 404 hoặc Celery báo "unregistered task".
+
+Class decorator hoạt động tương tự với class: `@dataclass` nhận class, sinh thêm `__init__`, `__repr__`, `__eq__`, rồi trả về chính class đó.
+
+## 11. Internals: decorator dạng class và vấn đề method binding
+
+Decorator có thể là class có `__call__`:
+
+```python
+class CountCalls:
+    def __init__(self, func):
+        functools.update_wrapper(self, func)
+        self.func = func
+        self.calls = 0
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.func(*args, **kwargs)
+```
+
+Áp lên function bình thường thì chạy. Áp lên **method** thì hỏng: `obj.method(...)` không truyền `self` vì instance của `CountCalls` không phải descriptor. Function thường tự trở thành bound method nhờ `function.__get__` (xem [Descriptors](descriptors.md)); class decorator muốn làm việc với method phải tự định nghĩa `__get__`. Đây là lý do decorator dạng function (trả về function) phổ biến hơn.
+
+## 12. Hành vi trong production
+
+**`lru_cache` trên method giữ instance sống.** `@functools.lru_cache` trên method dùng `self` làm một phần của key. Cache giữ reference tới mọi `self` từng gọi — object không bao giờ được giải phóng cho đến khi bị đẩy khỏi cache (hoặc mãi mãi nếu `maxsize=None`). Dùng `functools.cached_property` cho giá trị tính một lần trên instance, hoặc cache ở module level với key tường minh.
+
+**Cache decorator không có giới hạn.** `lru_cache(maxsize=None)` với key là input của người dùng là một memory leak có kiểm soát.
+
+**Decorator nuốt exception.** Wrapper `try/except Exception: log; return None` biến lỗi thành giá trị `None` hợp lệ, lỗi lộ ra ở chỗ khác, xa nguyên nhân. Nếu bắt exception để log, hãy `raise` lại.
+
+**Chi phí gọi.** Mỗi tầng decorator thêm một lần gọi function và `*args/**kwargs` packing. Không đáng kể với endpoint gọi DB, nhưng đáng kể trong vòng lặp nóng gọi hàng triệu lần.
+
+**Import side effect.** Decorator đăng ký (routes, tasks, signal handlers) chạy lúc import. Import thiếu → tính năng biến mất; import hai lần dưới hai tên module khác nhau → đăng ký trùng.
+
+## 13. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| FastAPI không nhận tham số | Wrapper thiếu `functools.wraps` | Endpoint yêu cầu `args`, `kwargs` trong OpenAPI, lỗi 422 |
+| Kiểm tra quyền không chạy | Decorator đặt trên `@app.get` | Endpoint truy cập được không cần quyền |
+| Đo thời gian ≈ 0 ms | Wrapper sync bọc async function | Metric latency gần 0 dù endpoint chậm |
+| Event loop bị block | Wrapper async gọi code blocking | Latency tăng cho mọi request cùng worker |
+| Memory tăng | `lru_cache` không giới hạn hoặc trên method | Object không được giải phóng |
+| Task Celery "unregistered" | Module chứa `@app.task` không được worker import | Lỗi khi worker nhận message |
+
+## 14. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Decorator | Tái sử dụng cross-cutting concern, khai báo ngắn | Ẩn hành vi, thêm tầng gián tiếp, khó debug |
+| Gọi tường minh trong thân function | Rõ ràng, dễ đọc | Lặp code |
+| Dependency Injection (FastAPI) | Tích hợp với framework, test override dễ | Chỉ áp dụng trong framework |
+| Middleware | Áp dụng cho mọi request | Không phân biệt theo endpoint dễ dàng |
+| Context manager | Phạm vi tường minh, dùng cho một khối code | Phải viết ở từng chỗ dùng |
+
+## 15. Sai lầm thường gặp
+
+- Quên `functools.wraps`.
+- Dùng wrapper sync cho async function hoặc ngược lại.
+- Đặt decorator tùy biến sai thứ tự với decorator đăng ký của framework.
+- Viết decorator có argument nhưng dùng không có ngoặc (`@retry` thay vì `@retry()`), khiến function bị truyền vào vị trí tham số `times`.
+- Đặt logic đắt trong phần decoration time mà không nhận ra nó chạy lúc import.
+- Dùng decorator dạng class cho method mà không cài `__get__`.
+
+## 16. Cách debug
+
+- `func.__wrapped__` để lấy function gốc; `inspect.unwrap(func)` để bóc mọi tầng.
+- `inspect.signature(func)` để kiểm tra signature mà framework nhìn thấy.
+- `func.__qualname__`, `func.__module__` để kiểm tra danh tính sau decorate.
+- Stack trace chứa `wrapper` nhiều tầng: xác định tầng nào thêm hành vi bất thường.
+- Với route/task không xuất hiện: kiểm tra module có được import không (`sys.modules`), danh sách route (`app.routes`), danh sách task (`celery_app.tasks`).
+
+## 17. Best Practices
+
+- Luôn dùng `functools.wraps` cho wrapper.
+- Hỗ trợ cả sync và async nếu decorator dùng chung, hoặc giới hạn rõ ràng một loại.
+- Decorator không nên đổi ngữ nghĩa trả về hoặc nuốt exception mà không có lý do rõ.
+- Giữ decoration time nhẹ; không làm I/O lúc import.
+- Với cache, luôn đặt giới hạn và cân nhắc lifetime của key.
+- Trong framework có DI (FastAPI), ưu tiên dependency cho auth, DB session, rate limit; dùng decorator cho concern thuần Python (metric, retry nội bộ).
+- Type decorator bằng `ParamSpec` và `TypeVar` (Python 3.10+) để type checker giữ được signature. Xem [Typing](typing.md).
+
+## 18. Tóm tắt
+
+- Decorator là callable nhận function và trả callable thay thế; `@d` tương đương `f = d(f)`.
+- Decorator dựa trên function là object và closure giữ state.
+- Decoration time (lúc import, một lần) khác call time (mỗi lần gọi).
+- Decorator có argument là decorator factory: thêm một tầng function.
+- `functools.wraps` giữ danh tính và signature, bắt buộc với FastAPI, Celery, logging.
+- Wrapper phải khớp bản chất sync/async của function được bọc.
+
+## Liên quan
+
+- [Scope, LEGB và Closure](closures.md)
+- [Descriptors](descriptors.md)
+- [Typing](typing.md)
+- [Dependency Injection trong FastAPI](../03-fastapi/dependency-injection.md)
+- [Retry](../10-distributed-systems/retry.md)

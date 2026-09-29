@@ -1,207 +1,224 @@
 # Replication
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Replication là việc duy trì một hoặc nhiều bản sao của database trên server khác. PostgreSQL có hai loại chính:
 
-Replication là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness.
+| Loại | Sao chép gì | Dùng cho |
+|---|---|---|
+| **Physical (streaming) replication** | WAL — thay đổi ở mức byte của page | High availability, read replica, bản sao giống hệt primary |
+| **Logical replication** | Thay đổi ở mức row (INSERT/UPDATE/DELETE) được giải mã từ WAL | Đồng bộ một phần bảng, nâng cấp version, CDC sang hệ thống khác |
 
-## 2. Why does it matter?
+Replication giải quyết hai bài toán khác nhau: **sống sót khi primary chết** (HA) và **chia tải đọc** (scale read). Nó không giải quyết bài toán chia tải **ghi** — mọi ghi vẫn đi qua một primary.
 
-Senior Engineer cần hiểu **Replication** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Primary ghi nhật ký (WAL) cho mọi thay đổi. Replica là người chép lại nhật ký đó và áp dụng từng dòng, luôn đi sau primary một khoảng. Khoảng cách đó — **replication lag** — là nguồn gốc của mọi hành vi "lạ" khi đọc từ replica.
 
-Reason từ access pattern và invariant; kiểm tra planner estimate/actual, tuple/page/WAL, lock/snapshot và tác động vacuum/replication thay vì chỉ nhìn SQL text.
+## 3. Vì sao cần replication?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
+- **High availability**: primary hỏng phần cứng, zone mất điện — replica được thăng cấp (promote) thành primary mới trong vài giây tới vài phút.
+- **Scale đọc**: báo cáo, dashboard, API đọc chấp nhận dữ liệu hơi cũ chạy trên replica, giảm tải primary.
+- **Cô lập workload**: query phân tích nặng không làm chậm OLTP.
+- **Backup và disaster recovery**: replica ở region khác.
 
-## 4. Example
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
-```
-
-Với **Replication**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
-
-## 5. Production Use Case
-
-Warranty workload dùng Replication trên dữ liệu production-like; quyết định được kiểm chứng bằng EXPLAIN buffers, lock wait, WAL/IO và p99.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Replication | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Replication, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Replication.
-- **B3.** Which guarantees does Replication provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Replication?
-- **B5.** What is the most common misconception about Replication?
-- **B6.** How would you test assumptions involving Replication?
-- **B7.** Which edge cases or failure modes matter most for Replication?
-- **B8.** How can Replication affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Replication?
-- **B10.** When is a different or simpler approach better than relying on Replication?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Replication triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Replication is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Replication. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Replication fails first?
-- **S5.** A canary changes the behavior of Replication; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Replication constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Replication meets concurrency or partial failure?
-- **L3.** What breaks first around Replication at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Replication?
-- **L5.** How would you benchmark or validate Replication without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Replication introduce?
-- **L7.** How would you change a poor decision around Replication with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Replication?
-- **L10.** How would you turn an incident involving Replication into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Replication là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Replication.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Replication như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Replication khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Replication**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Replication** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Reason đồng thời ở logical SQL, planner/executor tree, heap/index page, buffer/WAL và MVCC/lock. Một query nhanh đơn lẻ có thể chậm dưới concurrency vì pool, cache, I/O và lock wait.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. Cơ chế hoạt động: streaming replication
 
 ```mermaid
-flowchart LR
-            SQL --> Plan["Planner decision for Replication"]
-            Plan --> Executor
-            Executor --> Index[(Index pages)]
-            Executor --> Heap[(Heap pages)]
-            Executor --> Result
+sequenceDiagram
+    participant App as Ứng dụng
+    participant P as Primary
+    participant WS as WAL sender
+    participant WR as WAL receiver trên replica
+    participant SU as Startup process: replay
+    participant R as Replica, hot standby
+    App->>P: COMMIT
+    P->>P: Ghi và flush WAL cục bộ
+    P-->>App: COMMIT OK, với replication bất đồng bộ
+    WS->>WR: Stream bản ghi WAL
+    WR->>WR: Ghi WAL xuống disk của replica
+    SU->>R: Replay WAL vào data pages
+    App->>R: SELECT, có thể chưa thấy thay đổi vừa commit
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Primary ghi WAL như bình thường ([PostgreSQL Fundamentals](database-fundamentals.md#6-wal-ghi-nhật-ký-trước)).
+2. Process **WAL sender** trên primary stream bản ghi WAL qua kết nối replication tới replica.
+3. **WAL receiver** trên replica nhận và ghi WAL xuống disk.
+4. **Startup process** replay WAL, áp dụng thay đổi vào data page — replica là bản sao vật lý chính xác của primary.
+5. Replica ở chế độ **hot standby** phục vụ query chỉ đọc trong lúc replay.
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+Lag có ba thành phần, xem trong `pg_stat_replication` trên primary:
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- `write_lag`: WAL đã tới và được ghi (chưa flush) trên replica.
+- `flush_lag`: WAL đã được flush trên replica.
+- `replay_lag`: WAL đã được **áp dụng** — chỉ từ đây query trên replica mới thấy thay đổi.
 
-## 17. How I would debug this in production
+## 5. Đồng bộ và bất đồng bộ
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+`synchronous_commit` kết hợp với `synchronous_standby_names` quyết định COMMIT chờ tới đâu:
 
-## 18. Common Misconceptions
+| Mức | COMMIT chờ | Mất dữ liệu khi primary chết đột ngột | Latency |
+|---|---|---|---|
+| `off` | Không chờ flush cục bộ | Có thể mất giao dịch cuối trên chính primary | Thấp nhất |
+| `local` | Flush WAL cục bộ | Có thể mất giao dịch chưa tới replica | Thấp |
+| `remote_write` | Replica đã nhận và ghi (chưa flush) | Chỉ khi cả primary và OS của replica cùng chết | Thêm một round trip |
+| `on` (có standby đồng bộ) | Replica đã flush WAL | Không | Thêm round trip + fsync trên replica |
+| `remote_apply` | Replica đã replay | Không; và đọc trên replica ngay sau commit thấy dữ liệu | Cao nhất |
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+Replication bất đồng bộ là mặc định phổ biến: nhanh, nhưng failover có thể mất vài giao dịch cuối (RPO > 0). Replication đồng bộ cho RPO = 0, đổi lại mỗi commit chậm thêm một round trip mạng, và nếu replica đồng bộ chết mà không có dự phòng, primary **ngừng commit**. Thường cấu hình quorum (`ANY 1 (replica_a, replica_b)`) để một replica chết không làm dừng hệ thống.
 
-## 19. When NOT to use
+## 6. Đọc từ replica: vấn đề read-your-writes
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API
+    participant P as Primary
+    participant R as Replica, lag 300ms
+    U->>API: POST cập nhật hồ sơ
+    API->>P: UPDATE, COMMIT
+    API-->>U: 200 OK
+    U->>API: GET hồ sơ, 100ms sau
+    API->>R: SELECT
+    R-->>API: Dữ liệu cũ, chưa replay
+    API-->>U: Hồ sơ chưa thay đổi
+```
 
-## 20. What interviewer may ask next
+Diễn giải: người dùng vừa lưu thành công nhưng thấy dữ liệu cũ. Đây không phải bug của database mà là hệ quả của lag. Các cách xử lý:
 
-1. **What guarantee does Replication provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+- **Đọc từ primary sau khi ghi**: trong N giây sau khi user ghi, định tuyến đọc của user đó về primary (lưu dấu thời gian ghi trong session/cookie).
+- **Theo LSN**: sau khi ghi, lấy `pg_current_wal_lsn()`; khi đọc từ replica, chỉ dùng replica đã replay tới LSN đó (`pg_last_wal_replay_lsn()`), không thì đọc primary.
+- **Chỉ gửi truy vấn chấp nhận dữ liệu cũ** tới replica: báo cáo, danh sách, tìm kiếm.
+- **`remote_apply`** cho một số transaction quan trọng (chấp nhận latency ghi cao hơn).
 
-## 21. Check Your Understanding
+Đây là một dạng [eventual consistency](../10-distributed-systems/eventual-consistency.md) cần được thiết kế ở tầng ứng dụng.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Replication** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 7. Xung đột trên replica: hot_standby_feedback
 
-<details>
-<summary>Answer</summary>
+Query dài trên replica đang đọc một phiên bản row. Trong khi đó primary chạy VACUUM, xóa phiên bản đó (vì trên primary không ai cần nó), WAL của việc xóa tới replica. Replica phải chọn:
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+- Hủy query đang chạy (`canceling statement due to conflict with recovery`), hoặc
+- Tạm dừng replay (tăng lag), tối đa `max_standby_streaming_delay`.
 
-</details>
+`hot_standby_feedback = on` khiến replica báo cho primary biết snapshot cũ nhất nó cần → primary không dọn các phiên bản đó. Query trên replica không bị hủy, **nhưng** query dài trên replica giữ horizon của primary → [bloat trên primary](vacuum-bloat.md). Đánh đổi giữa "báo cáo trên replica bị hủy" và "primary bị bloat".
 
-## 22. See also
+## 8. Replication slot
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
-- [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+Replication slot đảm bảo primary **giữ lại WAL** cho tới khi replica (hoặc consumer logical) xác nhận đã nhận. Không có slot, replica bị ngắt lâu có thể không bắt kịp vì WAL cần thiết đã bị xóa.
+
+Rủi ro: slot của một replica/consumer đã chết hoặc bị bỏ quên khiến primary giữ WAL **vô hạn** → thư mục `pg_wal` đầy disk → primary dừng. Slot logical còn giữ horizon (`catalog_xmin`). Từ PostgreSQL 13 có `max_slot_wal_keep_size` để giới hạn. Giám sát slot không active là bắt buộc.
+
+## 9. Logical replication và CDC
+
+Logical replication giải mã WAL thành thay đổi mức row:
+
+- **Publication/Subscription** giữa hai PostgreSQL: sao chép một số bảng, nâng cấp major version với downtime thấp, gộp dữ liệu.
+- **CDC** (Change Data Capture) với Debezium hoặc tương tự: stream thay đổi vào Kafka cho search index, cache invalidation, data warehouse. Đây là một cách cài đặt relay cho [Outbox Pattern](../10-distributed-systems/outbox-pattern.md).
+
+Hạn chế: không sao chép DDL, sequence cần xử lý riêng, bảng cần primary key hoặc replica identity.
+
+## 10. Failover
+
+```mermaid
+flowchart TD
+    A["Primary mất kết nối"] --> B["Hệ thống quản lý HA phát hiện: Patroni, RDS, Cloud SQL"]
+    B --> C{"Đủ quorum xác nhận primary thực sự chết?"}
+    C -->|"không"| W["Chờ, tránh split brain"]
+    C -->|"có"| D["Chọn replica có WAL mới nhất"]
+    D --> E["Promote replica thành primary"]
+    E --> F["Cập nhật DNS, VIP hoặc endpoint"]
+    F --> G["Ứng dụng reconnect: pool_pre_ping, retry"]
+    E --> H["Primary cũ nếu sống lại phải bị rào: fencing, không nhận ghi"]
+```
+
+Diễn giải:
+
+1. Phát hiện lỗi cần đủ chắc chắn — failover nhầm do mạng chập chờn gây gián đoạn không cần thiết.
+2. Chọn replica ít lag nhất để giảm dữ liệu mất.
+3. Sau promote, endpoint phải trỏ tới primary mới; connection cũ trong pool của ứng dụng trỏ tới server chết và phải được làm mới.
+4. **Split brain**: nếu primary cũ sống lại và vẫn nhận ghi, hai primary cùng tồn tại, dữ liệu phân nhánh. Hệ thống HA phải rào (fence) primary cũ.
+
+Trong ứng dụng: failover biểu hiện như vài giây tới vài chục giây lỗi kết nối. Retry có backoff cho thao tác idempotent, `pool_pre_ping`, và timeout hợp lý giúp phục hồi tự động.
+
+## 11. Hành vi trong production
+
+- **Lag tăng khi có ghi lớn**: batch update/delete lớn, tạo index, `VACUUM FULL` sinh WAL khổng lồ; replica tụt lại hàng phút.
+- **Replica không phải backup**: `DROP TABLE` nhầm được replicate ngay lập tức. Cần backup với point-in-time recovery.
+- **Đọc từ replica cần routing tường minh**: ORM/driver không tự biết query nào an toàn để đọc từ replica.
+- **Replica cũng cần tài nguyên**: replay WAL là đơn luồng trong phần lớn trường hợp; replica yếu hơn primary có thể không theo kịp tốc độ ghi.
+
+## 12. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Đọc dữ liệu cũ | Lag, đọc replica ngay sau ghi | User thấy thay đổi "biến mất" |
+| Disk đầy trên primary | Replication slot bị bỏ quên | `pg_wal` tăng liên tục |
+| Query trên replica bị hủy | Xung đột với recovery | `canceling statement due to conflict with recovery` |
+| Primary bloat | `hot_standby_feedback` + query dài trên replica | Dead tuple không được dọn |
+| Mất dữ liệu khi failover | Replication bất đồng bộ | Giao dịch cuối không có trên primary mới |
+| Split brain | Failover không có fencing | Dữ liệu phân nhánh |
+| Primary dừng commit | Replica đồng bộ duy nhất chết | Mọi COMMIT treo |
+
+## 13. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Async replication | Latency ghi thấp | RPO > 0 |
+| Sync replication (quorum) | RPO = 0 | Latency commit, phụ thuộc replica |
+| Đọc từ replica | Giảm tải primary | Dữ liệu cũ, logic routing |
+| `hot_standby_feedback = on` | Query replica không bị hủy | Bloat trên primary |
+| Logical replication | Linh hoạt, xuyên version | Phức tạp, không sao chép DDL |
+
+## 14. Sai lầm thường gặp
+
+- Coi replica là backup.
+- Gửi mọi `SELECT` tới replica, kể cả đọc ngay sau ghi.
+- Không giám sát replication slot.
+- Dùng một replica đồng bộ duy nhất.
+- Không test failover và hành vi reconnect của ứng dụng.
+
+## 15. Cách debug
+
+```sql
+-- Trên primary: trạng thái và lag của từng replica
+SELECT application_name, state, sync_state, write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+
+-- Replication slot và WAL bị giữ
+SELECT slot_name, slot_type, active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal
+FROM pg_replication_slots;
+
+-- Trên replica: độ trễ replay theo thời gian
+SELECT now() - pg_last_xact_replay_timestamp() AS replay_delay;
+```
+
+Lưu ý: `replay_delay` tăng khi primary không có ghi nào (không có gì để replay) — kết hợp với LSN diff để đánh giá đúng.
+
+## 16. Best Practices
+
+- Ít nhất một replica ở zone khác cho HA; dùng hệ thống quản lý HA có fencing.
+- Chọn sync/async theo RPO của nghiệp vụ; dùng quorum nếu sync.
+- Định tuyến đọc tường minh; xử lý read-your-writes cho luồng người dùng.
+- Giám sát lag, slot, và xung đột recovery.
+- Backup với PITR độc lập với replication.
+- Diễn tập failover định kỳ, bao gồm kiểm tra ứng dụng tự phục hồi.
+
+## 17. Tóm tắt
+
+- Streaming replication gửi WAL từ primary sang replica để replay thành bản sao vật lý.
+- Lag gồm write, flush, replay; chỉ sau replay, replica mới thấy thay đổi.
+- Sync replication đổi latency lấy RPO = 0; async nhanh nhưng có thể mất giao dịch cuối khi failover.
+- Đọc từ replica gây vấn đề read-your-writes; cần routing theo thời gian hoặc LSN.
+- Replication slot, `hot_standby_feedback` và split brain là các rủi ro vận hành chính.
+
+## Liên quan
+
+- [PostgreSQL Fundamentals](database-fundamentals.md)
+- [VACUUM và Bloat](vacuum-bloat.md)
+- [Database Scaling](../11-system-design/database-scaling.md)
+- [Eventual Consistency](../10-distributed-systems/eventual-consistency.md)
+- [High Availability](../17-performance-reliability/high-availability.md)
+- [RDS](../14-cloud/rds.md)

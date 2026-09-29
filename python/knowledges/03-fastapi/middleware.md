@@ -1,211 +1,209 @@
-# Middleware
+# Middleware trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Middleware là lớp code bọc quanh toàn bộ application, chạy **trước** khi request tới router và **sau** khi response rời router. Nó phù hợp cho concern áp dụng cho mọi request mà không cần biết route cụ thể: gắn request ID, đo thời gian, tracing, CORS, nén, header bảo mật, giới hạn kích thước.
 
-ASGI middleware bọc application để xử lý cross-cutting concern trên mọi request/response hoặc WebSocket scope.
+Trong FastAPI (Starlette), middleware là **ASGI middleware**: một ASGI app nhận một ASGI app khác và gọi nó. Hiểu điều này giải thích thứ tự thực thi, vì sao một số middleware làm hỏng streaming, và vì sao exception đôi khi "lọt qua" middleware của bạn.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Middleware** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Middleware tạo stack ngoài-vào/trong-ra; thứ tự quyết định CORS, auth, exception và tracing behavior. Đọc body/serialize trong middleware có thể tăng memory/latency và phá streaming.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Middleware**.
-
-## 5. Production Use Case
-
-Trace/request ID middleware ghi duration/status nhưng redact body; authorization theo resource vẫn ở endpoint/service vì middleware thiếu domain context.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Middleware | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Middleware, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Middleware.
-- **B3.** Which guarantees does Middleware provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Middleware?
-- **B5.** What is the most common misconception about Middleware?
-- **B6.** How would you test assumptions involving Middleware?
-- **B7.** Which edge cases or failure modes matter most for Middleware?
-- **B8.** How can Middleware affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Middleware?
-- **B10.** When is a different or simpler approach better than relying on Middleware?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Middleware triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Middleware is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Middleware. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Middleware fails first?
-- **S5.** A canary changes the behavior of Middleware; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Middleware constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Middleware meets concurrency or partial failure?
-- **L3.** What breaks first around Middleware at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Middleware?
-- **L5.** How would you benchmark or validate Middleware without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Middleware introduce?
-- **L7.** How would you change a poor decision around Middleware with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Middleware?
-- **L10.** How would you turn an incident involving Middleware into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** ASGI middleware bọc application để xử lý cross-cutting concern trên mọi request/response hoặc WebSocket scope. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Middleware.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Middleware như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Middleware khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Middleware**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Middleware** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+> Middleware là các lớp vỏ hành. Request đi từ vỏ ngoài vào lõi (router), response đi từ lõi ra vỏ ngoài. Mỗi lớp thấy request trước lớp bên trong và thấy response sau lớp bên trong.
 
 ```mermaid
 flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Middleware"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+    Req["Request"] --> A["Middleware A: ngoài"]
+    A --> B["Middleware B"]
+    B --> C["Middleware C: trong"]
+    C --> R["Router và endpoint"]
+    R -.-> C2["C thấy response đầu tiên"]
+    C2 -.-> B2["B"]
+    B2 -.-> A2["A thấy response cuối cùng"]
+    A2 -.-> Resp["Response"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: A bọc B, B bọc C, C bọc router. Chiều vào A → B → C; chiều ra C → B → A. Lớp nào ở ngoài thì đo được nhiều nhất (thời gian của mọi lớp bên trong) và thấy exception mà lớp trong không xử lý.
 
-## 16. Failure Scenario
+## 3. Vì sao cần middleware?
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+- Concern **xuyên suốt** không nên lặp ở mỗi endpoint: request ID, logging truy cập, metrics, tracing.
+- Xử lý ở mức **giao thức**: CORS preflight, nén GZip, chuyển hướng HTTPS, kiểm tra Host.
+- Chạy cả cho request **không khớp route nào** (404) — điều dependency không làm được.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 4. Cơ chế hoạt động
 
-## 17. How I would debug this in production
+### Thứ tự đăng ký và thứ tự thực thi
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+```python
+app.add_middleware(TimingMiddleware)      # thêm trước → nằm TRONG
+app.add_middleware(RequestIdMiddleware)   # thêm sau → nằm NGOÀI
+```
 
-## 18. Common Misconceptions
+Mỗi `add_middleware` bọc stack hiện tại bằng một lớp mới ở **ngoài cùng**. Middleware thêm sau cùng chạy **đầu tiên** ở chiều vào. Muốn request ID có mặt trong log của timing middleware, `RequestIdMiddleware` phải nằm ngoài, tức được thêm sau.
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+Stack đầy đủ của FastAPI (từ ngoài vào):
 
-## 19. When NOT to use
+1. `ServerErrorMiddleware` — bắt exception chưa xử lý, trả 500.
+2. Middleware của bạn (theo thứ tự ngược với thứ tự `add_middleware`).
+3. `ExceptionMiddleware` — chạy exception handler (`HTTPException`, validation, handler tùy biến).
+4. Router.
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+Hệ quả: response 404/422/403 do handler tạo ra đi qua middleware của bạn như response bình thường. Exception **không có handler** đi xuyên qua middleware của bạn (dưới dạng exception) tới `ServerErrorMiddleware`. Middleware muốn log mọi lỗi phải bắt exception hoặc nằm ngoài cùng.
 
-## 20. What interviewer may ask next
+### Hai cách viết middleware
 
-1. **What guarantee does Middleware provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+**`BaseHTTPMiddleware` / `@app.middleware("http")`** — tiện, làm việc với `Request`/`Response`:
 
-## 21. Check Your Understanding
+```python
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid4().hex
+    response = await call_next(request)
+    response.headers["x-request-id"] = request_id
+    return response
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Middleware** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+**Pure ASGI middleware** — làm việc trực tiếp với `scope`, `receive`, `send`:
 
-<details>
-<summary>Answer</summary>
+```python
+class RequestIdMiddleware:
+    def __init__(self, app):
+        self.app = app
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope["headers"])
+        request_id = headers.get(b"x-request-id", uuid4().hex.encode())
+        token = request_id_var.set(request_id.decode())
 
-</details>
+        async def send_with_id(message):
+            if message["type"] == "http.response.start":
+                message.setdefault("headers", []).append((b"x-request-id", request_id))
+            await send(message)
 
-## 22. See also
+        try:
+            await self.app(scope, receive, send_with_id)
+        finally:
+            request_id_var.reset(token)
+```
+
+| Tiêu chí | `BaseHTTPMiddleware` | Pure ASGI |
+|---|---|---|
+| Độ dễ viết | Dễ | Cần hiểu ASGI |
+| Streaming response | `call_next` bọc body qua một kênh nội bộ; hoạt động nhưng thêm overhead | Không ảnh hưởng |
+| Hiệu năng | Thêm overhead mỗi request (tạo task/stream nội bộ) | Tối thiểu |
+| WebSocket | Không áp dụng | Xử lý được mọi loại scope |
+| Context variables | Đã từng có vấn đề lan truyền giữa middleware và endpoint ở các version cũ | Hoạt động tự nhiên |
+
+> **Ghi chú version:** Starlette đã cải thiện `BaseHTTPMiddleware` qua nhiều version (xử lý contextvars, background task, streaming). Với middleware chạy trên mọi request trong service tải cao, pure ASGI middleware vẫn là lựa chọn an toàn và nhanh hơn.
+
+## 5. Bên trong hệ thống xảy ra gì khi middleware đọc body?
+
+```mermaid
+sequenceDiagram
+    participant U as Uvicorn
+    participant M as Middleware đọc body
+    participant E as Endpoint
+    U->>M: scope, receive
+    M->>U: await receive() nhiều lần tới hết body
+    Note over M: Toàn bộ body nằm trong memory của middleware
+    M->>E: gọi app với receive mới trả lại body đã đọc
+    E->>M: await receive()
+    M-->>E: body từ bộ nhớ
+```
+
+Diễn giải:
+
+1. Body HTTP đến qua `receive()` theo từng phần và **chỉ đọc được một lần** từ server.
+2. Middleware muốn đọc body (để log, verify chữ ký webhook) phải đọc hết rồi tạo `receive` giả để trả lại body cho app bên trong.
+3. Hệ quả: body nằm trọn trong memory, upload lớn không còn streaming được, latency tăng vì app bên trong chỉ bắt đầu khi body đã tới đủ.
+
+Chỉ đọc body trong middleware khi thực sự cần, giới hạn kích thước, và bỏ qua cho route upload.
+
+## 6. Middleware thường dùng
+
+| Middleware | Việc | Lưu ý |
+|---|---|---|
+| `CORSMiddleware` | Trả lời preflight `OPTIONS`, thêm header `Access-Control-*` | Không dùng `allow_origins=["*"]` cùng `allow_credentials=True` |
+| `GZipMiddleware` | Nén response lớn hơn `minimum_size` | Tốn CPU trên event loop; thường để LB/CDN nén |
+| `TrustedHostMiddleware` | Chặn Host header không hợp lệ | Chống host header injection |
+| `HTTPSRedirectMiddleware` | Chuyển hướng HTTP → HTTPS | Thường xử lý ở LB |
+| OpenTelemetry ASGI instrumentation | Tạo span cho mỗi request, lan truyền trace context | Nên nằm ngoài cùng trong nhóm của bạn |
+| Request ID / correlation | Gắn ID vào `contextvars` và response header | Để log mọi tầng có cùng ID |
+
+## 7. Middleware hay dependency?
+
+| Concern | Middleware | Dependency |
+|---|---|---|
+| Áp dụng cho request 404, request không khớp route | Có | Không |
+| Cần biết route, tham số, model | Khó | Có |
+| Trả lỗi có cấu trúc riêng theo endpoint | Khó | Dễ (`HTTPException`) |
+| Hiển thị trong OpenAPI (security scheme) | Không | Có |
+| Override khi test | Khó | `dependency_overrides` |
+| Áp dụng cho WebSocket | Pure ASGI: có | Có (WebSocket endpoint) |
+
+Quy tắc: xác thực và phân quyền theo route → dependency. Request ID, tracing, metric, CORS, header bảo mật → middleware.
+
+## 8. Hành vi trong production
+
+- **Mỗi middleware chạy cho mọi request.** 5 middleware × 0.2 ms = 1 ms mỗi request trên event loop. Ở 2.000 RPS/worker, đó là 2 giây CPU mỗi giây — vượt một core. Middleware phải rẻ.
+- **Middleware gọi I/O** (kiểm tra API key trong DB, rate limit qua Redis) thêm một round trip cho **mọi** request, kể cả health check. Loại trừ health check và cache kết quả.
+- **Log truy cập ở middleware ngoài cùng** là nguồn sự thật về latency của application; kết hợp với log của LB để thấy thời gian chờ trước application.
+- **Exception trong middleware** đi thẳng tới `ServerErrorMiddleware`: response 500 dạng text, không qua exception handler JSON của bạn.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Request ID không có trong log của middleware khác | Thứ tự đăng ký sai | Một số dòng log thiếu ID |
+| Upload lớn gây OOM | Middleware đọc toàn bộ body | Memory spike theo kích thước upload |
+| Latency tăng đều | Middleware làm I/O hoặc CPU nặng | Mọi endpoint, kể cả health check, chậm hơn |
+| Lỗi 500 không có JSON | Exception không có handler hoặc raise trong middleware | Body 500 dạng text |
+| CORS lỗi trên trình duyệt | Cấu hình origin/credentials sai, CORS nằm trong middleware khác trả lỗi trước | Preflight bị chặn |
+
+## 10. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| `@app.middleware("http")` | Nhanh để viết | Overhead, hạn chế với streaming và WebSocket |
+| Pure ASGI | Hiệu năng, kiểm soát đầy đủ | Code dài, cần hiểu giao thức |
+| Xử lý ở LB/API Gateway (TLS, nén, CORS, rate limit) | Giảm tải cho Python | Cấu hình phân tán ở nhiều nơi |
+
+## 11. Sai lầm thường gặp
+
+- Đặt logic phụ thuộc route vào middleware.
+- Đọc body trong middleware cho mọi request.
+- Không hiểu thứ tự `add_middleware` là ngược với thứ tự thực thi.
+- Gọi DB/Redis trong middleware cho mọi request mà không loại trừ health check.
+- Nén GZip trong Python trong khi LB có thể làm.
+
+## 12. Cách debug
+
+- In `app.user_middleware` để xem thứ tự đăng ký.
+- Middleware timing ngoài cùng và trong cùng: hiệu hai con số là chi phí của các middleware ở giữa.
+- Profile một request đơn giản (health check) để thấy overhead cố định của middleware.
+- Log exception tại middleware ngoài cùng kèm request ID.
+
+## 13. Best Practices
+
+- Middleware chỉ cho concern xuyên suốt, rẻ, không phụ thuộc route.
+- Ưu tiên pure ASGI middleware cho đường nóng.
+- Request ID và tracing nằm ngoài cùng trong nhóm middleware của bạn.
+- Không đọc body trừ khi bắt buộc; giới hạn kích thước khi đọc.
+- Đẩy TLS, nén, giới hạn kích thước và một phần rate limit lên LB/gateway.
+
+## 14. Tóm tắt
+
+- Middleware là ASGI app bọc ASGI app; thực thi theo mô hình vỏ hành.
+- `add_middleware` thêm lớp ngoài cùng: thêm sau chạy trước.
+- Exception handler nằm trong middleware của bạn; exception không có handler đi xuyên qua tới `ServerErrorMiddleware`.
+- Pure ASGI middleware nhanh và không phá streaming; `BaseHTTPMiddleware` tiện nhưng có overhead.
+- Auth theo route dùng dependency; request ID, tracing, CORS dùng middleware.
+
+## Liên quan
 
 - [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Dependency Injection](dependency-injection.md)
+- [Error Handling](error-handling.md)
+- [Metrics, Logging và Tracing](../17-performance-reliability/metrics-logging-tracing.md)

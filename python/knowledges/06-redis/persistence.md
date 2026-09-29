@@ -1,212 +1,168 @@
-# Persistence
+# Redis Persistence: RDB và AOF
 
-> **Phạm vi phỏng vấn:** Redis · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Redis giữ dữ liệu trong RAM. Persistence là cách Redis ghi dữ liệu xuống disk để **khôi phục sau khi restart**. Có hai cơ chế, dùng riêng hoặc kết hợp:
 
-Redis RDB snapshot và AOF log đổi recovery point, write latency, storage và restart time; replication không thay thế backup.
+| Cơ chế | Ghi gì | Khi nào |
+|---|---|---|
+| **RDB** (snapshot) | Toàn bộ dataset tại một thời điểm, dạng nhị phân nén | Định kỳ theo điều kiện, hoặc khi gọi `BGSAVE` |
+| **AOF** (Append Only File) | Nhật ký mọi command ghi | Liên tục; `fsync` theo chính sách |
 
-## 2. Why does it matter?
+Câu hỏi quan trọng không phải "bật persistence hay không", mà là: **Redis đang giữ vai trò gì, và mất bao nhiêu dữ liệu thì chấp nhận được?** Cache thuần có thể không cần persistence. Broker Celery, session, rate limit counter, queue cần mức độ bền khác nhau.
 
-Senior Engineer cần hiểu **Persistence** để giảm latency mà không biến cache thành single point of failure. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> RDB là chụp ảnh căn phòng định kỳ: khôi phục nhanh, nhưng mất mọi thay đổi sau lần chụp cuối. AOF là camera ghi lại mọi hành động: khôi phục bằng cách phát lại, mất ít hơn, nhưng file lớn hơn và phát lại lâu hơn.
 
-RDB có point-in-time gap; AOF fsync policy bounds loss/latency và rewrite compacts log. Test restore, disk full/fork memory và corruption path.
+## 3. Vì sao cần hiểu persistence?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `hit ratio, evictions, memory fragmentation, command latency và replication lag` và phân biệt symptom, bottleneck với root cause.
+- Restart Redis không persistence → cache lạnh hoàn toàn → [cache avalanche](cache-problems.md#4-cache-avalanche).
+- Broker không persistence → mất task đang chờ khi Redis restart.
+- Persistence dùng `fork()` → memory có thể tăng gần gấp đôi và latency spike — nguồn gốc của nhiều sự cố "Redis bị OOM kill lúc nửa đêm".
 
-## 4. Example
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Persistence',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
-
-Ví dụ biến quyết định về **Persistence** thành invariant và tín hiệu vận hành có thể kiểm chứng.
-
-## 5. Production Use Case
-
-Cache có thể tắt persistence; rate/quota/session cần đánh giá data-loss semantics, backup và recovery warm-up riêng.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Persistence | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Persistence, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Persistence.
-- **B3.** Which guarantees does Persistence provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Persistence?
-- **B5.** What is the most common misconception about Persistence?
-- **B6.** How would you test assumptions involving Persistence?
-- **B7.** Which edge cases or failure modes matter most for Persistence?
-- **B8.** How can Persistence affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Persistence?
-- **B10.** When is a different or simpler approach better than relying on Persistence?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Persistence triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Persistence is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Persistence. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Persistence fails first?
-- **S5.** A canary changes the behavior of Persistence; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Persistence constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Persistence meets concurrency or partial failure?
-- **L3.** What breaks first around Persistence at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Persistence?
-- **L5.** How would you benchmark or validate Persistence without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Persistence introduce?
-- **L7.** How would you change a poor decision around Persistence with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Persistence?
-- **L10.** How would you turn an incident involving Persistence into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Redis RDB snapshot và AOF log đổi recovery point, write latency, storage và restart time; replication không thay thế backup. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Persistence.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo hit ratio, evictions, memory fragmentation, command latency và replication lag; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Persistence như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Persistence khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Persistence**, không chỉ “dùng để làm gì”.
-- Định lượng bằng hit ratio, evictions, memory fragmentation, command latency và replication lag và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Persistence** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Xem mỗi command theo time complexity, bytes/key, main execution path, TTL/eviction và durability/failover. Cache/lock/rate-limit có correctness khác nhau khi key mất hoặc replica được promote.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. RDB: snapshot bằng fork
 
 ```mermaid
-flowchart LR
-            Client --> Command["Persistence command / pattern"]
-            Command --> EventLoop["Redis execution path"]
-            EventLoop --> Memory["In-memory data structure"]
-            Memory --> Persist["TTL / persistence / replication"]
+sequenceDiagram
+    participant M as Redis main process
+    participant C as Process con sau fork
+    participant D as Disk
+    M->>M: Điều kiện save thỏa hoặc BGSAVE
+    M->>C: fork(), copy page table
+    Note over M: Main tiếp tục phục vụ client
+    C->>C: Duyệt dataset tại thời điểm fork
+    C->>D: Ghi file RDB tạm
+    M->>M: Client ghi: page bị sửa được copy, copy-on-write
+    C->>D: fsync, rename thành dump.rdb
+    C-->>M: Kết thúc, báo thành công
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Main process gọi `fork()`. Process con có góc nhìn **đóng băng** của memory tại thời điểm fork.
+2. Main process tiếp tục phục vụ client ngay.
+3. Process con duyệt dataset và ghi file RDB — không ảnh hưởng tới main thread.
+4. Khi client ghi dữ liệu, OS copy page bị sửa (copy-on-write) để process con vẫn thấy dữ liệu cũ. Workload ghi nhiều → nhiều page bị copy → memory tăng.
+5. File mới được ghi xong và rename thay file cũ một cách nguyên tử.
 
-Redis timeout/down tạo cache miss storm hoặc mất coordination. Circuit-break nhanh, dùng stale/bounded fallback, rate-limit source of truth và warm cache dần; không retry mọi command đồng loạt.
+Cấu hình điển hình: `save 3600 1 300 100 60 10000` — snapshot nếu có ít nhất 1 thay đổi trong 3600 giây, hoặc 100 thay đổi trong 300 giây, hoặc 10.000 thay đổi trong 60 giây.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+| Ưu điểm | Nhược điểm |
+|---|---|
+| File gọn, khôi phục rất nhanh | Mất dữ liệu từ lần snapshot cuối (có thể vài phút) |
+| Tốt cho backup, chuyển dữ liệu | Fork với dataset lớn gây latency spike |
+| Không ảnh hưởng tới đường ghi thường | Copy-on-write có thể gần gấp đôi memory |
 
-## 17. How I would debug this in production
+## 5. AOF: nhật ký command
 
-1. Xem command p99/slowlog và client timeout.
-2. Đo memory/RSS/fragmentation/eviction/expired.
-3. Tìm hot/big key và O(N) command.
-4. Kiểm replication lag/failover/topology refresh.
-5. Circuit-break, bảo vệ source và verify warm-up.
+Mỗi command ghi được thêm vào AOF buffer, rồi ghi xuống file. Khi khởi động, Redis **phát lại** AOF để dựng lại dataset.
 
-## 18. Common Misconceptions
+### Chính sách fsync
 
-**Sai:** Redis ở RAM nên mọi command đều nhanh và có thể làm primary store mặc định. **Đúng:** complexity/big key/main execution path và durability model vẫn quan trọng.
+| `appendfsync` | Khi nào `fsync` | Mất tối đa khi crash máy |
+|---|---|---|
+| `always` | Sau mỗi lần ghi | Gần như không mất; throughput ghi giảm mạnh |
+| `everysec` (mặc định) | Mỗi giây (thread nền) | Khoảng 1 giây dữ liệu |
+| `no` | Để OS quyết định | Có thể vài chục giây |
 
-## 19. When NOT to use
+Với `everysec`, nếu `fsync` của giây trước chưa xong (disk chậm), Redis có thể trì hoãn ghi của main thread tối đa khoảng 2 giây để không vượt cam kết — xuất hiện dưới dạng latency spike khi disk chậm.
 
-Không thêm cache nếu query đã nhanh, traffic thấp hoặc invalidation cost vượt lợi ích; không dùng lock Redis thay DB invariant.
+### AOF rewrite
 
-## 20. What interviewer may ask next
+AOF tăng mãi (1 triệu `INCR` trên một key = 1 triệu dòng). **Rewrite** tạo AOF mới gọn nhất tương đương dataset hiện tại, cũng bằng **fork** như RDB.
 
-1. **What guarantee does Persistence provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+> **Ghi chú version:** Từ Redis 7.0, AOF là **multi-part**: một file base (có thể ở định dạng RDB) cộng các file incremental, quản lý qua manifest. Rewrite không còn cần giữ buffer lớn trong memory như trước. Thiết lập `aof-use-rdb-preamble` (mặc định bật) cho phép phần base ở dạng RDB — khôi phục nhanh như RDB, độ bền như AOF.
 
-## 21. Check Your Understanding
+## 6. Kết hợp RDB và AOF
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Persistence** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+| Cấu hình | Phù hợp |
+|---|---|
+| Không persistence | Cache thuần có thể dựng lại hoàn toàn, chấp nhận cache lạnh sau restart |
+| Chỉ RDB | Cache muốn khởi động ấm; dữ liệu chấp nhận mất vài phút |
+| AOF `everysec` (+ RDB preamble) | Broker, session, queue: mất tối đa khoảng 1 giây |
+| AOF `always` | Hiếm khi dùng; nếu cần độ bền mức này, cân nhắc database thật |
 
-<details>
-<summary>Answer</summary>
+Replication **không thay thế** persistence: nếu master restart không persistence và nhanh chóng khởi động lại rỗng, replica sẽ đồng bộ theo master và **xóa sạch dữ liệu của chính nó**. Tắt persistence trên master chỉ an toàn khi master không tự khởi động lại (hoặc có cấu hình phù hợp với Sentinel).
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+## 7. Bên trong hệ thống xảy ra gì khi fork trên instance lớn?
 
-</details>
+| Thành phần chi phí | Tỷ lệ với | Hệ quả |
+|---|---|---|
+| Lời gọi `fork()` | Kích thước memory (copy page table) | Main thread dừng: vài chục ms cho vài GB, lâu hơn với hàng chục GB |
+| Copy-on-write | Tỷ lệ page bị ghi trong lúc con chạy | Memory tăng; ghi nhiều → gần gấp đôi |
+| I/O ghi file | Kích thước dataset | Cạnh tranh I/O với AOF fsync |
 
-## 22. See also
+Transparent Huge Pages (THP) làm mỗi lần copy-on-write copy 2 MB thay vì 4 KB → memory tăng và latency tệ hơn nhiều; Redis khuyến cáo tắt THP.
+
+## 8. Hành vi trong production
+
+- **OOM khi lưu snapshot**: instance 12 GB dữ liệu trên máy 16 GB, workload ghi nhiều → fork + copy-on-write vượt RAM → OOM killer giết Redis. Đặt `maxmemory` chừa khoảng trống (thường 25–50% tùy mức ghi) cho fork.
+- **Latency spike định kỳ**: trùng với lịch RDB hoặc AOF rewrite; `latest_fork_usec` trong `INFO` cho biết thời gian fork.
+- **Disk chậm** (disk mạng, burst credit cạn trên cloud) làm AOF fsync chậm → Redis trì hoãn ghi.
+- **Khởi động chậm**: phát lại AOF lớn có thể mất nhiều phút; RDB preamble giảm đáng kể.
+- **`rdb_last_bgsave_status:err`**: snapshot thất bại (disk đầy, quyền); với `stop-writes-on-bgsave-error yes` (mặc định), Redis **từ chối ghi** sau khi snapshot lỗi — một cơ chế an toàn thường gây ngạc nhiên.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| OOM kill | Copy-on-write khi fork vượt RAM | Redis restart, log kernel OOM |
+| Latency spike định kỳ | Fork của RDB/AOF rewrite | Spike trùng lịch save |
+| Từ chối ghi | Snapshot lỗi + `stop-writes-on-bgsave-error` | Lỗi `MISCONF` |
+| Mất dữ liệu sau restart | Không persistence hoặc RDB thưa | Queue/session trống |
+| Replica bị xóa sạch | Master restart rỗng không persistence | Dữ liệu biến mất khỏi cả replica |
+| Khởi động lâu | AOF lớn không có RDB preamble | Service phụ thuộc Redis chờ lâu |
+
+## 10. Trade-offs
+
+| Lựa chọn | Độ bền | Hiệu năng | Khôi phục |
+|---|---|---|---|
+| Không persistence | Không | Tốt nhất | Rỗng |
+| RDB | Mất tới lần snapshot cuối | Tốt; spike khi fork | Nhanh |
+| AOF everysec | Mất khoảng 1 giây | Tốt; phụ thuộc disk | Chậm hơn (nhanh hơn với preamble) |
+| AOF always | Gần như không mất | Kém | Chậm hơn |
+
+## 11. Sai lầm thường gặp
+
+- Coi Redis có AOF là database bền vững như PostgreSQL cho dữ liệu nghiệp vụ quan trọng.
+- Đặt `maxmemory` gần bằng RAM khi bật persistence.
+- Tắt persistence trên master có Sentinel tự restart.
+- Bỏ qua cảnh báo `MISCONF` và tắt `stop-writes-on-bgsave-error` mà không sửa nguyên nhân.
+- Không tắt THP.
+
+## 12. Cách debug
+
+```bash
+redis-cli INFO persistence
+# rdb_last_bgsave_status, rdb_last_save_time, aof_enabled, aof_last_write_status,
+# aof_rewrite_in_progress, aof_last_bgrewrite_status, latest_fork_usec
+redis-cli INFO memory | grep -E 'used_memory_human|used_memory_rss_human'
+redis-cli CONFIG GET save
+redis-cli CONFIG GET appendfsync
+cat /sys/kernel/mm/transparent_hugepage/enabled
+```
+
+## 13. Best Practices
+
+- Chọn persistence theo vai trò và mức mất dữ liệu chấp nhận được; tách instance nếu vai trò khác nhau.
+- AOF `everysec` với RDB preamble cho broker/session/queue.
+- Chừa memory cho fork; tắt THP; không để Redis swap.
+- Giám sát trạng thái save/rewrite, thời gian fork, trạng thái ghi AOF.
+- Backup RDB ra nơi khác; persistence không phải backup.
+- Dữ liệu nghiệp vụ cần độ bền cao lưu ở database thật; Redis giữ bản dẫn xuất hoặc tạm thời.
+
+## 14. Tóm tắt
+
+- RDB chụp snapshot bằng fork + copy-on-write: gọn, khôi phục nhanh, mất dữ liệu từ snapshot cuối.
+- AOF ghi nhật ký command; `everysec` mất tối đa khoảng 1 giây; rewrite định kỳ cũng dùng fork.
+- Fork gây dừng ngắn tỷ lệ với memory và có thể gần gấp đôi memory khi ghi nhiều.
+- Replication không thay thế persistence; master restart rỗng có thể xóa sạch replica.
+- Persistence phải khớp vai trò của Redis; dữ liệu nghiệp vụ quan trọng thuộc về database.
+
+## Liên quan
 
 - [Redis Internals](redis-internals.md)
-- [Cache Patterns](cache-patterns.md)
-- [Redis Outage](../20-senior-scenarios/redis-down.md)
-- [Distributed Lock](../10-distributed-systems/distributed-lock.md)
+- [Sentinel và Cluster](sentinel-cluster.md)
+- [TTL, Expiration và Eviction](ttl.md)
+- [Failure Scenarios của Redis](failure-scenarios.md)

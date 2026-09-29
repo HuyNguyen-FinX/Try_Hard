@@ -1,211 +1,195 @@
-# Error Handling
+# Error Handling trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Error handling trong một API không chỉ là "bắt exception". Nó là việc **chuyển mọi loại lỗi** — lỗi input, lỗi nghiệp vụ, lỗi hạ tầng, timeout, bug — thành một **contract lỗi ổn định** cho client, đồng thời giữ đủ thông tin để debug mà không rò rỉ chi tiết nội bộ.
 
-Error handling chuyển domain/infrastructure failure thành stable API error contract mà không rò stack trace/secret.
+Một hệ thống error handling tốt trả lời được cho mỗi lỗi:
 
-## 2. Why does it matter?
+- Client nhận **status code** gì và **body** gì?
+- Client có nên **retry** không?
+- Lỗi được **log** ở đâu, một lần hay nhiều lần?
+- Có **correlation ID** để nối response lỗi với log và trace không?
 
-Senior Engineer cần hiểu **Error Handling** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Mỗi tầng chỉ xử lý lỗi mà nó **hiểu được ý nghĩa**. Repository biết "không tìm thấy row", service biết "claim đã được duyệt, không thể sửa", tầng HTTP biết "điều đó nghĩa là 409". Lỗi đi lên qua các tầng dưới dạng exception có kiểu, và được dịch sang HTTP đúng một lần ở biên.
 
-Exception handler map typed exception → status/code/retryable/correlation ID; cancellation/timeout không bị nuốt; log một lần tại ownership boundary và preserve cause.
+## 3. Vì sao cần thiết kế error handling?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
+- Client (frontend, service khác, đối tác) cần phân biệt lỗi do họ (4xx, sửa request) và lỗi do server (5xx, có thể retry).
+- Retry của client phụ thuộc vào việc lỗi có retryable không. Retry lỗi 400 là lãng phí; không retry lỗi 503 là mất cơ hội phục hồi.
+- Stack trace, câu SQL, tên bảng trong response là rò rỉ thông tin bảo mật.
+- Log lỗi ở mọi tầng tạo ra năm dòng log cho một lỗi, làm nhiễu alert.
 
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Error Handling**.
-
-## 5. Production Use Case
-
-Duplicate claim trả stable conflict/idempotent response; provider timeout trả 503 có retry hint, metric và trace thay vì generic 500.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Error Handling | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Error Handling, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Error Handling.
-- **B3.** Which guarantees does Error Handling provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Error Handling?
-- **B5.** What is the most common misconception about Error Handling?
-- **B6.** How would you test assumptions involving Error Handling?
-- **B7.** Which edge cases or failure modes matter most for Error Handling?
-- **B8.** How can Error Handling affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Error Handling?
-- **B10.** When is a different or simpler approach better than relying on Error Handling?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Error Handling triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Error Handling is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Error Handling. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Error Handling fails first?
-- **S5.** A canary changes the behavior of Error Handling; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Error Handling constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Error Handling meets concurrency or partial failure?
-- **L3.** What breaks first around Error Handling at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Error Handling?
-- **L5.** How would you benchmark or validate Error Handling without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Error Handling introduce?
-- **L7.** How would you change a poor decision around Error Handling with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Error Handling?
-- **L10.** How would you turn an incident involving Error Handling into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Error handling chuyển domain/infrastructure failure thành stable API error contract mà không rò stack trace/secret. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Error Handling.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Error Handling như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Error Handling khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Error Handling**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Error Handling** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. Cơ chế hoạt động trong FastAPI
 
 ```mermaid
-flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Error Handling"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+flowchart TD
+    EP["Endpoint, dependency, service raise exception"] --> EM{"ExceptionMiddleware:<br/>có handler cho loại exception này?"}
+    EM -->|"HTTPException"| H1["Handler mặc định: status và detail"]
+    EM -->|"RequestValidationError"| H2["Handler mặc định: 422 và danh sách lỗi"]
+    EM -->|"Exception tùy biến đã đăng ký"| H3["Handler của bạn: map sang contract lỗi"]
+    EM -->|"không có handler"| UM["Đi xuyên qua middleware của bạn"]
+    UM --> SE["ServerErrorMiddleware: 500, log traceback"]
+    H1 --> Out["Response đi ra qua middleware"]
+    H2 --> Out
+    H3 --> Out
+    SE --> Out2["Response 500"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Exception được raise ở bất kỳ đâu trong endpoint/dependency đi lên tới `ExceptionMiddleware`.
+2. Handler được tìm theo **MRO của loại exception**: handler cho class cha bắt cả exception con. Nhờ đó một handler cho `DomainError` bao được mọi lỗi nghiệp vụ.
+3. `HTTPException` và `RequestValidationError` có handler mặc định.
+4. Exception không có handler đi xuyên qua middleware của bạn tới `ServerErrorMiddleware` ở ngoài cùng, thành 500. Handler cho `Exception` (class gốc) được Starlette gắn vào `ServerErrorMiddleware`, nên nó chạy ở ngoài cùng.
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+## 5. Phân loại lỗi và mapping
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+| Loại lỗi | Ví dụ | Status | Retryable |
+|---|---|---|---|
+| Input sai định dạng | Thiếu field, kiểu sai | 400 / 422 | Không |
+| Chưa xác thực | Token thiếu/hết hạn | 401 | Không (lấy token mới) |
+| Không đủ quyền | Sai role, sai tenant | 403 (hoặc 404 để không lộ tồn tại) | Không |
+| Không tìm thấy | Claim không tồn tại | 404 | Không |
+| Xung đột trạng thái | Sửa claim đã duyệt, version cũ | 409 | Không (đọc lại rồi quyết định) |
+| Vi phạm quy tắc nghiệp vụ | Vượt hạn mức bảo hành | 422 | Không |
+| Quá tải phía client | Vượt rate limit | 429 + `Retry-After` | Có, sau thời gian chỉ định |
+| Dependency tạm thời lỗi | DB failover, service ngoài 503 | 503 + `Retry-After` | Có |
+| Timeout dependency | Service ngoài không trả lời | 504 (gateway) hoặc 503 | Có nếu thao tác idempotent |
+| Bug | `KeyError`, `AttributeError` | 500 | Không chắc; thường không |
 
-## 17. How I would debug this in production
+Retry thao tác **ghi** sau timeout chỉ an toàn khi có [idempotency key](../08-api-design/idempotency.md).
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+## 6. Ví dụ: exception nghiệp vụ và contract lỗi
 
-## 18. Common Misconceptions
+```python
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+class DomainError(Exception):
+    status_code = 400
+    code = "domain_error"
+    retryable = False
 
-## 19. When NOT to use
+    def __init__(self, message: str, **details):
+        super().__init__(message)
+        self.details = details
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+class ClaimAlreadyApproved(DomainError):
+    status_code = 409
+    code = "claim_already_approved"
 
-## 20. What interviewer may ask next
+class DependencyUnavailable(DomainError):
+    status_code = 503
+    code = "dependency_unavailable"
+    retryable = True
 
-1. **What guarantee does Error Handling provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+def problem(request: Request, status: int, code: str, title: str, retryable: bool, **extra):
+    return JSONResponse(
+        status_code=status,
+        media_type="application/problem+json",
+        content={
+            "type": f"https://errors.example.com/{code}",
+            "title": title,
+            "status": status,
+            "code": code,
+            "retryable": retryable,
+            "request_id": request_id_var.get(),
+            **extra,
+        },
+        headers={"Retry-After": "5"} if retryable else None,
+    )
 
-## 21. Check Your Understanding
+def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def domain_error_handler(request: Request, exc: DomainError):
+        return problem(request, exc.status_code, exc.code, str(exc), exc.retryable, **exc.details)
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Error Handling** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+    @app.exception_handler(Exception)
+    async def unhandled_handler(request: Request, exc: Exception):
+        logger.exception("unhandled error")          # log MỘT lần, kèm traceback
+        return problem(request, 500, "internal_error", "Internal server error", False)
+```
 
-<details>
-<summary>Answer</summary>
+- Service raise `ClaimAlreadyApproved` — không biết gì về HTTP.
+- Handler dịch sang HTTP ở biên, theo định dạng Problem Details (RFC 9457, trước đó là RFC 7807).
+- Response lỗi có `request_id` để client báo lỗi và đội vận hành tìm log.
+- Lỗi không lường trước trả thông điệp chung chung, chi tiết nằm trong log.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+## 7. Timeout, cancellation và lỗi hạ tầng
 
-</details>
+- **Timeout của dependency**: bắt `httpx.TimeoutException`, `asyncio.TimeoutError`, lỗi timeout của driver ở tầng adapter, chuyển thành `DependencyUnavailable` (hoặc lỗi riêng) để handler trả 503/504. Không để chúng thành 500 chung chung — 500 không nói cho client biết có nên retry.
+- **`CancelledError`**: không bao giờ bắt để biến thành response. Cancellation nghĩa là không còn ai chờ response (client ngắt, timeout ở tầng ngoài). Để nó lan ra. Xem [Coroutine, Task và Future](../02-python-concurrency/coroutine-task-future.md#7-cancellation-hoạt-động-thế-nào).
+- **Lỗi database**: `IntegrityError` do unique constraint thường là xung đột nghiệp vụ (409), không phải 500. Map tường minh những constraint có ý nghĩa nghiệp vụ; phần còn lại là 500.
+- **Lỗi serialization/deadlock** của PostgreSQL (`40001`, `40P01`): nên retry toàn bộ transaction ở tầng service trước khi báo lỗi. Xem [Deadlock](../04-database-postgresql/deadlock.md).
 
-## 22. See also
+## 8. Hành vi trong production
+
+- **Log một lần tại biên sở hữu.** Tầng dưới không log rồi re-raise; handler cuối cùng log với đủ context. Ngoại lệ: tầng dưới có thông tin mà tầng trên không có — gắn vào exception (`raise ... from exc`, thêm attribute) thay vì log riêng.
+- **Giữ nguyên nhân gốc**: `raise DependencyUnavailable("pricing") from exc` giữ `__cause__` để traceback đầy đủ.
+- **4xx không phải lỗi của server**: không alert trên 4xx như alert trên 5xx; nhưng theo dõi tỷ lệ 4xx bất thường (client deploy lỗi, tấn công).
+- **Error tracker (Sentry)**: lọc dữ liệu nhạy cảm; gom nhóm theo loại exception; đừng gửi 4xx dự kiến.
+- **Exception trong middleware hoặc sau khi response bắt đầu gửi** không thể biến thành response lỗi có cấu trúc nữa — chỉ còn log.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Rò rỉ chi tiết nội bộ | Trả `str(exc)` của lỗi hạ tầng | Response chứa SQL, đường dẫn, tên host |
+| Retry storm | Lỗi tạm thời trả 500 thay vì 503, client retry mọi 5xx không kiểm soát | Tải tăng khi dependency lỗi |
+| Client không retry khi nên | Lỗi tạm thời trả 400 | Tỷ lệ thất bại cao khi failover |
+| Log nhiễu | Log ở mọi tầng | Một lỗi tạo nhiều dòng log, alert trùng |
+| Timeout bị vô hiệu | Bắt `BaseException`/`CancelledError` | Request treo quá deadline |
+| Constraint thành 500 | Không map `IntegrityError` | Duplicate request trả 500 thay vì 409 |
+
+## 10. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| `HTTPException` rải trong service | Nhanh | Service phụ thuộc HTTP, khó tái sử dụng cho worker/CLI |
+| Domain exception + handler ở biên | Tách biệt, nhất quán | Thêm class và mapping |
+| Problem Details chuẩn | Client hiểu định dạng chung | Cần thống nhất giữa các team |
+| Trả 404 thay 403 cho tài nguyên không thuộc tenant | Không lộ sự tồn tại | Debug khó hơn một chút |
+
+## 11. Sai lầm thường gặp
+
+- Raise `HTTPException` từ sâu trong tầng nghiệp vụ.
+- `except Exception: return {"error": str(e)}` với status 200.
+- Mọi lỗi đều là 500.
+- Không có request ID trong response lỗi.
+- Bắt exception, log, rồi raise lại ở từng tầng.
+- Dùng exception cho luồng điều khiển bình thường ở hot path.
+
+## 12. Cách debug
+
+- Từ `request_id` trong response lỗi, tìm log và trace tương ứng.
+- Metric lỗi theo route, status, và `code` nghiệp vụ.
+- Kiểm tra `exc.__cause__`/`__context__` để tìm nguyên nhân gốc bị bọc.
+- Test contract lỗi: mỗi loại exception nghiệp vụ có test kiểm tra status, code, retryable.
+
+## 13. Best Practices
+
+- Định nghĩa hệ thống exception nghiệp vụ có kiểu; dịch sang HTTP ở một nơi.
+- Dùng định dạng lỗi thống nhất (Problem Details) với `code` ổn định cho máy đọc.
+- Phân biệt rõ retryable và không retryable; dùng 503/429 kèm `Retry-After` cho lỗi tạm thời.
+- Log một lần, ở biên, với request ID và nguyên nhân gốc.
+- Không để lộ chi tiết nội bộ trong response.
+- Để `CancelledError` lan; map timeout của dependency thành lỗi có nghĩa.
+
+## 14. Tóm tắt
+
+- FastAPI tìm handler theo MRO của exception; exception không có handler thành 500 ở tầng ngoài cùng.
+- Lỗi nên đi lên dưới dạng exception nghiệp vụ có kiểu và được dịch sang HTTP ở biên.
+- Contract lỗi cần status đúng, `code` ổn định, cờ retryable và request ID.
+- Timeout và lỗi tạm thời phải được phân biệt với bug để client retry đúng.
+- Log một lần tại biên, giữ nguyên nhân gốc, không rò rỉ chi tiết nội bộ.
+
+## Liên quan
 
 - [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- [Middleware](middleware.md)
+- [Retry và Timeout trong API](../08-api-design/retry-timeout.md)
+- [Idempotency trong API](../08-api-design/idempotency.md)
+- [Metrics, Logging và Tracing](../17-performance-reliability/metrics-logging-tracing.md)

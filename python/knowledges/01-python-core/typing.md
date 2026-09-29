@@ -1,211 +1,242 @@
-# Typing
+# Typing trong Python
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Type hint (`def get(user_id: int) -> User | None`) là **annotation**: metadata gắn vào function, class, biến. Bản thân CPython **không kiểm tra** type hint khi chạy — truyền `"abc"` vào tham số `int` vẫn chạy bình thường cho đến khi code bên trong gặp lỗi.
 
-Typing là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+Type hint có hai "người đọc" hoàn toàn khác nhau:
 
-## 2. Why does it matter?
+1. **Static type checker** (mypy, pyright, Pyrefly, ty...) đọc source code trước khi chạy, phát hiện lỗi kiểu trong CI hoặc trong editor.
+2. **Framework runtime** (Pydantic, FastAPI, dataclasses, SQLAlchemy 2.0, Typer) đọc annotation **lúc chạy** để sinh validator, serializer, dependency injection, OpenAPI schema, ánh xạ ORM.
 
-Senior Engineer cần hiểu **Typing** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Trong backend Python hiện đại, type hint không còn chỉ là tài liệu: với FastAPI, annotation **chính là** định nghĩa API.
 
-## 3. How does it work?
-
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Typing',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
-
-Ví dụ biến quyết định về **Typing** thành invariant và tín hiệu vận hành có thể kiểm chứng.
-
-## 5. Production Use Case
-
-Một shared library dùng Typing để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Typing | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Typing, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Typing.
-- **B3.** Which guarantees does Typing provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Typing?
-- **B5.** What is the most common misconception about Typing?
-- **B6.** How would you test assumptions involving Typing?
-- **B7.** Which edge cases or failure modes matter most for Typing?
-- **B8.** How can Typing affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Typing?
-- **B10.** When is a different or simpler approach better than relying on Typing?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Typing triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Typing is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Typing. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Typing fails first?
-- **S5.** A canary changes the behavior of Typing; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Typing constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Typing meets concurrency or partial failure?
-- **L3.** What breaks first around Typing at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Typing?
-- **L5.** How would you benchmark or validate Typing without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Typing introduce?
-- **L7.** How would you change a poor decision around Typing with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Typing?
-- **L10.** How would you turn an incident involving Typing into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Typing là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Typing.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Typing như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Typing khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Typing**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Typing** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 2. Mental Model
 
 ```mermaid
 flowchart LR
-            Source["Python source"] --> Runtime["Typing runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+    Src["Source có annotation"] --> TC["Type checker<br/>mypy, pyright"]
+    TC --> CI["Lỗi kiểu trong CI và editor<br/>không ảnh hưởng runtime"]
+    Src --> RT["Runtime: annotation lưu trong __annotations__"]
+    RT --> Pyd["Pydantic đọc annotation<br/>sinh validator bằng pydantic-core"]
+    RT --> FA["FastAPI đọc signature<br/>xác định path, query, body, dependency"]
+    Pyd --> Val["Validate dữ liệu thật tại boundary"]
+    FA --> Val
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Cùng một annotation đi theo hai nhánh độc lập.
+2. Nhánh static: type checker suy luận kiểu trên toàn bộ codebase, không chạy code. Nó chỉ tốt bằng mức độ annotation đầy đủ và trung thực.
+3. Nhánh runtime: annotation được lưu vào object; framework đọc chúng để sinh logic kiểm tra dữ liệu thật đến từ bên ngoài (HTTP body, env var, message queue).
+4. Static typing bảo vệ **bên trong** code (developer gọi sai hàm); runtime validation bảo vệ **boundary** (dữ liệu từ thế giới bên ngoài không đáng tin).
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+> Type hint là lời hứa. Type checker kiểm tra lời hứa giữa các phần code với nhau; Pydantic kiểm tra lời hứa với dữ liệu thật.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 3. Vì sao cần typing?
 
-## 17. How I would debug this in production
+- **Refactor an toàn** trong codebase lớn: đổi signature, type checker liệt kê mọi nơi gọi sai.
+- **Tài liệu luôn đúng**: annotation không lỗi thời như docstring vì CI kiểm tra nó.
+- **Phát hiện lỗi `None`**: `User | None` buộc caller xử lý trường hợp không tìm thấy.
+- **Contract của API**: FastAPI sinh validation và OpenAPI từ annotation; client được sinh từ OpenAPI.
+- **Editor hỗ trợ**: autocomplete, go-to-definition chính xác.
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+## 4. Cơ chế: annotation được lưu và đánh giá thế nào?
 
-## 18. Common Misconceptions
+```python
+def charge(amount: Decimal, currency: str = "VND") -> Receipt: ...
+charge.__annotations__
+# {'amount': Decimal, 'currency': str, 'return': Receipt}
+```
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+Thời điểm annotation được **đánh giá** thay đổi theo version:
 
-## 19. When NOT to use
+> **Ghi chú version:**
+> - Trước 3.14 (mặc định): annotation được đánh giá ngay khi `def`/`class` chạy. Tham chiếu tới class chưa định nghĩa (forward reference) phải viết dạng chuỗi `"Receipt"`.
+> - `from __future__ import annotations` (PEP 563): mọi annotation được lưu dưới dạng chuỗi, không đánh giá. Framework phải tự `eval` lại bằng `typing.get_type_hints()`.
+> - Python 3.14 (PEP 649/749): annotation được đánh giá **lười** — chỉ khi có người truy cập `__annotations__`. Forward reference hoạt động mà không cần chuỗi. Module `annotationlib` cho phép lấy annotation dưới dạng giá trị, chuỗi, hoặc forward reference.
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+Hệ quả thực tế: dùng `typing.get_type_hints(obj)` hoặc `annotationlib.get_annotations` (3.14+) thay vì đọc `__annotations__` trực tiếp khi viết code đọc annotation lúc runtime.
 
-## 20. What interviewer may ask next
+## 5. Các công cụ typing quan trọng cho backend
 
-1. **What guarantee does Typing provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+### Union, Optional, generic built-in
 
-## 21. Check Your Understanding
+```python
+def find(user_id: int) -> User | None: ...          # 3.10+, thay cho Optional[User]
+def batch(ids: list[int]) -> dict[int, User]: ...    # 3.9+, thay cho List, Dict
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Typing** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Generic: TypeVar và cú pháp mới
 
-<details>
-<summary>Answer</summary>
+```python
+# Cú pháp 3.12+ (PEP 695)
+def first[T](items: Sequence[T]) -> T | None:
+    return items[0] if items else None
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+class Repository[ModelT]:
+    def get(self, id: int) -> ModelT | None: ...
 
-</details>
+type UserId = int          # type alias 3.12+
+```
 
-## 22. See also
+Trước 3.12 dùng `T = TypeVar("T")` và `class Repository(Generic[ModelT])`.
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+### Protocol: structural typing
+
+```python
+from typing import Protocol
+
+class Cache(Protocol):
+    async def get(self, key: str) -> bytes | None: ...
+    async def set(self, key: str, value: bytes, ttl: int) -> None: ...
+
+async def cached_profile(cache: Cache, user_id: int) -> Profile: ...
+```
+
+Bất kỳ class nào có hai method đúng signature đều thỏa `Cache`, **không cần kế thừa**. Đây là cách biểu diễn "port" trong [Hexagonal Architecture](../09-software-architecture/hexagonal-architecture.md) mà không buộc adapter phụ thuộc vào module định nghĩa interface.
+
+### `Annotated`: gắn metadata cho framework
+
+```python
+from typing import Annotated
+from fastapi import Depends, Query
+
+async def list_orders(
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    db: Annotated[AsyncSession, Depends(get_db)] = ...,
+): ...
+```
+
+`Annotated[T, meta...]` với type checker vẫn là `T`; framework đọc phần metadata. FastAPI khuyến nghị cách viết này vì nó giữ signature Python bình thường và cho phép tái sử dụng alias: `DB = Annotated[AsyncSession, Depends(get_db)]`.
+
+### ParamSpec: typing decorator
+
+```python
+from typing import Callable, ParamSpec, TypeVar
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def timed(func: Callable[P, R]) -> Callable[P, R]: ...
+```
+
+Không có `ParamSpec`, decorator làm mất signature với type checker. Xem [Decorators](decorators.md).
+
+### Các công cụ khác
+
+| Công cụ | Dùng khi |
+|---|---|
+| `Literal["pending", "paid"]` | Giá trị cố định, ít hơn cả Enum |
+| `TypedDict` | Dict có cấu trúc cố định (JSON payload, kwargs) |
+| `Final` | Hằng số không được gán lại |
+| `NewType("OrderId", int)` | Phân biệt ID cùng kiểu cơ sở (không nhầm OrderId với UserId) |
+| `Self` (3.11+) | Method trả về instance của chính class (builder, fluent API) |
+| `TypeIs` (3.13+), `TypeGuard` | Hàm kiểm tra thu hẹp kiểu |
+| `@overload` | Kiểu trả về phụ thuộc vào argument |
+| `Never`/`NoReturn` | Hàm không bao giờ return |
+
+### Variance: vì sao nhận `Sequence` thay vì `list`
+
+`list[Dog]` không phải `list[Animal]` với type checker, vì `list` mutable: hàm nhận `list[Animal]` có thể `append(Cat())`, làm hỏng list của caller. `Sequence[Animal]` là read-only nên **covariant**: `Sequence[Dog]` được chấp nhận. Quy tắc thực hành: tham số nhận kiểu trừu tượng, read-only (`Sequence`, `Mapping`, `Iterable`); giá trị trả về dùng kiểu cụ thể.
+
+## 6. Bên trong hệ thống xảy ra gì khi FastAPI đọc annotation?
+
+```mermaid
+sequenceDiagram
+    participant App as Import module
+    participant FA as FastAPI router
+    participant Sig as inspect.signature
+    participant Pyd as Pydantic
+    participant Req as Request lúc chạy
+    App->>FA: @app.post đăng ký create_order
+    FA->>Sig: Đọc signature và type hint
+    Sig-->>FA: payload OrderIn, user phụ thuộc get_user, db phụ thuộc get_db
+    FA->>Pyd: Sinh validator cho OrderIn và serializer cho response_model
+    Pyd-->>FA: Schema core đã compile
+    FA->>FA: Lưu dependency graph và OpenAPI schema
+    Note over FA,Req: Mỗi request sau đó chỉ chạy validator đã compile
+    Req->>FA: POST /orders với JSON body
+    FA->>Pyd: Validate body theo OrderIn
+    Pyd-->>FA: OrderIn instance hoặc lỗi 422
+```
+
+Diễn giải:
+
+1. Phân tích annotation xảy ra **một lần** khi route được đăng ký (lúc import), không phải mỗi request.
+2. FastAPI dùng `inspect.signature` và type hint để phân loại từng tham số: path, query, header, body, dependency.
+3. Pydantic v2 compile schema thành validator viết bằng Rust (`pydantic-core`), nên validation mỗi request nhanh.
+4. Mỗi request chỉ chạy validator đã compile. Annotation sai hoặc decorator làm mất signature sẽ làm hỏng bước 2.
+
+Chi tiết ở [Validation với Pydantic](../03-fastapi/validation-pydantic.md) và [Request Lifecycle](../03-fastapi/request-lifecycle.md).
+
+## 7. Hành vi trong production
+
+- **Type hint không bảo vệ runtime.** Dữ liệu từ Redis, message queue, API bên ngoài có thể không đúng kiểu dù code được annotate đầy đủ. Validate tại boundary (Pydantic `model_validate`, `TypeAdapter`), sau đó tin vào type bên trong.
+- **`Any` lan truyền.** Một hàm trả `Any` (thường từ `json.loads`, thư viện không có type) làm mọi thứ dùng kết quả của nó thoát khỏi kiểm tra. Parse vào model có kiểu càng sớm càng tốt.
+- **`cast` là lời nói dối có chủ đích.** `cast(User, obj)` không kiểm tra gì; chỉ dùng khi bạn biết chắc hơn type checker.
+- **Chi phí runtime validation.** Validate model lồng nhau lớn ở mỗi request tốn CPU. Pydantic v2 nhanh hơn v1 nhiều lần, nhưng validate lại dữ liệu đã tin cậy (từ database của chính mình) có thể không cần thiết — `model_construct` bỏ qua validation khi dữ liệu đã chắc chắn đúng.
+- **Nâng version Python.** Thay đổi cách đánh giá annotation (PEP 563, PEP 649) có thể làm thư viện đọc annotation lúc runtime hành xử khác; kiểm tra khả năng tương thích của Pydantic, FastAPI, SQLAlchemy khi nâng version.
+
+## 8. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `NameError` khi import | Forward reference chưa định nghĩa, không dùng chuỗi (trước 3.14) | Lỗi lúc import module |
+| FastAPI hiểu sai tham số | Decorator mất signature, annotation sai | Tham số thành query thay vì body, lỗi 422 |
+| Lỗi runtime dù CI xanh | Dữ liệu ngoài không đúng type, `Any`/`cast` che giấu | `AttributeError`/`TypeError` trong production |
+| Type checker chậm / nhiều lỗi giả | Codebase lớn thiếu annotation, cấu hình không nhất quán | Team tắt kiểm tra |
+| Circular import vì typing | Import module chỉ để dùng trong annotation | `ImportError` vòng |
+
+Với circular import chỉ vì annotation, dùng `if TYPE_CHECKING:` để import chỉ khi type checker chạy.
+
+## 9. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Strict typing toàn bộ | Bắt nhiều lỗi nhất, refactor an toàn | Tốn công, khó với thư viện thiếu type |
+| Gradual typing | Áp dụng dần từ module quan trọng | Có vùng không được kiểm tra |
+| Runtime validation mọi nơi | An toàn tối đa | Tốn CPU, code dài |
+| Validate chỉ tại boundary | Hiệu quả, rõ trách nhiệm | Phải kỷ luật về nơi dữ liệu đi vào |
+| Protocol | Loose coupling, không cần kế thừa | Lỗi chỉ phát hiện bởi type checker, không phải runtime |
+| ABC | Kiểm tra lúc khởi tạo instance | Buộc kế thừa, coupling |
+
+## 10. Sai lầm thường gặp
+
+- Tin rằng type hint được kiểm tra khi chạy.
+- Dùng `dict[str, Any]` cho mọi payload thay vì model có cấu trúc.
+- Dùng `list` cho tham số khi chỉ cần đọc (nên `Sequence`/`Iterable`).
+- Rải `# type: ignore` và `cast` để làm CI xanh.
+- Chạy type checker ở chế độ khác nhau giữa editor và CI.
+- Quên rằng annotation trong FastAPI/Pydantic có hiệu lực runtime: đổi `int` thành `str` là đổi contract của API.
+
+## 11. Cách debug
+
+- `typing.get_type_hints(func, include_extras=True)` để xem annotation đã được giải quyết (kể cả `Annotated`).
+- `inspect.signature(func)` để xem thứ FastAPI nhìn thấy.
+- `reveal_type(expr)` trong code để type checker in kiểu suy luận được.
+- `app.openapi()` hoặc `/docs` để kiểm tra FastAPI hiểu tham số thế nào.
+- `pydantic.TypeAdapter(T).json_schema()` để xem schema Pydantic sinh ra.
+
+## 12. Best Practices
+
+- Annotate public API của module trước, sau đó mở rộng dần; bật chế độ strict theo từng package.
+- Validate dữ liệu ngoài bằng Pydantic tại boundary; bên trong dùng type tĩnh.
+- Dùng `Protocol` cho dependency có thể thay thế (cache, repository, client) để test dễ.
+- Dùng `Annotated` cho metadata của FastAPI; tạo alias cho dependency dùng lại nhiều.
+- Chạy type checker trong CI với cùng cấu hình như editor.
+- Ghi rõ version Python mục tiêu để type checker hiểu đúng cú pháp (PEP 695, `Self`, `TypeIs`).
+
+## 13. Tóm tắt
+
+- Type hint là annotation; CPython không kiểm tra chúng khi chạy.
+- Static type checker kiểm tra tính nhất quán bên trong code; Pydantic/FastAPI dùng annotation lúc runtime để validate dữ liệu tại boundary.
+- Thời điểm đánh giá annotation thay đổi: đánh giá ngay (trước 3.14), chuỗi (PEP 563), lười (3.14, PEP 649).
+- `Protocol`, generic, `Annotated`, `ParamSpec` là các công cụ quan trọng nhất trong backend.
+- Tham số nhận kiểu read-only trừu tượng; trả về kiểu cụ thể.
+
+## Liên quan
+
+- [Decorators](decorators.md)
+- [Validation với Pydantic](../03-fastapi/validation-pydantic.md)
+- [Dependency Injection trong FastAPI](../03-fastapi/dependency-injection.md)
+- [Hexagonal Architecture](../09-software-architecture/hexagonal-architecture.md)

@@ -1,207 +1,175 @@
-# Deadlock
+# Deadlock trong PostgreSQL
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Deadlock trong database xảy ra khi hai (hoặc nhiều) transaction **chờ lock của nhau theo vòng tròn**: T1 giữ lock A và chờ lock B, T2 giữ lock B và chờ lock A. Không transaction nào có thể tiếp tục.
 
-Deadlock là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness.
+Khác với deadlock trong process Python (không ai phát hiện, treo mãi — xem [Deadlock trong ứng dụng](../02-python-concurrency/deadlock.md)), PostgreSQL **tự phát hiện** deadlock và **hủy một transaction** để phá vòng:
 
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Deadlock** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Reason từ access pattern và invariant; kiểm tra planner estimate/actual, tuple/page/WAL, lock/snapshot và tác động vacuum/replication thay vì chỉ nhìn SQL text.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
+```text
+ERROR:  deadlock detected
+DETAIL: Process 12345 waits for ShareLock on transaction 900; blocked by process 12346.
+        Process 12346 waits for ShareLock on transaction 899; blocked by process 12345.
+SQLSTATE: 40P01
 ```
 
-Với **Deadlock**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+Transaction bị hủy phải được ứng dụng **retry**. Deadlock không làm hỏng dữ liệu, nhưng nếu không xử lý, nó biến thành lỗi 500 ngẫu nhiên dưới tải.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Warranty workload dùng Deadlock trên dữ liệu production-like; quyết định được kiểm chứng bằng EXPLAIN buffers, lock wait, WAL/IO và p99.
+> Deadlock là chu trình trong đồ thị "ai chờ ai". PostgreSQL định kỳ không kiểm tra đồ thị cho mọi lần chờ; nó chỉ kiểm tra khi một transaction đã chờ quá `deadlock_timeout`. Nếu tìm thấy chu trình, nó chọn một transaction trong chu trình để hủy.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+## 3. Vì sao cần hiểu?
 
-## 6. Common Problems
+- Deadlock thường xuất hiện ở mức tải cao và biến mất ở môi trường test.
+- Cách sửa hiếm khi là "thêm retry" đơn thuần; cần loại bỏ nguyên nhân bằng thứ tự khóa nhất quán.
+- Cần phân biệt deadlock (có lỗi rõ ràng sau khoảng 1 giây) với chờ lock dài (không có lỗi, chỉ chậm).
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+## 4. Cơ chế phát hiện
 
-## 7. Trade-offs
+1. Transaction T bắt đầu chờ một lock.
+2. Nếu sau `deadlock_timeout` (mặc định **1 giây**) T vẫn chờ, backend của T chạy thuật toán kiểm tra: duyệt đồ thị chờ từ T xem có quay lại T không.
+3. Nếu có chu trình, T (transaction đang kiểm tra) thường bị chọn làm nạn nhân: nhận lỗi `40P01`, transaction bị abort, mọi lock của nó được nhả.
+4. Transaction còn lại lấy được lock và tiếp tục.
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Deadlock | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+Kiểm tra deadlock tốn chi phí, nên PostgreSQL không kiểm tra ngay khi bắt đầu chờ (phần lớn lần chờ kết thúc tự nhiên trong vài ms). Hệ quả: mỗi deadlock làm transaction liên quan mất ít nhất khoảng `deadlock_timeout` trước khi được giải quyết.
 
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Deadlock, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Deadlock.
-- **B3.** Which guarantees does Deadlock provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Deadlock?
-- **B5.** What is the most common misconception about Deadlock?
-- **B6.** How would you test assumptions involving Deadlock?
-- **B7.** Which edge cases or failure modes matter most for Deadlock?
-- **B8.** How can Deadlock affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Deadlock?
-- **B10.** When is a different or simpler approach better than relying on Deadlock?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Deadlock triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Deadlock is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Deadlock. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Deadlock fails first?
-- **S5.** A canary changes the behavior of Deadlock; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Deadlock constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Deadlock meets concurrency or partial failure?
-- **L3.** What breaks first around Deadlock at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Deadlock?
-- **L5.** How would you benchmark or validate Deadlock without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Deadlock introduce?
-- **L7.** How would you change a poor decision around Deadlock with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Deadlock?
-- **L10.** How would you turn an incident involving Deadlock into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Deadlock là cơ chế của PostgreSQL liên quan storage, query execution hoặc transaction correctness. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Deadlock.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Deadlock như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Deadlock khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Deadlock**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Deadlock** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Reason đồng thời ở logical SQL, planner/executor tree, heap/index page, buffer/WAL và MVCC/lock. Một query nhanh đơn lẻ có thể chậm dưới concurrency vì pool, cache, I/O và lock wait.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Luồng xử lý: deadlock kinh điển
 
 ```mermaid
-flowchart LR
-            SQL --> Plan["Planner decision for Deadlock"]
-            Plan --> Executor
-            Executor --> Index[(Index pages)]
-            Executor --> Heap[(Heap pages)]
-            Executor --> Result
+sequenceDiagram
+    participant T1 as T1: chuyển hạn mức từ claim 1 sang claim 2
+    participant DB as PostgreSQL
+    participant T2 as T2: chuyển hạn mức từ claim 2 sang claim 1
+    T1->>DB: UPDATE claims SET ... WHERE id = 1
+    Note over T1,DB: T1 khóa row 1
+    T2->>DB: UPDATE claims SET ... WHERE id = 2
+    Note over T2,DB: T2 khóa row 2
+    T1->>DB: UPDATE claims SET ... WHERE id = 2
+    Note over T1: Chờ T2
+    T2->>DB: UPDATE claims SET ... WHERE id = 1
+    Note over T2: Chờ T1, chu trình hình thành
+    DB->>DB: Sau deadlock_timeout, phát hiện chu trình
+    DB-->>T2: ERROR deadlock detected 40P01, T2 bị hủy
+    DB-->>T1: Lấy được row 2, tiếp tục và COMMIT
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải: cả hai transaction đều đúng logic riêng; vấn đề là chúng khóa **cùng tập row theo thứ tự ngược nhau**. Sửa bằng cách luôn khóa theo thứ tự cố định (ví dụ theo `id` tăng dần):
 
-## 16. Failure Scenario
+```sql
+BEGIN;
+SELECT id FROM claims WHERE id IN (1, 2) ORDER BY id FOR UPDATE;
+UPDATE claims SET ... WHERE id = 1;
+UPDATE claims SET ... WHERE id = 2;
+COMMIT;
+```
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+## 6. Các nguồn deadlock phổ biến
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+### Batch update không có thứ tự
 
-## 17. How I would debug this in production
+```sql
+-- Hai job cùng cập nhật tập row chồng nhau, thứ tự quét khác nhau
+UPDATE claims SET status = 'expired' WHERE dealer_id = 5 AND created_at < ...;
+UPDATE claims SET priority = 1 WHERE vin = ANY($1);
+```
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+Thứ tự `UPDATE` khóa row phụ thuộc vào plan (seq scan theo thứ tự vật lý, index scan theo thứ tự index). Hai câu lệnh với plan khác nhau có thể khóa các row chung theo thứ tự khác nhau. Sửa: khóa trước bằng `SELECT ... ORDER BY id FOR UPDATE`, hoặc cập nhật theo batch nhỏ có sắp xếp.
 
-## 18. Common Misconceptions
+### Bảng cha và bảng con
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+T1 insert `claim_lines` (lấy `FOR KEY SHARE` trên `claims` row 1) rồi update `claims` row 1. T2 làm tương tự trên cùng claim. Cả hai giữ key-share lock trên row cha, cả hai muốn nâng lên lock cập nhật → chờ nhau. Sửa: khóa row cha trước (`SELECT ... FOR UPDATE` trên `claims`) rồi mới thao tác trên bảng con.
 
-## 19. When NOT to use
+### Upsert đồng thời trên unique index
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+Nhiều transaction `INSERT ... ON CONFLICT` với nhiều key theo thứ tự khác nhau có thể deadlock trên index unique. Sắp xếp key trước khi insert theo lô.
 
-## 20. What interviewer may ask next
+### Thứ tự thao tác khác nhau giữa các code path
 
-1. **What guarantee does Deadlock provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Code path A: cập nhật `orders` rồi `inventory`. Code path B: cập nhật `inventory` rồi `orders`. Dưới tải, chúng deadlock. Quy ước thứ tự thao tác trên các bảng trong toàn hệ thống.
 
-## 21. Check Your Understanding
+## 7. Xử lý ở ứng dụng
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Deadlock** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Deadlock (và serialization failure) là lỗi **có thể retry**: transaction bị hủy hoàn toàn, không để lại thay đổi nào. Retry **toàn bộ transaction** từ đầu, với backoff và jitter để hai transaction không va nhau lần nữa ở cùng thời điểm:
 
-<details>
-<summary>Answer</summary>
+```python
+RETRYABLE_SQLSTATES = {"40P01", "40001"}
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Xem ví dụ retry đầy đủ ở [Isolation Level](isolation-level.md#8-ví-dụ-retry-transaction-trong-python).
 
-</details>
+Retry là **lưới an toàn**, không phải cách sửa. Deadlock thường xuyên nghĩa là mỗi lần xảy ra tốn ~1 giây chờ + chi phí làm lại; dưới tải cao, nó làm giảm throughput và tăng p99 đáng kể.
 
-## 22. See also
+## 8. Deadlock hay chờ lock dài?
 
-- [Index](index.md)
-- [EXPLAIN ANALYZE](explain-analyze.md)
-- [MVCC](mvcc.md)
-- [Transactions](transaction.md)
+| | Deadlock | Chờ lock dài |
+|---|---|---|
+| Có chu trình | Có | Không — chỉ một chuỗi chờ |
+| PostgreSQL xử lý | Hủy một transaction sau `deadlock_timeout` | Không làm gì; chờ tới khi lock được nhả hoặc timeout |
+| Dấu hiệu | Lỗi `40P01` trong log | Query chậm, `wait_event_type = Lock`, không lỗi |
+| Nguyên nhân thường gặp | Thứ tự khóa không nhất quán | Transaction dài, idle in transaction, DDL |
+| Phòng ngừa | Thứ tự khóa nhất quán | Transaction ngắn, `lock_timeout`, `idle_in_transaction_session_timeout` |
+
+## 9. Hành vi trong production
+
+- Deadlock thường xuất hiện theo cụm khi tải tăng hoặc khi một job batch chạy đồng thời với traffic thường.
+- Job xử lý nền (Celery worker) cập nhật cùng dữ liệu với API là nguồn deadlock phổ biến vì hai code path được viết độc lập.
+- Log của PostgreSQL ghi đầy đủ câu lệnh của các transaction liên quan (`log_error_verbosity`) — thông tin quan trọng nhất để tìm thứ tự khóa sai.
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| 500 ngẫu nhiên | Deadlock không được retry | Lỗi `deadlock detected` trong log ứng dụng |
+| p99 tăng | Nhiều deadlock, mỗi lần chờ 1 giây | Spike latency trùng với lỗi `40P01` |
+| Retry storm | Retry không jitter, hai transaction va lại | Cùng cặp transaction deadlock lặp lại |
+| Tác dụng phụ lặp | Retry transaction có gọi API bên ngoài | Thông báo/thanh toán lặp |
+
+## 11. Trade-offs
+
+| Cách | Lợi ích | Chi phí |
+|---|---|---|
+| Thứ tự khóa nhất quán | Loại bỏ nguyên nhân | Phải kỷ luật trên toàn codebase |
+| Khóa trước tường minh (`FOR UPDATE` có `ORDER BY`) | Kiểm soát thứ tự | Khóa sớm hơn, lâu hơn |
+| Transaction nhỏ hơn | Ít row bị khóa cùng lúc | Phải thiết kế trạng thái trung gian |
+| Giảm `deadlock_timeout` | Phát hiện nhanh hơn | Nhiều lần kiểm tra hơn, tốn CPU |
+| Retry | Người dùng không thấy lỗi | Che giấu vấn đề nếu không theo dõi tần suất |
+
+## 12. Sai lầm thường gặp
+
+- Chỉ thêm retry và bỏ qua nguyên nhân.
+- Retry một câu lệnh thay vì cả transaction.
+- Batch update lớn không sắp xếp chạy đồng thời với traffic.
+- Nhầm chờ lock dài với deadlock và tìm lỗi `40P01` không tồn tại.
+
+## 13. Cách debug
+
+1. Tìm log PostgreSQL chứa `deadlock detected`: phần `DETAIL` liệt kê từng process, lock chờ, và câu lệnh.
+2. Xác định **các code path** sinh ra các câu lệnh đó.
+3. Vẽ thứ tự khóa của từng code path; tìm chỗ ngược nhau.
+4. Kiểm tra số deadlock theo thời gian: `SELECT datname, deadlocks FROM pg_stat_database;`.
+5. Bật `log_lock_waits = on` để thấy cả những lần chờ dài không phải deadlock.
+
+## 14. Best Practices
+
+- Quy ước thứ tự khóa toàn hệ thống (theo bảng và theo khóa chính tăng dần).
+- Khóa trước bằng `SELECT ... ORDER BY ... FOR UPDATE` khi transaction cập nhật nhiều row.
+- Giữ transaction ngắn, khóa ít row nhất có thể.
+- Batch lớn chia nhỏ, sắp xếp theo khóa.
+- Retry toàn bộ transaction cho `40P01` với giới hạn và jitter, và theo dõi tần suất như một metric.
+
+## 15. Tóm tắt
+
+- Deadlock là chu trình chờ lock; PostgreSQL phát hiện sau `deadlock_timeout` và hủy một transaction với `40P01`.
+- Nguyên nhân chính là các transaction khóa cùng tập tài nguyên theo thứ tự khác nhau.
+- Phòng ngừa bằng thứ tự khóa nhất quán, khóa trước có sắp xếp, transaction ngắn.
+- Retry toàn bộ transaction là lưới an toàn, không phải cách sửa gốc.
+- Phân biệt deadlock (có lỗi) với chờ lock dài (không lỗi, chỉ chậm).
+
+## Liên quan
+
+- [Locks](locks.md)
+- [Transaction](transaction.md)
+- [Isolation Level](isolation-level.md)
+- [Deadlock trong ứng dụng Python](../02-python-concurrency/deadlock.md)
+- [Database Deadlock (sự cố)](../20-production-incidents/database-deadlock.md)

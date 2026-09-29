@@ -1,211 +1,280 @@
-# Architecture
+# Kiến trúc FastAPI: ASGI, Uvicorn, Gunicorn và worker model
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+FastAPI không phải một web server. Nó là một **ASGI application framework** được ghép từ ba phần:
 
-FastAPI là ASGI framework ghép Starlette (HTTP/WebSocket), Pydantic (schema/validation) và dependency injection để tạo typed API.
+| Thành phần | Vai trò |
+|---|---|
+| **Starlette** | Tầng web: routing, request/response, middleware, WebSocket, background task, lifespan |
+| **Pydantic** | Parse và validate dữ liệu, serialize response, sinh JSON Schema |
+| **FastAPI** | Dependency injection, đọc type hint để gắn validation vào endpoint, sinh OpenAPI |
 
-## 2. Why does it matter?
+Để chạy, FastAPI cần một **ASGI server** — phổ biến nhất là **Uvicorn** — chịu trách nhiệm mở socket, nói giao thức HTTP, quản lý event loop. Để dùng nhiều core, cần nhiều **worker process**, do Uvicorn (`--workers`) hoặc **Gunicorn** quản lý.
 
-Senior Engineer cần hiểu **Architecture** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Hiểu ranh giới giữa các tầng này quyết định việc bạn cấu hình timeout ở đâu, capacity bị giới hạn ở đâu, và lỗi xuất phát từ tầng nào.
 
-## 3. How does it work?
-
-Uvicorn/ASGI server gọi application per connection/request; Starlette routing/middleware xử lý transport, FastAPI resolve dependency và validate/serialize. Worker process và event loop là capacity boundary khác nhau.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Architecture**.
-
-## 5. Production Use Case
-
-API chạy nhiều process/container sau load balancer; dependency tạo resource request-scoped, telemetry theo route và CPU job tách khỏi ASGI loop.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Architecture | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Architecture, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Architecture.
-- **B3.** Which guarantees does Architecture provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Architecture?
-- **B5.** What is the most common misconception about Architecture?
-- **B6.** How would you test assumptions involving Architecture?
-- **B7.** Which edge cases or failure modes matter most for Architecture?
-- **B8.** How can Architecture affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Architecture?
-- **B10.** When is a different or simpler approach better than relying on Architecture?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Architecture triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Architecture is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Architecture. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Architecture fails first?
-- **S5.** A canary changes the behavior of Architecture; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Architecture constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Architecture meets concurrency or partial failure?
-- **L3.** What breaks first around Architecture at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Architecture?
-- **L5.** How would you benchmark or validate Architecture without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Architecture introduce?
-- **L7.** How would you change a poor decision around Architecture with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Architecture?
-- **L10.** How would you turn an incident involving Architecture into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** FastAPI là ASGI framework ghép Starlette (HTTP/WebSocket), Pydantic (schema/validation) và dependency injection để tạo typed API. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Architecture.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Architecture như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Architecture khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Architecture**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Architecture** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 2. Mental Model
 
 ```mermaid
-flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Architecture"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+flowchart TB
+    subgraph Host["Pod / máy chủ"]
+        subgraph Manager["Process manager: Gunicorn master hoặc Uvicorn supervisor"]
+            direction LR
+            W1["Worker process 1"]
+            W2["Worker process 2"]
+        end
+    end
+    subgraph Inside["Bên trong một worker process"]
+        Loop["Event loop: uvloop hoặc asyncio"]
+        Proto["HTTP protocol: httptools hoặc h11"]
+        App["ASGI app: FastAPI trên Starlette"]
+        TP["Threadpool AnyIO: 40 token mặc định"]
+        Pool["Connection pool: DB, Redis, HTTP client"]
+        Loop --> Proto --> App
+        App --> TP
+        App --> Pool
+    end
+    W1 -.-> Inside
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Một pod chạy một **process manager** và nhiều **worker process**. Mỗi worker là một process Python độc lập với GIL riêng — đây là cách dùng nhiều core.
+2. Trong mỗi worker có đúng **một event loop** chạy trên main thread.
+3. Protocol HTTP (httptools/h11) parse byte từ socket thành sự kiện ASGI.
+4. ASGI app (FastAPI) xử lý request trên event loop.
+5. Endpoint và dependency khai báo `def` (sync) được đẩy sang **threadpool** của AnyIO để không block loop.
+6. Mỗi worker có **connection pool riêng** — không chia sẻ giữa các worker.
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+Ba ranh giới capacity khác nhau:
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- **Worker process** giới hạn CPU (mỗi worker tối đa một core cho Python code).
+- **Event loop** giới hạn số request async đồng thời gần như không giới hạn, nhưng chỉ khi không bị block.
+- **Threadpool** và **connection pool** giới hạn cứng số việc sync và số query đồng thời.
 
-## 17. How I would debug this in production
+## 3. Vì sao cần ASGI?
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+WSGI (PEP 3333, chuẩn của Flask/Django truyền thống) định nghĩa application là một function đồng bộ: nhận request, trả response. Một request chiếm một thread/process suốt vòng đời. Mô hình này không phù hợp với:
 
-## 18. Common Misconceptions
+- WebSocket, Server-Sent Events, long polling — kết nối sống lâu, hai chiều.
+- Hàng nghìn request đồng thời chủ yếu chờ I/O.
+- HTTP/2, streaming request/response.
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+**ASGI** (Asynchronous Server Gateway Interface) định nghĩa application là một **coroutine** giao tiếp với server bằng các sự kiện bất đồng bộ, hỗ trợ cả HTTP, WebSocket và sự kiện vòng đời (lifespan).
 
-## 19. When NOT to use
+## 4. Giao diện ASGI
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+Một ASGI application là một callable async:
 
-## 20. What interviewer may ask next
+```python
+async def app(scope: dict, receive, send) -> None:
+    ...
+```
 
-1. **What guarantee does Architecture provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+| Tham số | Nội dung |
+|---|---|
+| `scope` | Dict mô tả kết nối: `type` (`http`, `websocket`, `lifespan`), `method`, `path`, `query_string`, `headers` (list cặp bytes), `client`, `server`, `scheme`, `root_path`, `state` |
+| `receive` | Coroutine trả về sự kiện tiếp theo từ client: `http.request` (một phần body, cờ `more_body`), `http.disconnect`, `websocket.receive`... |
+| `send` | Coroutine gửi sự kiện tới client: `http.response.start` (status, headers), `http.response.body` (body, `more_body`), `websocket.send`... |
 
-## 21. Check Your Understanding
+Ví dụ ASGI "thô", không framework:
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Architecture** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+```python
+async def app(scope, receive, send):
+    if scope["type"] != "http":
+        return
+    body = b""
+    while True:
+        event = await receive()
+        body += event.get("body", b"")
+        if not event.get("more_body"):
+            break
+    await send({"type": "http.response.start", "status": 200,
+                "headers": [(b"content-type", b"text/plain")]})
+    await send({"type": "http.response.body", "body": b"ok"})
+```
 
-<details>
-<summary>Answer</summary>
+Mọi thứ FastAPI làm — routing, validation, DI — là các lớp bọc quanh giao diện này. Middleware ASGI cũng chỉ là một ASGI app bọc một ASGI app khác.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+### Lifespan
 
-</details>
+Khi worker khởi động, server gửi scope `type="lifespan"` với sự kiện `lifespan.startup`; khi tắt, gửi `lifespan.shutdown`. FastAPI biến giao thức này thành hàm `lifespan` dạng [async context manager](../01-python-core/context-manager.md) — nơi tạo và đóng connection pool, HTTP client, tải model.
 
-## 22. See also
+## 5. Uvicorn: ASGI server
+
+Uvicorn đảm nhận:
+
+- Mở socket, `listen` với backlog (mặc định 2048), `accept` kết nối.
+- Chạy event loop: `uvloop` nếu được cài (nhanh hơn), không thì `asyncio`.
+- Parse HTTP bằng `httptools` (binding C của parser của Node.js) hoặc `h11` (Python thuần).
+- Quản lý keep-alive (`--timeout-keep-alive`, mặc định 5 giây), giới hạn concurrency (`--limit-concurrency`), graceful shutdown (`--timeout-graceful-shutdown`).
+- Tạo scope và gọi ASGI app cho mỗi request trong một Task riêng.
+- Đọc header `X-Forwarded-*` khi `--proxy-headers` được bật và IP của proxy nằm trong `--forwarded-allow-ips`.
+
+## 6. Process model: Uvicorn workers và Gunicorn
+
+| Cách chạy | Mô tả | Khi phù hợp |
+|---|---|---|
+| `uvicorn app:app` | Một process, một event loop | Local, hoặc container 1 worker được orchestrator nhân bản |
+| `uvicorn app:app --workers 4` | Uvicorn tự fork và giám sát worker | Đơn giản, không cần thêm dependency |
+| `gunicorn app:app -k uvicorn_worker.UvicornWorker -w 4` | Gunicorn làm process manager, mỗi worker chạy Uvicorn | Cần tính năng của Gunicorn: `--max-requests`, worker timeout/heartbeat, hook `post_fork`, reload graceful |
+
+> **Ghi chú version:** Worker class `uvicorn.workers.UvicornWorker` trong gói uvicorn đã bị đánh dấu deprecated; dùng gói `uvicorn-worker` (`uvicorn_worker.UvicornWorker`). Tính năng quản lý process của Uvicorn cũng được cải thiện đáng kể ở các bản gần đây. Kiểm tra tài liệu của version đang dùng.
+
+### Một container một worker hay nhiều worker?
+
+Trên Kubernetes có hai trường phái:
+
+- **1 worker/pod, nhiều pod**: đơn giản, metric và memory rõ ràng theo pod, HPA điều khiển trực tiếp. Tốn overhead mỗi pod (sidecar, memory nền).
+- **N worker/pod**: tận dụng CPU của pod lớn, chia sẻ memory copy-on-write khi preload. Pod chết thì mất N worker.
+
+Cả hai đều hợp lệ. Điều quan trọng là **tổng số worker × pool size** không vượt giới hạn connection của database, và CPU limit của pod khớp với số worker.
+
+### Gunicorn worker timeout với async worker
+
+Gunicorn master theo dõi heartbeat của worker; worker không báo hiệu trong `--timeout` giây (mặc định 30) sẽ bị kill (`WORKER TIMEOUT`). Với UvicornWorker, heartbeat được gửi từ event loop. Nếu event loop bị block (CPU nặng, code sync) quá 30 giây, worker bị kill giữa chừng — mọi request đang xử lý trên worker đó bị mất. Đây là triệu chứng phổ biến của blocking code trong `async def`.
+
+## 7. Bên trong một worker: các vòng đời lồng nhau
+
+```mermaid
+sequenceDiagram
+    participant M as Process manager
+    participant W as Worker process
+    participant A as FastAPI app
+    participant R as Resources
+    M->>W: fork hoặc spawn worker
+    W->>W: import app module, đăng ký route, compile validator
+    W->>A: ASGI lifespan.startup
+    A->>R: Tạo DB engine, HTTP client, Redis pool
+    A-->>W: startup.complete, bắt đầu accept kết nối
+    loop Mỗi request
+        W->>A: Task mới: app(scope, receive, send)
+        A-->>W: response
+    end
+    M->>W: SIGTERM
+    W->>W: Ngừng accept, chờ request đang chạy
+    W->>A: ASGI lifespan.shutdown
+    A->>R: Đóng pool, flush telemetry
+    W-->>M: Thoát
+```
+
+Diễn giải:
+
+1. **Process lifetime**: worker được tạo; import module chạy mọi code module-level và decorator — đăng ký route, sinh schema Pydantic.
+2. **Application lifetime**: `lifespan` startup tạo tài nguyên dùng chung. Chỉ sau khi startup xong, worker mới nhận request.
+3. **Request lifetime**: mỗi request là một Task riêng trên event loop, với dependency, session, trace context riêng.
+4. **Shutdown**: nhận SIGTERM, worker ngừng nhận kết nối mới, chờ request đang chạy (tới graceful timeout), chạy lifespan shutdown, rồi thoát.
+
+Ba vòng đời này quyết định **scope của tài nguyên**: engine/pool/client sống theo application; session/transaction sống theo request; không có gì nên sống theo module import.
+
+## 8. Ví dụ: cấu trúc một ứng dụng
+
+```python
+from contextlib import asynccontextmanager
+from typing import Annotated
+from fastapi import Depends, FastAPI, Request
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    engine = create_async_engine(settings.database_url, pool_size=10, max_overflow=5)
+    app.state.sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    yield
+    await engine.dispose()
+
+app = FastAPI(lifespan=lifespan)
+
+async def get_session(request: Request):
+    async with request.app.state.sessionmaker() as session:
+        yield session
+
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+@app.get("/claims/{claim_id}")
+async def get_claim(claim_id: int, session: SessionDep):
+    return await ClaimService(session).get(claim_id)
+```
+
+- Engine (và pool bên trong) sống theo application, tạo trong lifespan.
+- Session sống theo request, tạo và đóng bởi dependency có `yield`.
+- Endpoint mỏng; logic nghiệp vụ nằm trong service. Xem [Layered Architecture](../09-software-architecture/layered-architecture.md).
+
+## 9. Hành vi trong production
+
+- **Tổng connection**: `pods × workers × (pool_size + max_overflow)`. 20 pod × 4 worker × 15 = 1.200 connection — vượt xa `max_connections` mặc định (100) của PostgreSQL. Thường cần PgBouncer hoặc pool nhỏ hơn. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
+- **Cache in-process nhân theo worker**: mỗi worker có bản cache riêng, hit ratio giảm khi số worker tăng, và invalidation chỉ tác động một worker.
+- **Keep-alive giữa load balancer và Uvicorn**: nếu idle timeout của Uvicorn (5 giây) **ngắn hơn** của load balancer (ALB mặc định 60 giây), LB có thể gửi request vào một kết nối mà Uvicorn vừa đóng → lỗi 502 ngẫu nhiên. Đặt keep-alive của server dài hơn idle timeout của LB.
+- **Proxy headers**: sau load balancer, `request.client.host` là IP của LB trừ khi cấu hình proxy headers đúng và chỉ tin IP của proxy.
+
+## 10. Khi scale lên thì chuyện gì xảy ra?
+
+| Tải | Điểm nghẽn xuất hiện | Hướng xử lý |
+|---|---|---|
+| 100 RPS | Hầu như không có | Một vài worker là đủ |
+| 1.000 RPS | CPU của worker (validation, serialization), DB pool | Thêm worker/pod theo CPU, tối ưu query |
+| 10.000 RPS | Tổng connection DB, dependency downstream, load balancer | PgBouncer, cache, read replica, rate limit |
+| 20.000+ RPS | Database write, hot key, network | Sharding/partition, queue cho write, thiết kế lại |
+
+Chi tiết theo từng bậc tải ở [FastAPI Performance](performance.md) và [High Traffic](../20-production-incidents/high-traffic.md).
+
+## 11. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `WORKER TIMEOUT` / worker bị kill | Event loop block quá timeout của Gunicorn | Log Gunicorn, request bị ngắt 502 |
+| 502 ngẫu nhiên sau LB | Keep-alive của server ngắn hơn idle timeout của LB | 502 rải rác, không tương quan tải |
+| Cạn connection DB | Số worker × pool vượt giới hạn DB | `too many connections`, pool timeout |
+| Worker khởi động chậm | Import nặng, lifespan chờ dependency không timeout | Readiness fail, rolling update chậm |
+| Mất request khi deploy | Không graceful shutdown, grace period ngắn | Lỗi tăng mỗi lần deploy |
+
+## 12. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Uvicorn `--workers` | Ít thành phần | Ít tính năng quản lý hơn Gunicorn |
+| Gunicorn + UvicornWorker | Heartbeat, max-requests, hook | Thêm một tầng, thêm cấu hình timeout |
+| 1 worker/pod | Rõ ràng, HPA trực tiếp | Overhead mỗi pod |
+| N worker/pod | Tận dụng pod lớn, chia sẻ memory | Blast radius lớn hơn, cần CPU limit khớp |
+| uvloop + httptools | Nhanh hơn | Dependency C, không có trên Windows |
+
+## 13. Sai lầm thường gặp
+
+- Coi FastAPI là web server và tìm cấu hình timeout/keep-alive trong FastAPI.
+- Tạo engine/client ở module level hoặc mỗi request thay vì trong lifespan.
+- Đặt số worker theo công thức mà không đối chiếu CPU limit và connection budget.
+- Chạy migration database trong lifespan startup của mọi worker.
+- Không cấu hình proxy headers, log IP của load balancer thay vì client.
+
+## 14. Cách debug trong production
+
+- Log khởi động của worker: thời gian import, thời gian lifespan startup.
+- `py-spy dump` trên từng worker PID khi một worker không phản hồi.
+- Metric theo worker: request in-flight, loop lag, threadpool đang dùng, pool DB checkout.
+- Log của Gunicorn master cho worker timeout/restart.
+- So sánh log 502 của LB với log truy cập của Uvicorn để phân biệt lỗi kết nối và lỗi ứng dụng.
+
+## 15. Best Practices
+
+- Hiểu và cấu hình từng tầng đúng chỗ: timeout kết nối ở server/LB, timeout nghiệp vụ trong code.
+- Tài nguyên dùng chung tạo trong lifespan; tài nguyên theo request tạo trong dependency có `yield`.
+- Tính connection budget toàn hệ thống trước khi chọn số worker và pool size.
+- Keep-alive của server dài hơn idle timeout của load balancer.
+- Bật graceful shutdown và đặt grace period của orchestrator lớn hơn thời gian request dài nhất hợp lệ.
+- Tách migration ra job riêng chạy trước deploy.
+
+## 16. Tóm tắt
+
+- FastAPI = Starlette (web) + Pydantic (dữ liệu) + DI và OpenAPI; chạy trên ASGI server như Uvicorn.
+- ASGI là giao diện `app(scope, receive, send)` dựa trên sự kiện async, hỗ trợ HTTP, WebSocket và lifespan.
+- Mỗi worker process có một event loop, một threadpool và các connection pool riêng.
+- Process manager (Uvicorn hoặc Gunicorn) tạo nhiều worker để dùng nhiều core.
+- Ba vòng đời lồng nhau: process, application (lifespan), request — quyết định scope của tài nguyên.
+
+## Liên quan
 
 - [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
+- [Sync vs Async Endpoint](sync-vs-async-endpoint.md)
+- [Production Best Practices](production-best-practices.md)
+- [AsyncIO](../02-python-concurrency/asyncio.md)
 - [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)

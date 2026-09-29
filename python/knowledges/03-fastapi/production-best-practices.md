@@ -1,211 +1,184 @@
-# Production Best Practices
+# Vận hành FastAPI trong production
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Một ứng dụng FastAPI chạy được trên laptop khác xa một service chạy ổn định dưới tải thật, qua hàng trăm lần deploy, với dependency thỉnh thoảng lỗi. Khoảng cách đó nằm ở các quyết định vận hành: cách chạy process, vòng đời tài nguyên, shutdown, health check, timeout ở từng tầng, cấu hình, logging, và bảo mật mặc định.
 
-Production FastAPI cần process lifecycle, contract, resource budget, security và operability nhất quán từ proxy đến dependency.
+Tài liệu này tổng hợp các quyết định đó và **lý do** đằng sau từng quyết định. Mỗi mục liên kết tới tài liệu chi tiết.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Production Best Practices** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> Production readiness là việc trả lời trước những câu hỏi mà sự cố sẽ hỏi: khi pod bị tắt thì request đang chạy ra sao? khi database chậm thì request chờ bao lâu? khi cấu hình sai thì service phát hiện lúc nào? khi có lỗi thì tìm log bằng cách nào?
 
-## 3. How does it work?
+## 3. Process và worker
 
-Pin/build immutable image, non-root, graceful shutdown; readiness khác liveness; deadline/size/concurrency limit; session per request; structured log/metrics/trace và safe migration.
+- Chọn mô hình: Uvicorn `--workers N` hoặc Gunicorn + `uvicorn_worker.UvicornWorker`. Xem [Kiến trúc FastAPI](architecture.md#6-process-model-uvicorn-workers-và-gunicorn).
+- Số worker khớp với CPU limit của container; không đặt 8 worker trong pod giới hạn 1 CPU.
+- Cài `uvicorn[standard]` để có uvloop và httptools.
+- Worker recycling (`--max-requests` với jitter trong Gunicorn) như lưới an toàn cho memory leak chậm từ thư viện; không thay cho việc sửa leak.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
+## 4. Vòng đời tài nguyên
 
-## 4. Example
+| Tài nguyên | Scope | Nơi tạo/đóng |
+|---|---|---|
+| DB engine / pool, Redis pool, HTTP client, SDK client | Application | `lifespan` |
+| DB session, transaction, request context | Request | Dependency có `yield` |
+| Config | Application | Load và validate lúc khởi động |
 
-```python
-from fastapi import Depends, FastAPI, HTTPException
+Không tạo client ở module level (khó kiểm soát, không đóng được, chia sẻ sai qua fork) và không tạo client mỗi request (mất connection pooling, tốn TLS handshake).
 
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
-
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Production Best Practices**.
-
-## 5. Production Use Case
-
-Kubernetes rollout chỉ promote khi SLO/loop lag/pool wait ổn; pod dừng nhận traffic rồi drain WebSocket/request trước SIGKILL.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Production Best Practices | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Production Best Practices, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Production Best Practices.
-- **B3.** Which guarantees does Production Best Practices provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Production Best Practices?
-- **B5.** What is the most common misconception about Production Best Practices?
-- **B6.** How would you test assumptions involving Production Best Practices?
-- **B7.** Which edge cases or failure modes matter most for Production Best Practices?
-- **B8.** How can Production Best Practices affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Production Best Practices?
-- **B10.** When is a different or simpler approach better than relying on Production Best Practices?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Production Best Practices triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Production Best Practices is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Production Best Practices. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Production Best Practices fails first?
-- **S5.** A canary changes the behavior of Production Best Practices; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Production Best Practices constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Production Best Practices meets concurrency or partial failure?
-- **L3.** What breaks first around Production Best Practices at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Production Best Practices?
-- **L5.** How would you benchmark or validate Production Best Practices without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Production Best Practices introduce?
-- **L7.** How would you change a poor decision around Production Best Practices with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Production Best Practices?
-- **L10.** How would you turn an incident involving Production Best Practices into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Production FastAPI cần process lifecycle, contract, resource budget, security và operability nhất quán từ proxy đến dependency. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Production Best Practices.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Production Best Practices như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Production Best Practices khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Production Best Practices**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Production Best Practices** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Khởi động và readiness
 
 ```mermaid
-flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Production Best Practices"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+sequenceDiagram
+    participant K as Kubernetes
+    participant P as Pod
+    participant A as App
+    participant D as Dependencies
+    K->>P: Tạo pod, start container
+    P->>A: Import, lifespan startup
+    A->>D: Tạo pool, kiểm tra kết nối có timeout
+    A-->>P: Sẵn sàng nhận request
+    K->>A: readinessProbe GET /health/ready
+    A-->>K: 200
+    K->>K: Thêm pod vào Service endpoints
+    loop Định kỳ
+        K->>A: livenessProbe GET /health/live
+        A-->>K: 200 nếu process còn phục vụ được
+    end
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Pod chỉ nhận traffic sau khi readiness trả 200.
+2. **Readiness** trả lời "có nên gửi traffic cho tôi không?" — có thể kiểm tra dependency thiết yếu (DB có kết nối được không) với timeout ngắn.
+3. **Liveness** trả lời "tôi có bị treo không cần restart không?" — chỉ kiểm tra chính process (event loop còn phản hồi). **Không** kiểm tra dependency: nếu DB chết, liveness fail sẽ làm Kubernetes restart mọi pod, không sửa được gì mà còn tạo restart storm.
+4. `startupProbe` cho ứng dụng khởi động chậm, tránh liveness giết pod trong lúc đang khởi động.
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+Xem [Health Check](../13-kubernetes/health-check.md).
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 6. Graceful shutdown
 
-## 17. How I would debug this in production
+```mermaid
+sequenceDiagram
+    participant K as Kubernetes
+    participant E as Endpoints controller
+    participant P as Pod
+    participant U as Uvicorn
+    K->>E: Pod Terminating, gỡ khỏi Service
+    K->>P: preStop hook, ví dụ sleep 5 đến 10 giây
+    Note over E,P: LB và kube-proxy cập nhật, ngừng gửi request mới
+    K->>U: SIGTERM
+    U->>U: Ngừng accept, chờ request đang chạy
+    U->>U: lifespan shutdown: đóng pool, flush telemetry
+    U-->>K: Thoát trước terminationGracePeriodSeconds
+    K->>P: SIGKILL nếu quá hạn
+```
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+Diễn giải:
 
-## 18. Common Misconceptions
+1. Việc gỡ pod khỏi Service và việc gửi SIGTERM xảy ra **song song**; LB có thể vẫn gửi request tới pod trong vài giây sau SIGTERM. `preStop` sleep ngắn cho các thành phần định tuyến kịp cập nhật.
+2. Uvicorn nhận SIGTERM, ngừng nhận kết nối mới, chờ request đang xử lý (tới `--timeout-graceful-shutdown`).
+3. Lifespan shutdown đóng pool, flush log/trace/metric.
+4. `terminationGracePeriodSeconds` phải lớn hơn preStop + thời gian request dài nhất + shutdown.
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+Thiếu bất kỳ bước nào → lỗi 502/503 tăng vọt mỗi lần deploy. Xem [Rolling Update](../13-kubernetes/rolling-update.md).
 
-## 19. When NOT to use
+## 7. Timeout ở từng tầng
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+Timeout phải **giảm dần** từ ngoài vào trong: tầng trong hết hạn trước để tầng ngoài còn thời gian trả lỗi có ý nghĩa.
 
-## 20. What interviewer may ask next
+| Tầng | Ví dụ | Ghi chú |
+|---|---|---|
+| Client / API Gateway | 30 s | Giới hạn trên |
+| Load balancer idle timeout | 60 s | Keep-alive của Uvicorn phải **dài hơn** giá trị này để tránh 502 |
+| Deadline nghiệp vụ của request | 10 s | Truyền xuống dưới dạng deadline |
+| Lời gọi service ngoài | 2 s connect + read | Mỗi lời gọi, nhỏ hơn deadline còn lại |
+| Pool checkout | 1–3 s | Fail nhanh thay vì chờ vô hạn |
+| Query DB (`statement_timeout`) | 2–5 s | Đặt ở role hoặc session |
+| Lock wait (`lock_timeout`) | 1–2 s | Tránh chờ lock vô hạn |
 
-1. **What guarantee does Production Best Practices provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+Xem [Timeout](../10-distributed-systems/timeout.md).
 
-## 21. Check Your Understanding
+## 8. Cấu hình
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Production Best Practices** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+- Dùng `pydantic-settings`: đọc biến môi trường, validate kiểu lúc khởi động. Cấu hình sai làm worker fail ngay khi start — phát hiện trong rollout thay vì lúc 3 giờ sáng.
+- Secret đọc từ secret manager hoặc Kubernetes Secret gắn vào env/file; không commit vào repo, không in ra log. Xem [Secrets Management](../16-security/secrets-management.md).
+- Cấu hình khác nhau giữa môi trường chỉ qua biến, không qua nhánh code.
 
-<details>
-<summary>Answer</summary>
+## 9. Logging, metrics, tracing
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+- **Log có cấu trúc (JSON)** với các field cố định: timestamp, level, request_id, trace_id, route, status, duration, tenant (đã ẩn danh nếu cần).
+- **Request ID** sinh ở middleware ngoài cùng (hoặc nhận từ header upstream), lưu trong `contextvars`, gắn vào mọi log và response header.
+- **Metrics** RED theo route (rate, errors, duration histogram), cùng saturation: loop lag, threadpool, pool DB, in-flight.
+- **Tracing** với OpenTelemetry: instrument ASGI, HTTP client, SQLAlchemy, Redis; lan truyền context qua message queue.
+- Lọc dữ liệu nhạy cảm (header `Authorization`, cookie, PII) khỏi log và trace.
 
-</details>
+Xem [Observability](../17-performance-reliability/observability.md) và [Metrics, Logging và Tracing](../17-performance-reliability/metrics-logging-tracing.md).
 
-## 22. See also
+## 10. Bảo vệ đầu vào
 
-- [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- Giới hạn kích thước body ở LB/Ingress.
+- Giới hạn độ dài chuỗi, số phần tử list trong Pydantic model.
+- Rate limit ở gateway hoặc bằng dependency dùng Redis. Xem [Rate Limiting](../08-api-design/rate-limiting.md).
+- `TrustedHostMiddleware`, CORS chặt, header bảo mật.
+- Tắt hoặc bảo vệ `/docs`, `/openapi.json` trên môi trường public nếu API không công khai.
+
+## 11. Proxy và địa chỉ client
+
+Sau LB, `request.client.host` là IP của LB. Bật `--proxy-headers` và đặt `--forwarded-allow-ips` bằng dải IP của LB, để Uvicorn tin `X-Forwarded-For` **chỉ** từ proxy đáng tin. Tin header này từ mọi nguồn cho phép client giả IP để né rate limit.
+
+## 12. Database migration
+
+- Chạy migration (Alembic) bằng **job riêng** trước khi deploy phiên bản mới, không trong lifespan của mọi worker (N worker cùng chạy migration → tranh chấp lock).
+- Migration phải tương thích ngược theo mô hình expand/contract để phiên bản cũ và mới cùng chạy được trong rolling update. Xem [Rollback](../15-terraform-cicd/rollback.md).
+- Thao tác khóa bảng lớn (thêm cột có default ở version cũ, tạo index không `CONCURRENTLY`) có thể làm service đứng. Đặt `lock_timeout` cho migration.
+
+## 13. Container
+
+- Image tối giản, non-root user, dependency pin theo lockfile.
+- Process chính nhận signal đúng (exec form trong `CMD`, hoặc init như `tini`).
+- Không ghi file vào filesystem của container trừ thư mục tạm; dữ liệu bền vững ở storage ngoài.
+
+Xem [Docker Production](../12-docker/production-best-practices.md).
+
+## 14. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| 502/503 mỗi lần deploy | Thiếu preStop, graceful shutdown ngắn | Spike lỗi đúng thời điểm rollout |
+| Restart storm khi DB lỗi | Liveness kiểm tra DB | Mọi pod restart liên tục |
+| 502 ngẫu nhiên | Keep-alive server ngắn hơn LB idle timeout | Lỗi rải rác không theo tải |
+| Request treo | Không timeout ở pool/query/HTTP | In-flight tăng, không có lỗi |
+| Migration khóa bảng | Migration chạy trong startup hoặc không `lock_timeout` | Service đứng khi deploy |
+| Rate limit bị né | Tin `X-Forwarded-For` từ mọi nguồn | Một client gửi quá hạn mức |
+
+## 15. Checklist trước khi lên production
+
+- [ ] Worker count khớp CPU limit; connection budget toàn hệ thống đã tính.
+- [ ] Tài nguyên dùng chung trong lifespan; session theo request trong dependency.
+- [ ] Readiness và liveness tách biệt; liveness không phụ thuộc dependency.
+- [ ] Graceful shutdown: preStop, SIGTERM, grace period đủ dài.
+- [ ] Timeout ở mọi tầng, giảm dần từ ngoài vào trong.
+- [ ] Config validate lúc khởi động; secret không nằm trong code/log.
+- [ ] Log JSON có request ID/trace ID; metric RED + saturation; tracing.
+- [ ] Giới hạn kích thước request và input; rate limit.
+- [ ] Proxy headers chỉ tin IP của LB.
+- [ ] Migration chạy riêng, tương thích ngược.
+
+## 16. Tóm tắt
+
+- Production readiness là trả lời trước cách service hành xử khi tắt, khi dependency chậm, khi cấu hình sai, khi có lỗi.
+- Tài nguyên theo đúng vòng đời: application trong lifespan, request trong dependency.
+- Readiness khác liveness; liveness không kiểm tra dependency.
+- Graceful shutdown cần phối hợp preStop, SIGTERM, graceful timeout và grace period.
+- Timeout giảm dần từ ngoài vào trong; keep-alive của server dài hơn idle timeout của LB.
+
+## Liên quan
+
+- [Kiến trúc FastAPI](architecture.md)
+- [Performance](performance.md)
+- [Health Check](../13-kubernetes/health-check.md)
+- [Timeout](../10-distributed-systems/timeout.md)
+- [Observability](../17-performance-reliability/observability.md)
+- [Docker Production](../12-docker/production-best-practices.md)

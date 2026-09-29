@@ -1,210 +1,183 @@
-# Performance
+# Hiệu năng SQLAlchemy
 
-> **Phạm vi phỏng vấn:** SQLAlchemy · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Thời gian của một thao tác database qua SQLAlchemy gồm hai phần:
 
-Performance là behavior của SQLAlchemy data layer ánh xạ unit of work sang connection, transaction và SQL cụ thể.
+1. **Thời gian database**: PostgreSQL thực thi query, cộng round trip mạng.
+2. **Thời gian Python**: compile câu SQL, bind tham số, chờ pool, nhận row, tạo object ORM, theo dõi thay đổi, flush.
 
-## 2. Why does it matter?
+Phần 1 được tối ưu bằng index và query tốt ([Query Optimization](../04-database-postgresql/query-optimization.md)). Tài liệu này tập trung vào phần 2 và vào cách ứng dụng **dùng** database: số query, số round trip, lượng dữ liệu, thời gian giữ connection.
 
-Senior Engineer cần hiểu **Performance** để giữ transaction boundary đúng mà vẫn nhìn thấy chi phí SQL thực tế. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+## 2. Mental Model
 
-## 3. How does it work?
+> Mỗi query có một chi phí cố định (round trip, compile, overhead của driver) và một chi phí tỷ lệ với số row (truyền dữ liệu, tạo object). Tối ưu là giảm **số query** và giảm **công việc trên mỗi row** mà ứng dụng không cần.
 
-Session giữ identity map và pending state; flush tạo SQL, commit kết thúc transaction, loading strategy quyết định query count. Scope session theo request/task.
+## 3. Các nguồn chi phí
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query count, pool wait, transaction age, fetched rows và p99 latency` và phân biệt symptom, bottleneck với root cause.
+| Nguồn | Mô tả | Cách giảm |
+|---|---|---|
+| Số query | Mỗi query một round trip | Eager load, batch, gộp query |
+| Hydration | Tạo object ORM, identity map, state | Select cột, `load_only`, Core rows |
+| Compile SQL | Chuyển biểu thức thành chuỗi SQL | Compiled cache (tự động từ 1.4) |
+| Flush | Duyệt object thay đổi, sinh câu lệnh | Session nhỏ, bulk operation |
+| Chờ pool | Không có connection rảnh | Giữ connection ngắn |
+| Dữ liệu thừa | `SELECT *`, cột lớn | `load_only`, `deferred` |
+| Logging | `echo=True` ở production | Tắt; dùng tracing có sampling |
 
-## 4. Example
+## 4. Cơ chế: compiled cache
 
-```python
-from fastapi import Depends, FastAPI, HTTPException
+Từ SQLAlchemy 1.4, câu lệnh được **cache sau khi compile** dựa trên cấu trúc của nó (không phụ thuộc giá trị tham số). Lần chạy thứ hai của cùng một `select(Claim).where(Claim.id == x)` với `x` khác không cần compile lại.
 
-app = FastAPI()
+Cache có thể bị vô hiệu khi:
 
-async def current_tenant() -> int:
-    return 42
+- Câu lệnh được dựng động với cấu trúc khác nhau mỗi lần (số điều kiện thay đổi, `IN` với danh sách literal thay vì tham số).
+- Dùng literal thay vì tham số bind.
 
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
-```
+`IN` với danh sách thay đổi độ dài: SQLAlchemy dùng "expanding bind parameter" nên cấu trúc vẫn được cache. Kiểm tra hiệu quả cache qua log (`[cached since ...]` khi `echo=True`).
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Performance**.
-
-## 5. Production Use Case
-
-Claim service áp dụng Performance, log SQL/query count và test rollback/concurrent update để ORM không che transaction cost.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Performance | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Performance, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Performance.
-- **B3.** Which guarantees does Performance provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Performance?
-- **B5.** What is the most common misconception about Performance?
-- **B6.** How would you test assumptions involving Performance?
-- **B7.** Which edge cases or failure modes matter most for Performance?
-- **B8.** How can Performance affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Performance?
-- **B10.** When is a different or simpler approach better than relying on Performance?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Performance triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Performance is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Performance. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Performance fails first?
-- **S5.** A canary changes the behavior of Performance; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Performance constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Performance meets concurrency or partial failure?
-- **L3.** What breaks first around Performance at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Performance?
-- **L5.** How would you benchmark or validate Performance without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Performance introduce?
-- **L7.** How would you change a poor decision around Performance with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Performance?
-- **L10.** How would you turn an incident involving Performance into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Performance là behavior của SQLAlchemy data layer ánh xạ unit of work sang connection, transaction và SQL cụ thể. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Performance.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query count, pool wait, transaction age, fetched rows và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Performance như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Performance khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Performance**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query count, pool wait, transaction age, fetched rows và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Performance** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 5. Bên trong hệ thống xảy ra gì khi endpoint trả 1.000 object?
 
 ```mermaid
 flowchart LR
-            Request --> Session["Session / unit of work"]
-            Session --> Topic["Performance"]
-            Topic --> SQL
-            SQL --> Pool --> PostgreSQL
+    Q["Query: SELECT 1.000 claims"] --> D["Driver nhận row"]
+    D --> H["Hydration: tạo 1.000 object Claim, state, identity map"]
+    H --> E["Eager load lines: thêm 1 query, 5.000 object ClaimLine"]
+    E --> P["Pydantic validate và serialize 6.000 object"]
+    P --> J["JSON bytes"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Database trả dữ liệu nhanh (vài ms với index tốt).
+2. Hydration tạo hàng nghìn object Python với state tracking — CPU thuần.
+3. Eager load tạo thêm object con.
+4. Pydantic đọc attribute từng object và serialize.
+5. Toàn bộ bước 2–4 chạy trên event loop (nếu async) và có thể tốn hàng chục tới hàng trăm ms.
 
-Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.
+Nếu endpoint chỉ cần hiển thị bảng tóm tắt, select đúng cột và trả `Row` bỏ qua bước 2–3 và làm bước 4 nhẹ hơn nhiều.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 6. Các kỹ thuật chính
 
-## 17. How I would debug this in production
+### Giảm số query
 
-1. Bật SQL timing/query count có sampling.
-2. Xem pool checked-out/wait/timeout.
-3. Kiểm session scope, autoflush và transaction age.
-4. Tìm lazy load/N+1 và row amplification.
-5. So generated SQL + plan trước/sau.
+- [Eager loading](relationship-loading.md) đúng strategy để tránh [N+1](n-plus-one.md).
+- Batch tra cứu: `select(Dealer).where(Dealer.id.in_(ids))` thay vì `session.get` trong vòng lặp.
+- `RETURNING` để không phải đọc lại sau khi ghi.
 
-## 18. Common Misconceptions
+### Giảm công việc mỗi row
 
-**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.
+```python
+# Đọc danh sách: không cần object ORM
+stmt = select(Claim.id, Claim.status, Claim.total).where(Claim.dealer_id == dealer_id)
+rows = (await session.execute(stmt)).mappings().all()     # list[dict-like]
+```
 
-## 19. When NOT to use
+### Ghi hàng loạt
 
-Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.
+```python
+# Chậm: theo dõi từng object
+for item in items:
+    session.add(ClaimLine(**item))
+await session.flush()
 
-## 20. What interviewer may ask next
+# Nhanh: bulk insert của 2.0 (insertmanyvalues)
+await session.execute(insert(ClaimLine), items)
+```
 
-1. **What guarantee does Performance provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+### Session nhỏ
 
-## 21. Check Your Understanding
+Flush phải duyệt object trong Session để tìm thay đổi. Session chứa hàng chục nghìn object làm mỗi flush (kể cả autoflush trước mỗi query) chậm đi. Job dài dùng Session mới theo lô.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Performance** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Giữ connection ngắn
 
-<details>
-<summary>Answer</summary>
+Thời gian giữ connection quyết định throughput của pool nhiều hơn tốc độ query. Commit sớm, không làm việc khác trong transaction. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+## 7. Đo lường
 
-</details>
+```python
+import time
+from sqlalchemy import event
 
-## 22. See also
+@event.listens_for(engine.sync_engine, "before_cursor_execute")
+def _start(conn, cursor, statement, params, context, executemany):
+    context._t0 = time.perf_counter()
 
-- [Session Lifecycle](session-lifecycle.md)
-- [Transactions](transaction.md)
-- [PostgreSQL Pooling](../04-database-postgresql/connection-pooling.md)
+@event.listens_for(engine.sync_engine, "after_cursor_execute")
+def _end(conn, cursor, statement, params, context, executemany):
+    elapsed = time.perf_counter() - context._t0
+    DB_QUERY_SECONDS.observe(elapsed)           # histogram theo loại query
+```
+
+- Metric thời gian query **phía client** (bao gồm mạng) so với `pg_stat_statements` (phía server) cho biết overhead mạng và driver.
+- Đếm số query mỗi request (qua middleware + event) để phát hiện N+1.
+- Pool: event `checkout`/`checkin` đo thời gian giữ; `pool.status()` cho snapshot.
+- OpenTelemetry instrumentation cho SQLAlchemy tạo span mỗi query.
+- Profiler (`py-spy`) cho thấy thời gian nằm ở hydration hay ở chờ I/O.
+
+## 8. Hành vi trong production
+
+- **Endpoint danh sách** là nơi chi phí hydration và N+1 lộ rõ nhất; tối ưu chúng trước.
+- **Worker Celery xử lý batch** thường chạy nhanh hơn nhiều lần khi chuyển từ ORM object sang Core bulk operation.
+- **`echo=True` bị bật nhầm** trên production làm chậm và sinh log khổng lồ.
+- **`pool_pre_ping`** thêm một round trip nhỏ mỗi lần checkout; thường đáng để tránh lỗi connection chết, nhưng nên biết chi phí này tồn tại.
+
+## 9. Khi scale lên thì chuyện gì xảy ra?
+
+| Tải | Vấn đề thường lộ ra |
+|---|---|
+| Vài chục RPS | Hầu như không có; N+1 chưa đau |
+| Vài trăm RPS | N+1 và hydration chiếm CPU worker; pool bắt đầu có hàng đợi |
+| Vài nghìn RPS | Tổng connection, CPU database do query nhỏ lặp lại; cần cache và select cột |
+| Job xử lý hàng triệu row | Memory của identity map, tốc độ bulk ghi, replication lag |
+
+## 10. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| CPU worker cao | Hydration nhiều object | Profiler: thời gian trong `loading.py`, `instances` |
+| Nhiều query nhỏ | N+1, vòng lặp `session.get` | `calls` rất cao trong `pg_stat_statements` |
+| Flush chậm dần | Session chứa quá nhiều object | Job chậm dần theo thời gian |
+| Pool wait | Transaction dài | Latency cao, DB rảnh |
+| Log khổng lồ | `echo=True` ở production | I/O log tăng, latency tăng |
+
+## 11. Trade-offs
+
+| Kỹ thuật | Lợi ích | Chi phí |
+|---|---|---|
+| Select cột | Nhanh, ít memory | Không có object, không change tracking |
+| Bulk insert/update | Nhanh hơn nhiều | Bỏ qua event/validation ở mức object |
+| Eager load | Ít query | Có thể tải dữ liệu không dùng |
+| Cache kết quả (Redis) | Bỏ qua database | Stale data, invalidation |
+
+## 12. Sai lầm thường gặp
+
+- Tối ưu query SQL trong khi vấn đề là 400 query mỗi request.
+- Trả ORM object cho endpoint danh sách lớn.
+- Import dữ liệu bằng `session.add()` từng object.
+- Session sống suốt job batch.
+- Đo thời gian query chỉ ở phía database và bỏ qua thời gian hydration.
+
+## 13. Best Practices
+
+- Đo trước: số query mỗi request, thời gian query phía client, thời gian giữ connection, profile CPU.
+- Eager load tường minh; test giới hạn số query.
+- Select cột cho đường đọc lớn; ORM object cho đường ghi nghiệp vụ.
+- Bulk operation cho ghi hàng loạt; Session theo lô cho job dài.
+- Giữ transaction ngắn; tắt `echo` ở production.
+
+## 14. Tóm tắt
+
+- Thời gian qua SQLAlchemy = thời gian database + thời gian Python (compile, hydration, flush, chờ pool).
+- Giảm số query (eager load, batch) và công việc mỗi row (select cột, bulk operation).
+- Compiled cache tránh compile lại câu lệnh cùng cấu trúc.
+- Session nhỏ giữ flush nhanh và memory ổn định.
+- Đo bằng event của engine/pool, tracing và profiler để biết thời gian thực sự nằm ở đâu.
+
+## Liên quan
+
+- [N+1 Query](n-plus-one.md)
+- [Relationship Loading](relationship-loading.md)
+- [ORM, Core và Raw SQL](orm-vs-raw-sql.md)
+- [FastAPI Performance](../03-fastapi/performance.md)
+- [Profiling Python](../17-performance-reliability/profiling-python.md)

@@ -1,211 +1,233 @@
-# Websocket
+# WebSocket trong FastAPI
 
-> **Phạm vi phỏng vấn:** FastAPI · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+WebSocket là kết nối **hai chiều, sống lâu** giữa client và server trên một kết nối TCP. Khác với HTTP request/response (client hỏi, server trả lời, kết thúc), WebSocket cho phép server chủ động đẩy dữ liệu bất kỳ lúc nào: thông báo realtime, trạng thái xử lý job, chat, dashboard giám sát.
 
-FastAPI WebSocket giữ kết nối duplex lâu dài trên ASGI, khác request-response HTTP và tạo state/routing/backpressure riêng.
+Tài liệu này tập trung vào WebSocket **trong FastAPI/ASGI**: vòng đời kết nối trong worker, cách viết handler, backpressure, và cách scale khi có nhiều pod. Giao thức WebSocket (handshake, frame, so sánh với SSE/long polling) nằm ở [WebSocket (API design)](../08-api-design/websocket.md); thiết kế hệ thống realtime hoàn chỉnh nằm ở [Design Realtime WebSocket](../11-system-design/design-realtime-websocket.md).
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Websocket** để xây API có contract rõ, concurrency đúng và vận hành an toàn. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> HTTP request là cuộc gọi ngắn: hỏi, trả lời, cúp máy. WebSocket là đường dây luôn mở: mỗi kết nối là **một coroutine sống lâu** trên event loop của một worker cụ thể, giữ state riêng cho tới khi một bên cúp máy.
 
-## 3. How does it work?
+Hệ quả trực tiếp:
 
-Sau upgrade, loop receive/send frame; heartbeat phát hiện half-open, per-connection queue cần bound và disconnect phải cancel producer. Scale nhiều pod cần shared broker/connection registry.
+- Kết nối **dính** vào một worker của một pod. Worker khác không biết kết nối này tồn tại.
+- Tài nguyên (memory, fd, coroutine) bị giữ suốt thời gian kết nối, có thể hàng giờ.
+- Scale không còn là "request/giây" mà là "số kết nối đồng thời" và "message/giây".
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `RPS, p95/p99 latency, error rate, event-loop lag và pool utilization` và phân biệt symptom, bottleneck với root cause.
+## 3. Vì sao cần WebSocket?
 
-## 4. Example
+- Server cần đẩy dữ liệu ngay khi có sự kiện, không chờ client hỏi.
+- Tần suất message cao theo cả hai chiều (chat, collaborative editing, game).
+- Giảm overhead so với polling: không lặp lại header HTTP, không mở request mới liên tục.
+
+Nếu chỉ cần server đẩy một chiều, [Server-Sent Events](../08-api-design/websocket.md) thường đơn giản hơn (dùng HTTP thường, tự reconnect).
+
+## 4. Cơ chế hoạt động trong ASGI
+
+1. Client gửi HTTP request với header `Upgrade: websocket`.
+2. Uvicorn nhận ra upgrade, tạo scope `type="websocket"` và gọi ASGI app.
+3. App nhận sự kiện `websocket.connect`; nếu chấp nhận, gửi `websocket.accept`. Từ đây kết nối là WebSocket.
+4. Hai bên trao đổi `websocket.receive` / `websocket.send`.
+5. Một bên gửi close frame hoặc kết nối đứt → `websocket.disconnect`.
+
+FastAPI bọc giao thức này trong object `WebSocket`:
 
 ```python
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import WebSocket, WebSocketDisconnect
 
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
+@app.websocket("/ws/jobs/{job_id}")
+async def job_updates(websocket: WebSocket, job_id: str, principal: WsPrincipal):
+    await websocket.accept()
+    try:
+        async for event in job_events.subscribe(job_id, principal.tenant_id):
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await job_events.unsubscribe(job_id)
 ```
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **Websocket**.
+Dependency hoạt động với WebSocket endpoint (xác thực lúc handshake), nhưng middleware kiểu `BaseHTTPMiddleware` thì không — chỉ pure ASGI middleware xử lý được scope WebSocket.
 
-## 5. Production Use Case
+## 5. Luồng xử lý: một kết nối trong worker
 
-Inspection progress stream dùng auth lúc connect + revalidate subscription ACL, Redis/Kafka fan-out, slow-consumer policy và REST resume cursor.
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant U as Uvicorn worker
+    participant H as Handler coroutine
+    participant B as Broker Redis Pub/Sub
+    C->>U: HTTP GET Upgrade websocket, token
+    U->>H: scope websocket, websocket.connect
+    H->>H: xác thực token, kiểm tra quyền trên job
+    H->>U: websocket.accept
+    H->>B: subscribe kênh job
+    loop Suốt kết nối
+        B-->>H: event mới
+        H->>C: send_json
+        C-->>H: ping hoặc message
+    end
+    C--xU: đóng tab hoặc mất mạng
+    U->>H: websocket.disconnect
+    H->>B: unsubscribe
+    H->>H: coroutine kết thúc, giải phóng tài nguyên
+```
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+Diễn giải:
 
-## 6. Common Problems
+1. Xác thực xảy ra **trước** `accept` — từ chối sớm bằng cách đóng với mã lỗi, không giữ tài nguyên.
+2. Sau khi accept, handler là một coroutine sống lâu. Nó chờ event từ broker và đẩy xuống client.
+3. Handler phải xử lý disconnect ở mọi điểm `send`/`receive` và dọn dẹp subscription trong `finally`.
+4. Mất mạng đột ngột (không có close frame) có thể không được phát hiện ngay — TCP có thể ở trạng thái half-open nhiều phút. Heartbeat (ping/pong) là cách phát hiện.
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+## 6. Hai chiều đồng thời: đọc và ghi trên cùng kết nối
 
-## 7. Trade-offs
+Handler thường cần vừa nhận message từ client vừa đẩy event từ server. Viết tuần tự (`await receive()` rồi mới `send`) sẽ block một chiều. Dùng hai task:
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Websocket | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+```python
+async def session(websocket: WebSocket, user_id: str):
+    await websocket.accept()
+    outbound: asyncio.Queue = asyncio.Queue(maxsize=100)     # bounded
 
-## 8. Interview Questions
+    async def reader():
+        async for message in websocket.iter_json():
+            await handle_client_message(user_id, message)
 
-### Basic / Mid-level (10)
+    async def writer():
+        while True:
+            event = await outbound.get()
+            await websocket.send_json(event)
 
-- **B1.** What is Websocket, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Websocket.
-- **B3.** Which guarantees does Websocket provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Websocket?
-- **B5.** What is the most common misconception about Websocket?
-- **B6.** How would you test assumptions involving Websocket?
-- **B7.** Which edge cases or failure modes matter most for Websocket?
-- **B8.** How can Websocket affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Websocket?
-- **B10.** When is a different or simpler approach better than relying on Websocket?
+    registry.register(user_id, outbound)
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(reader())
+            tg.create_task(writer())
+    except* WebSocketDisconnect:
+        pass
+    finally:
+        registry.unregister(user_id, outbound)
+```
 
-### Production Scenarios (5)
+- Khi một trong hai task kết thúc (client ngắt), [TaskGroup](../02-python-concurrency/coroutine-task-future.md#8-chạy-nhiều-task-gather-taskgroup-wait-as_completed) cancel task còn lại.
+- `outbound` có `maxsize`: nếu client đọc chậm, queue đầy, producer phải quyết định — chờ, bỏ event cũ, hoặc đóng kết nối.
 
-- **S1.** A release involving Websocket triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Websocket is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Websocket. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Websocket fails first?
-- **S5.** A canary changes the behavior of Websocket; success rate is flat but saturation rises. Promote or roll back?
+## 7. Backpressure: client chậm
 
-## 9. Senior-level Questions
+Một client trên mạng di động yếu đọc chậm. Server vẫn đẩy event với tốc độ cao:
 
-- **L1.** How does Websocket constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Websocket meets concurrency or partial failure?
-- **L3.** What breaks first around Websocket at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Websocket?
-- **L5.** How would you benchmark or validate Websocket without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Websocket introduce?
-- **L7.** How would you change a poor decision around Websocket with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Websocket?
-- **L10.** How would you turn an incident involving Websocket into a durable prevention mechanism?
+- `send` ghi vào buffer của transport; khi buffer đầy, `send` tạm dừng (backpressure ở tầng transport).
+- Nếu producer không chờ `send` mà đẩy vào queue không giới hạn, memory tăng vô hạn cho một kết nối.
+- Với hàng nghìn kết nối chậm, worker hết memory.
 
-## 10. Short Answers
+Chính sách cho slow consumer phải được chọn tường minh:
 
-**B1.** FastAPI WebSocket giữ kết nối duplex lâu dài trên ASGI, khác request-response HTTP và tạo state/routing/backpressure riêng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
+| Chính sách | Khi phù hợp |
+|---|---|
+| Bỏ event cũ, giữ event mới nhất | Dashboard, trạng thái hiện tại (chỉ cần giá trị mới nhất) |
+| Gộp nhiều event thành một | Counter, tiến độ |
+| Đóng kết nối, client reconnect và đồng bộ lại | Chat, dữ liệu cần đầy đủ (client lấy phần thiếu qua API) |
+| Chờ (block producer) | Chỉ khi producer là riêng cho kết nối đó |
 
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Websocket.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo RPS, p95/p99 latency, error rate, event-loop lag và pool utilization; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Websocket như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Websocket khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Websocket**, không chỉ “dùng để làm gì”.
-- Định lượng bằng RPS, p95/p99 latency, error rate, event-loop lag và pool utilization và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Websocket** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Theo dõi request qua socket → ASGI scope/receive/send → middleware/router/dependency/validation → endpoint → serialization/cleanup. Tính tổng worker, thread token và connection pool trên toàn replica.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 8. Scale nhiều pod
 
 ```mermaid
 flowchart LR
-            Client --> ASGI["ASGI server"] --> FastAPI
-            FastAPI --> Topic["Websocket"]
-            Topic --> Service --> Dependency["DB / cache / downstream"]
-            Dependency --> Response --> Client
+    C1["Client A"] --> LB["Load balancer"]
+    C2["Client B"] --> LB
+    LB --> P1["Pod 1: giữ kết nối A"]
+    LB --> P2["Pod 2: giữ kết nối B"]
+    API["API ghi sự kiện: gửi tới user B"] --> Bus["Redis Pub/Sub hoặc broker"]
+    Bus --> P1
+    Bus --> P2
+    P2 --> C2
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Kết nối của client B nằm ở pod 2. Sự kiện cho B có thể phát sinh ở bất kỳ pod nào (hoặc ở worker Celery).
+2. Pod phát sinh sự kiện publish lên một kênh chung (Redis Pub/Sub, NATS, Kafka).
+3. Mọi pod subscribe; pod đang giữ kết nối của B đẩy xuống client.
+4. Redis Pub/Sub là fire-and-forget: pod đang restart sẽ bỏ lỡ message. Nếu cần không mất, client phải có cơ chế đồng bộ lại (lấy các event sau `last_event_id` qua API) hoặc dùng Redis Streams. Xem [Redis Pub/Sub](../06-redis/pub-sub.md).
 
-Một blocking dependency hoặc pool cạn có thể giữ toàn worker/loop, rồi client retry khuếch đại traffic. Load-shed/rate-limit, rollback, isolate route và bảo vệ downstream trước khi tăng replica.
+Load balancer phải hỗ trợ WebSocket (upgrade, idle timeout đủ dài). Idle timeout của ALB mặc định 60 giây: kết nối không có traffic trong 60 giây bị đóng — heartbeat mỗi 20–30 giây giữ kết nối sống.
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+## 9. Hành vi trong production
 
-## 17. How I would debug this in production
+- **Deploy ngắt mọi kết nối** trên pod bị thay thế. Client phải tự reconnect với backoff và jitter; nếu không, hàng chục nghìn client reconnect cùng lúc tạo thundering herd lên pod mới.
+- **Phân bố không đều**: kết nối sống lâu, nên pod mới sau scale-out nhận ít kết nối trong khi pod cũ vẫn đầy. HPA theo CPU phản ứng kém; cân nhắc metric số kết nối.
+- **Giới hạn mỗi worker**: file descriptor (`ulimit -n`), memory mỗi kết nối (buffer, queue, state). Đo và đặt giới hạn số kết nối mỗi pod.
+- **Xác thực hết hạn giữa chừng**: token hết hạn trong khi kết nối vẫn mở. Cần chính sách: đóng kết nối khi token hết hạn, hoặc cho client gửi token mới qua message.
+- **Graceful shutdown**: khi nhận SIGTERM, gửi close frame với mã "going away" để client reconnect sang pod khác, thay vì chờ tới khi bị kill.
 
-1. So p50/p95/p99 theo route/worker/deploy.
-2. Xem event-loop lag, thread tokens và worker saturation.
-3. Trace middleware → dependency → endpoint → DB/cache.
-4. Đo DB pool wait và downstream deadline/retry.
-5. Rollback/canary fix rồi verify SLO.
+## 10. Khi scale lên thì chuyện gì xảy ra?
 
-## 18. Common Misconceptions
+| Quy mô | Vấn đề chính |
+|---|---|
+| 1.000 kết nối | Một worker xử lý thoải mái |
+| 50.000 kết nối | Memory mỗi kết nối, fd limit, phân bố giữa pod, heartbeat CPU |
+| 500.000 kết nối | Fan-out qua broker (mỗi event tới mọi pod), reconnect storm khi deploy, cần gateway chuyên dụng |
+| Group lớn (một event tới 100.000 client) | Fan-out CPU và băng thông; cần phân tầng, gộp, hoặc giới hạn tần suất |
 
-**Sai:** đổi mọi endpoint thành `async def` làm API nhanh. **Đúng:** toàn dependency path phải non-blocking và concurrency phải được bound.
+## 11. Failure Modes
 
-## 19. When NOT to use
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Memory tăng dần | Queue không giới hạn cho client chậm, không dọn dẹp khi disconnect | RSS tăng theo số kết nối "ma" |
+| Kết nối half-open | Mất mạng không có close frame, không heartbeat | Số kết nối cao hơn thực tế |
+| Message mất | Pub/Sub khi pod restart | Client thiếu event, không có lỗi |
+| Reconnect storm | Deploy ngắt mọi kết nối, client reconnect không jitter | Spike CPU/auth ngay sau deploy |
+| Kết nối bị LB đóng | Idle timeout ngắn, không heartbeat | Client reconnect định kỳ đúng chu kỳ timeout |
+| Event loop block | Xử lý message nặng trong handler | Mọi kết nối trên worker trễ |
 
-Không dùng async chỉ vì framework hỗ trợ; sync stack với bounded thread pool có thể đơn giản hơn khi dependency chỉ blocking.
+## 12. Trade-offs
 
-## 20. What interviewer may ask next
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| WebSocket trong FastAPI | Cùng codebase, dùng chung auth | Scale kết nối cùng với API, deploy ngắt kết nối |
+| Gateway WebSocket riêng | Scale độc lập, deploy API không ảnh hưởng | Thêm service, giao tiếp qua broker |
+| Managed service (API Gateway WebSocket, Pusher...) | Không vận hành kết nối | Chi phí, lock-in, giới hạn tùy biến |
+| SSE thay WebSocket | Đơn giản, HTTP thường, tự reconnect | Một chiều, giới hạn kết nối trên HTTP/1.1 của trình duyệt |
 
-1. **What guarantee does Websocket provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+## 13. Sai lầm thường gặp
 
-## 21. Check Your Understanding
+- Accept trước rồi mới xác thực.
+- Không có heartbeat, dựa vào TCP để phát hiện mất kết nối.
+- Queue không giới hạn cho mỗi kết nối.
+- Lưu danh sách kết nối trong memory và nghĩ mọi pod đều thấy.
+- Không dọn dẹp subscription trong `finally`.
+- Client reconnect ngay lập tức không backoff.
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Websocket** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+## 14. Cách debug trong production
 
-<details>
-<summary>Answer</summary>
+- Metric: số kết nối đang mở mỗi pod, message gửi/nhận mỗi giây, độ dài queue outbound, số lần disconnect theo mã đóng.
+- Log connect/disconnect kèm user, pod, thời lượng kết nối, lý do đóng.
+- So sánh số kết nối trong ứng dụng với số socket ở trạng thái ESTABLISHED (`ss -s`) để phát hiện rò rỉ.
+- Loop lag của worker WebSocket.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+## 15. Best Practices
 
-</details>
+- Xác thực trước khi accept; kiểm tra quyền trên kênh/tài nguyên được subscribe.
+- Heartbeat định kỳ ngắn hơn idle timeout của LB.
+- Queue outbound có giới hạn và chính sách slow consumer rõ ràng.
+- Dọn dẹp trong `finally`; dùng TaskGroup cho reader/writer.
+- Fan-out qua broker; client có cơ chế đồng bộ lại sau reconnect.
+- Graceful shutdown gửi close "going away"; client reconnect với exponential backoff và jitter.
 
-## 22. See also
+## 16. Tóm tắt
 
-- [Request Lifecycle](request-lifecycle.md)
-- [Sync vs Async](sync-vs-async-endpoint.md)
-- [Connection Pooling](../04-database-postgresql/connection-pooling.md)
-- [API Security](../16-security/api-security.md)
+- WebSocket là kết nối hai chiều sống lâu; trong FastAPI mỗi kết nối là một coroutine trên một worker cụ thể.
+- Xác thực lúc handshake, trước `accept`.
+- Đọc và ghi đồng thời cần hai task; queue outbound phải có giới hạn.
+- Nhiều pod cần broker để fan-out; Pub/Sub có thể mất message khi pod restart.
+- Deploy, idle timeout, half-open connection và reconnect storm là các vấn đề vận hành chính.
+
+## Liên quan
+
+- [WebSocket (protocol và lựa chọn)](../08-api-design/websocket.md)
+- [Design Realtime WebSocket](../11-system-design/design-realtime-websocket.md)
+- [Redis Pub/Sub](../06-redis/pub-sub.md)
+- [AsyncIO](../02-python-concurrency/asyncio.md)
+- [Backpressure](../10-distributed-systems/backpressure.md)

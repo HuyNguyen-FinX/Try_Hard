@@ -1,211 +1,224 @@
-# Closures
+# Scope, LEGB và Closure
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Khi Python gặp một name như `timeout` trong function, nó phải trả lời: name này thuộc về đâu? Là biến local, biến của function bao ngoài, biến global của module, hay built-in? Bộ quy tắc trả lời câu hỏi đó gọi là **scope resolution**, thường tóm tắt bằng **LEGB**.
 
-Closures là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng.
+**Closure** là hệ quả trực tiếp của scope: một function lồng bên trong có thể dùng biến của function bao ngoài, **kể cả sau khi function bao ngoài đã return**. Closure là nền tảng của [decorator](decorators.md), callback, factory function, và nhiều pattern cấu hình trong FastAPI, Celery.
 
-## 2. Why does it matter?
+## 2. Mental Model
 
-Senior Engineer cần hiểu **Closures** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+- **Scope được quyết định lúc compile**, dựa trên vị trí name được **gán** trong source code, không phải lúc chạy.
+- **Closure = function object + các "ô nhớ" (cell) trỏ tới biến của scope bao ngoài.** Function bên trong không sao chép giá trị; nó giữ cell, và cell trỏ tới giá trị hiện tại của biến.
 
-## 3. How does it work?
+Vì closure giữ cell chứ không giữ giá trị, closure luôn thấy **giá trị mới nhất** của biến bao ngoài. Đây là chìa khóa để hiểu cả sức mạnh lẫn bug kinh điển "late binding".
 
-Theo dõi lookup/binding/lifecycle ở runtime, phân biệt language guarantee với chi tiết CPython và kiểm tra aliasing/mutability tại API boundary.
+## 3. Vì sao cần hiểu?
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
+- Giải thích `UnboundLocalError` khi đọc biến trước khi gán trong cùng function.
+- Giải thích vì sao `[lambda: i for i in range(3)]` trả về `2, 2, 2`.
+- Hiểu decorator giữ state ở đâu.
+- Hiểu vì sao callback giữ object sống lâu hơn dự kiến (memory leak).
+- Hiểu vì sao lambda/closure không truyền được qua `multiprocessing` hay Celery.
 
-## 4. Example
+## 4. Cơ chế hoạt động: LEGB
 
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Closures',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+```mermaid
+flowchart TD
+    Start["Gặp name x khi đọc"] --> Compile{"Lúc compile:<br/>x được gán trong function này?"}
+    Compile -->|"có, và không khai báo global/nonlocal"| L["Local: tìm trong fast locals của frame"]
+    L -->|"chưa được gán"| Err["UnboundLocalError"]
+    Compile -->|"không, nhưng function bao ngoài có x"| E["Enclosing: đọc qua cell"]
+    Compile -->|"không có ở đâu trong các function bao ngoài"| G["Global: tìm trong module.__dict__"]
+    G -->|"không có"| B["Builtins: tìm trong builtins"]
+    B -->|"không có"| NE["NameError"]
 ```
 
-Ví dụ biến quyết định về **Closures** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Giải thích:
 
-## 5. Production Use Case
+1. Compiler quét toàn bộ thân function. Nếu `x` xuất hiện ở vế trái của phép gán (hoặc là tham số, biến vòng `for`, `import`, `def`, `class`, `with ... as`, `except ... as`), `x` là **local** cho **toàn bộ** function — kể cả những dòng đứng trước phép gán.
+2. Đọc biến local chưa được gán → `UnboundLocalError`.
+3. Nếu `x` không được gán trong function nhưng được gán trong một function bao ngoài, `x` là **free variable**, đọc qua cell (Enclosing).
+4. Nếu không, `x` là **global**: tra `module.__dict__` lúc chạy.
+5. Không có trong globals thì tra `builtins` (`len`, `print`, `Exception`...).
 
-Một shared library dùng Closures để giữ interface rõ; team thêm type test, memory benchmark và backward-compatibility check trước rollout.
+Ví dụ `UnboundLocalError`:
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+```python
+retries = 3
 
-## 6. Common Problems
+def call():
+    print(retries)   # UnboundLocalError
+    retries = 5      # phép gán này biến retries thành local cho CẢ function
+```
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+### `global` và `nonlocal`
 
-## 7. Trade-offs
+- `global x`: mọi đọc/ghi `x` trong function đi thẳng tới module globals.
+- `nonlocal x`: mọi đọc/ghi `x` đi tới biến `x` của function bao ngoài gần nhất (qua cell).
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Closures | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+```python
+def make_counter():
+    count = 0
+    def incr():
+        nonlocal count     # không có dòng này, count += 1 sẽ biến count thành local
+        count += 1
+        return count
+    return incr
+```
 
-## 8. Interview Questions
+### Các scope đặc biệt
 
-### Basic / Mid-level (10)
+- **Class body không phải enclosing scope cho method.** Method không thấy trực tiếp biến trong thân class; phải truy cập qua `self.x` hoặc `ClassName.x`.
+- **Comprehension có scope riêng**: biến vòng lặp trong `[x for x in data]` không rò ra ngoài. Từ Python 3.12 (PEP 709), CPython inline comprehension vào function chứa nó để chạy nhanh hơn, nhưng vẫn giữ ngữ nghĩa scope riêng.
+- **Biến `except ... as e`** bị xóa khi ra khỏi khối `except` để phá cycle traceback.
 
-- **B1.** What is Closures, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Closures.
-- **B3.** Which guarantees does Closures provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Closures?
-- **B5.** What is the most common misconception about Closures?
-- **B6.** How would you test assumptions involving Closures?
-- **B7.** Which edge cases or failure modes matter most for Closures?
-- **B8.** How can Closures affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Closures?
-- **B10.** When is a different or simpler approach better than relying on Closures?
+## 5. Internals: cell object và closure
 
-### Production Scenarios (5)
-
-- **S1.** A release involving Closures triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Closures is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Closures. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Closures fails first?
-- **S5.** A canary changes the behavior of Closures; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Closures constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Closures meets concurrency or partial failure?
-- **L3.** What breaks first around Closures at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Closures?
-- **L5.** How would you benchmark or validate Closures without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Closures introduce?
-- **L7.** How would you change a poor decision around Closures with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Closures?
-- **L10.** How would you turn an incident involving Closures into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Closures là phần của Python data/object model quyết định cách object được tạo, truy cập và mở rộng. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Closures.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Closures như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Closures khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Closures**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Closures** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Phân biệt Python language contract với CPython implementation. Theo dõi identity, type, reference/descriptor lookup, frame/closure và lifetime; dùng `dis`, `sys`, `gc`, `tracemalloc` để kiểm chứng thay vì suy đoán từ syntax.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+Khi compiler thấy một biến local của function ngoài được dùng bởi function trong, nó đánh dấu biến đó là **cell variable** (`co_cellvars` của function ngoài) và là **free variable** (`co_freevars` của function trong).
 
 ```mermaid
 flowchart LR
-            Source["Python source"] --> Runtime["Closures runtime behavior"]
-            Runtime --> Objects["Objects + references + types"]
-            Objects --> Result["Observable result"]
-            Runtime --> Inspect["dis / sys / gc / tests"]
+    subgraph Outer["Frame của make_counter (đã return)"]
+        cellref["count là cell variable"]
+    end
+    Cell["cell object<br/>cell_contents = 2"]
+    Int2["int 2"]
+    subgraph FuncObj["function object incr"]
+        closure["__closure__ = (cell,)"]
+        code["__code__.co_freevars = ('count',)"]
+    end
+    cellref --> Cell
+    closure --> Cell
+    Cell --> Int2
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Biến `count` không nằm trực tiếp trong fast locals của `make_counter` mà được bọc trong một **cell object**.
+2. Khi `def incr` chạy, function object `incr` được tạo với `__closure__` là tuple chứa reference tới cell đó.
+3. Khi `make_counter` return, frame của nó bị hủy, nhưng cell vẫn sống vì `incr.__closure__` còn giữ reference.
+4. `incr` đọc/ghi `count` bằng lệnh `LOAD_DEREF`/`STORE_DEREF`, thao tác trên `cell_contents`.
+5. Mỗi lần gọi `make_counter()` tạo một cell mới — mỗi counter có state riêng.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+Kiểm chứng:
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+```python
+c = make_counter()
+c(); c()
+c.__code__.co_freevars           # ('count',)
+c.__closure__[0].cell_contents   # 2
+```
 
-## 17. How I would debug this in production
+## 6. Late binding: bug kinh điển
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+```python
+handlers = [lambda: i for i in range(3)]
+[h() for h in handlers]     # [2, 2, 2]
+```
 
-## 18. Common Misconceptions
+Ba lambda cùng đóng gói **một** cell cho biến `i`. Khi được gọi (sau vòng lặp), cell chứa giá trị cuối cùng là `2`.
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+Cách sửa là bắt giá trị tại thời điểm tạo:
 
-## 19. When NOT to use
+```python
+handlers = [lambda i=i: i for i in range(3)]      # default arg được đánh giá khi tạo lambda
+# hoặc
+from functools import partial
+handlers = [partial(lambda x: x, i) for i in range(3)]
+```
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+Cùng bug xuất hiện trong code bất đồng bộ:
 
-## 20. What interviewer may ask next
+```python
+for user_id in user_ids:
+    loop.call_later(1, lambda: notify(user_id))   # mọi callback notify user_id cuối cùng
+```
 
-1. **What guarantee does Closures provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+## 7. Ví dụ: closure làm factory có cấu hình
 
-## 21. Check Your Understanding
+```python
+import httpx
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Closures** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+def make_client_call(base_url: str, timeout_s: float):
+    client = httpx.Client(base_url=base_url, timeout=timeout_s)
 
-<details>
-<summary>Answer</summary>
+    def get(path: str) -> dict:
+        response = client.get(path)
+        response.raise_for_status()
+        return response.json()
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+    return get
 
-</details>
+fetch_inventory = make_client_call("https://inventory.internal", 0.5)
+```
 
-## 22. See also
+`get` giữ `client` qua closure. Cách này gọn cho cấu hình đơn giản. Khi state bắt đầu phức tạp (cần đóng client, đổi cấu hình, test thay thế), một class với `__init__`/`close` thường dễ bảo trì hơn — closure và class là hai cách biểu diễn cùng một ý tưởng "hành vi + state".
 
-- [Reference Counting](gc-reference-counting.md)
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+## 8. Hành vi trong production
+
+**Closure giữ object sống.** Callback đăng ký vào một registry sống lâu (event bus, signal, cache) giữ mọi thứ nó đóng gói. Một closure đóng gói `request` hoặc `session` và bị lưu vào registry toàn cục sẽ giữ request đó mãi mãi. Đây là một dạng [memory leak](../20-production-incidents/memory-leak.md) khó thấy vì không có biến global nào trỏ trực tiếp tới request.
+
+**Closure không pickle được.** `multiprocessing`, `ProcessPoolExecutor`, Celery serialize function bằng tên đầy đủ (`module.qualname`). Lambda và function lồng nhau không có tên truy cập được từ module nên không pickle được. Task gửi sang process khác phải là function ở module level, dữ liệu truyền qua argument.
+
+**State trong closure không thread-safe.** Counter dùng `nonlocal count; count += 1` gặp đúng vấn đề như biến global: đọc-cộng-ghi không nguyên tử. Nếu closure được gọi từ nhiều thread, cần lock hoặc dùng cấu trúc thread-safe.
+
+**Closure trong vòng lặp tạo task async.** Tạo task trong vòng lặp với closure tham chiếu biến vòng lặp gây late binding; truyền giá trị qua argument của coroutine thay vì đóng gói.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| `UnboundLocalError` | Gán cho name trong function làm nó thành local | Lỗi ở dòng đọc biến, dù biến global tồn tại |
+| Late binding | Closure đọc biến vòng lặp sau khi vòng lặp kết thúc | Mọi callback dùng giá trị cuối |
+| Memory giữ lâu | Closure trong registry giữ object lớn | Object request/session không được giải phóng |
+| `PicklingError` | Truyền lambda/closure qua process | Lỗi khi submit task vào process pool/Celery |
+| Race trên `nonlocal` | Closure được gọi đồng thời từ nhiều thread | Counter/metric sai lệch |
+
+## 10. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Closure | Ngắn gọn, đóng gói state riêng tư | Khó introspect, khó test thay thế, không pickle được |
+| Class có `__call__` | State tường minh, có method dọn dẹp, dễ mở rộng | Dài dòng hơn |
+| `functools.partial` | Gắn sẵn argument, pickle được nếu function gốc ở module level | Chỉ gắn argument, không có state thay đổi |
+| Biến global | Đơn giản | Dùng chung toàn process, khó test, dễ race |
+
+## 11. Sai lầm thường gặp
+
+- Nghĩ closure "chụp" giá trị tại thời điểm tạo. Nó giữ cell, đọc giá trị lúc gọi.
+- Quên `nonlocal` khi muốn cập nhật biến bao ngoài.
+- Tưởng method thấy được biến trong thân class.
+- Dùng lambda làm Celery task hoặc argument cho `ProcessPoolExecutor.submit`.
+- Để closure dài và phức tạp thay vì chuyển thành class.
+
+## 12. Cách debug
+
+- `func.__code__.co_varnames`, `co_freevars`, `co_cellvars` để xem compiler phân loại name thế nào.
+- `func.__closure__` và `cell.cell_contents` để xem closure đang giữ gì.
+- `inspect.getclosurevars(func)` trả về nonlocals, globals, builtins mà function dùng.
+- `dis.dis(func)`: `LOAD_FAST` (local), `LOAD_DEREF` (closure), `LOAD_GLOBAL` (global/builtin).
+- Với memory, `gc.get_referrers(obj)` sẽ chỉ ra cell object nếu closure đang giữ nó.
+
+## 13. Best Practices
+
+- Hạn chế `global`; truyền state qua argument hoặc đóng gói trong object.
+- Truyền giá trị vào callback qua argument (default arg, `partial`) thay vì đọc biến vòng lặp.
+- Không đóng gói object lớn hoặc có lifetime ngắn (request, session) trong closure được lưu vào nơi sống lâu.
+- Task gửi qua process/queue phải là function ở module level.
+- Khi closure cần nhiều hơn một hai biến state hoặc cần dọn dẹp, chuyển thành class.
+
+## 14. Tóm tắt
+
+- Scope được quyết định lúc compile dựa trên nơi name được gán; thứ tự tra cứu là Local → Enclosing → Global → Builtins.
+- Gán cho một name ở bất kỳ đâu trong function làm nó thành local cho toàn function.
+- Closure giữ cell object trỏ tới biến bao ngoài, không giữ bản sao giá trị; vì vậy có late binding.
+- Cell sống lâu hơn frame tạo ra nó, cho phép function trong dùng biến sau khi function ngoài return.
+- Closure giữ reference, nên có thể kéo dài lifetime object; closure không pickle được.
+
+## Liên quan
+
+- [Decorators](decorators.md)
+- [CPython Runtime](cpython-runtime.md)
+- [Reference Counting và GC](gc-reference-counting.md)
+- [Race Condition](../02-python-concurrency/race-condition.md)

@@ -1,135 +1,196 @@
+"""Kiểm tra cấu trúc của bộ tài liệu Python Backend.
+
+Chạy: python knowledges/scripts/validate.py [--strict]
+
+Các kiểm tra:
+- Link Markdown nội bộ trỏ tới file tồn tại.
+- Không còn cấu trúc hỏi đáp kiểu phỏng vấn (Interview Questions, Quiz, B1/L1...).
+- Không có placeholder (TODO, TBD, FIXME).
+- Code block Python parse được bằng `ast`.
+- Mermaid block có kiểu diagram hợp lệ và có đoạn giải thích ngay sau.
+- Bài system design có đủ các phần bắt buộc và tối thiểu 5 diagram.
+- Module README có các phần định hướng.
+- Cảnh báo đoạn văn tiếng Anh dài (heuristic) với --strict.
+
+Script chỉ kiểm tra cấu trúc. Cú pháp Mermaid chi tiết nên được kiểm tra
+thêm bằng trình parse của Mermaid (ví dụ mermaid-cli) khi có Node.js.
+"""
+
 from __future__ import annotations
 
+import argparse
 import ast
 import hashlib
 import re
 import sys
 from pathlib import Path
 
+KNOWLEDGE_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = KNOWLEDGE_ROOT.parent
 
-ROOT = Path(__file__).resolve().parents[1]
-MANDATORY = [
-    "## 1. What is it?", "## 2. Why does it matter?", "## 3. How does it work?",
-    "## 4. Example", "## 5. Production Use Case", "## 6. Common Problems",
-    "## 7. Trade-offs", "## 8. Interview Questions", "## 9. Senior-level Questions",
-    "## 10. Short Answers", "## 11. Follow-up Questions", "## 12. Key Takeaways",
+BANNED_PATTERNS = [
+    r"^#+ .*Interview Questions",
+    r"^#+ .*Senior-level Questions",
+    r"^#+ .*Follow-up Questions",
+    r"^#+ .*What interviewer may ask",
+    r"^#+ .*Check Your Understanding",
+    r"^#+ .*\bQuiz\b",
+    r"^#+ .*Practice Questions",
+    r"^#+ .*Mock Interview",
+    r"^#+ .*Short Answers?\b",
+    r"^#+ .*How to explain this design in an interview",
+    r"\*\*[BLSF]\d+\.\*\*",
 ]
-EXEMPT_DIRS = {"00-interview-roadmap", "22-mock-interview", "23-cheatsheets"}
-DEEP_DIRS = {
-    "01-python-core", "02-python-concurrency", "03-fastapi", "04-database-postgresql",
-    "05-sqlalchemy", "06-redis", "07-celery", "08-api-design", "10-distributed-systems",
-    "11-system-design", "13-kubernetes", "16-security", "17-performance-reliability",
-    "18-ai-integration", "20-senior-scenarios",
-}
-DEEP_HEADINGS = [
-    "## 13. Mental Model", "## 14. Internals Deep Dive", "## 15. Request / Data Flow",
-    "## 16. Failure Scenario", "## 17. How I would debug this in production",
-    "## 18. Common Misconceptions", "## 19. When NOT to use",
-    "## 20. What interviewer may ask next", "## 21. Check Your Understanding", "## 22. See also",
+PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b")
+MERMAID_TYPES = re.compile(
+    r"^(?:flowchart|graph|sequenceDiagram|stateDiagram(?:-v2)?|erDiagram|"
+    r"classDiagram|gantt|timeline|journey|pie|quadrantChart|mindmap)\b"
+)
+DESIGN_SECTIONS = [
+    "Bài toán", "Yêu cầu chức năng", "Yêu cầu phi chức năng", "Ước lượng tải",
+    "API", "Data Model", "Architecture ban đầu", "Architecture mở rộng",
+    "Request Flow", "Data Flow", "Storage", "Database", "Cache", "Queue",
+    "Scaling", "Failure Modes", "Recovery", "Security", "Observability",
+    "Trade-offs", "Architecture Evolution", "Tóm tắt",
 ]
-errors: list[str] = []
-files = sorted(ROOT.rglob("*.md"))
-python_blocks = 0
-mermaid_blocks = 0
-hashes: dict[str, list[Path]] = {}
+README_SECTIONS = [
+    "Module này học gì?", "Tại sao cần học?", "Thứ tự nên đọc",
+    "Các concept phụ thuộc nhau thế nào?", "File quan trọng nhất",
+]
+VIETNAMESE_CHARS = re.compile(
+    r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]",
+    re.IGNORECASE,
+)
 
-if not files:
-    errors.append("No Markdown files found")
 
-for path in files:
-    text = path.read_text(encoding="utf-8")
-    rel = path.relative_to(ROOT)
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    hashes.setdefault(digest, []).append(rel)
-    if not text.strip():
-        errors.append(f"Empty file: {rel}")
-    if re.search(r"\b(?:TODO|TBD|FIXME)\b", text, flags=re.I):
-        errors.append(f"Placeholder marker: {rel}")
-    if path.name != "README.md" and rel.parts[0] not in EXEMPT_DIRS:
-        missing = [heading for heading in MANDATORY if heading not in text]
-        if missing:
-            errors.append(f"Missing mandatory sections in {rel}: {', '.join(missing)}")
-        counts = {kind: len(re.findall(rf"\*\*{kind}\d+\.\*\*", text)) for kind in ("B", "L", "S", "F")}
-        expected = {"B": 10, "L": 10, "S": 5, "F": 5}
-        for kind, minimum in expected.items():
-            if counts[kind] < minimum:
-                errors.append(f"Too few {kind} questions in {rel}: {counts[kind]} < {minimum}")
-    if path.name != "README.md" and rel.parts[0] in DEEP_DIRS and not path.name.startswith("design-"):
-        words = len(re.findall(r"\b\w+\b", text, flags=re.UNICODE))
-        if words < 800:
-            errors.append(f"Deep-dive file below 800 words: {rel} ({words})")
-        if "```mermaid" not in text:
-            errors.append(f"Deep-dive file has no Mermaid diagram: {rel}")
-        missing_deep = [heading for heading in DEEP_HEADINGS if heading not in text]
-        if missing_deep:
-            errors.append(f"Missing deep-dive sections in {rel}: {', '.join(missing_deep)}")
-    if text.count("```mermaid") > text.count("```") // 2:
-        errors.append(f"Unbalanced Mermaid fence: {rel}")
+def strip_code(text: str) -> str:
+    return re.sub(r"```.*?```", "", text, flags=re.S)
 
-    for number, code in enumerate(re.findall(r"```python\n(.*?)\n```", text, flags=re.S), 1):
-        python_blocks += 1
-        try:
-            ast.parse(code)
-        except SyntaxError as exc:
-            errors.append(f"Invalid Python block {number} in {rel}: {exc}")
 
-    for number, diagram in enumerate(re.findall(r"```mermaid\n(.*?)\n```", text, flags=re.S), 1):
-        mermaid_blocks += 1
-        first_line = next((line.strip() for line in diagram.splitlines() if line.strip()), "")
-        if not re.match(r"^(?:flowchart|sequenceDiagram|graph|stateDiagram|erDiagram|gantt|timeline)\b", first_line):
-            errors.append(f"Unknown Mermaid diagram type {number} in {rel}: {first_line}")
-
-    for target in re.findall(r"(?<!!)\[[^\]]+\]\(([^)]+)\)", text):
+def check_links(path: Path, text: str, errors: list[str], rel: Path) -> int:
+    count = 0
+    for target in re.findall(r"(?<!!)\[[^\]]+\]\(([^)\s]+)\)", strip_code(text)):
         target = target.split("#", 1)[0]
         if not target or re.match(r"^(?:https?://|mailto:)", target):
             continue
-        resolved = (path.parent / target).resolve()
-        if not resolved.exists():
+        count += 1
+        if not (path.parent / target).resolve().exists():
             errors.append(f"Broken link in {rel}: {target}")
+    return count
 
-design_requirements = [
-    "### Requirements", "### Functional Requirements", "### Non-functional Requirements",
-    "### Scale Estimation", "### API", "### Data Model", "### High-level Architecture",
-    "### Database", "### Cache", "### Message Queue", "### Storage", "### Scaling",
-    "### Failure Handling", "### Security", "### Observability", "### Bottlenecks",
-    "### Future Improvements", "### Architecture Evolution", "## Failure Scenarios",
-    "## Security Deep Dive", "## How to explain this design in an interview", "```mermaid",
-]
-design_files = sorted((ROOT / "11-system-design").glob("design-*.md"))
-if len(design_files) < 10:
-    errors.append(f"Need at least 10 design files, found {len(design_files)}")
-for path in design_files:
-    text = path.read_text(encoding="utf-8")
-    missing = [item for item in design_requirements if item not in text]
-    if missing:
-        errors.append(f"Incomplete system design {path.name}: {', '.join(missing)}")
-    if text.count("```mermaid") < 5:
-        errors.append(f"System design has fewer than 5 diagrams: {path.name}")
-    if "sequenceDiagram" not in text:
-        errors.append(f"System design has no sequence diagram: {path.name}")
 
-for digest, duplicate_paths in hashes.items():
-    if len(duplicate_paths) > 1:
-        errors.append("Exact duplicate Markdown files: " + ", ".join(map(str, duplicate_paths)))
+def check_mermaid(text: str, errors: list[str], rel: Path) -> int:
+    blocks = list(re.finditer(r"```mermaid\n(.*?)\n```", text, flags=re.S))
+    for number, match in enumerate(blocks, 1):
+        body = match.group(1)
+        first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+        if not MERMAID_TYPES.match(first):
+            errors.append(f"Unknown Mermaid type #{number} in {rel}: {first}")
+        if re.search(r"(?m)^\s*end\s*-->|-->\s*end\s*$", body):
+            errors.append(f"Mermaid #{number} in {rel} uses reserved node id 'end'")
+        after = text[match.end():].lstrip("\n")
+        next_line = after.splitlines()[0].strip() if after else ""
+        if not next_line or next_line.startswith("#") or next_line.startswith("```"):
+            errors.append(f"Mermaid #{number} in {rel} has no explanation right after it")
+    return len(blocks)
 
-for required in [
-    ROOT / "22-mock-interview/top-50-senior-backend-questions.md",
-    ROOT / "22-mock-interview/top-30-system-design-questions.md",
-    ROOT / "00-interview-roadmap/repository-audit.md",
-]:
-    if not required.exists():
-        errors.append(f"Missing required expansion file: {required.relative_to(ROOT)}")
 
-if errors:
-    print("VALIDATION FAILED")
-    print("\n".join(f"- {error}" for error in errors))
-    sys.exit(1)
+def check_python(text: str, errors: list[str], rel: Path) -> int:
+    blocks = re.findall(r"```python\n(.*?)\n```", text, flags=re.S)
+    for number, code in enumerate(blocks, 1):
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            errors.append(f"Invalid Python block #{number} in {rel}: {exc.msg} (line {exc.lineno})")
+    return len(blocks)
 
-print("VALIDATION PASSED")
-print(f"Total markdown files: {len(files)}")
-print(f"System design exercises: {len(design_files)}")
-print(f"Python fenced blocks parsed: {python_blocks}")
-print(f"Mermaid blocks structurally checked: {mermaid_blocks}")
-print("Empty files: 0")
-print("Broken local Markdown links: 0")
-print("Placeholder markers: 0")
+
+def english_paragraphs(text: str) -> list[str]:
+    found = []
+    for para in re.split(r"\n\s*\n", strip_code(text)):
+        para = para.strip()
+        if not para or para.startswith(("|", "#", ">", "-", "*", "[", "1.")):
+            continue
+        words = re.findall(r"[A-Za-zÀ-ỹ]+", para)
+        if len(words) >= 25 and not VIETNAMESE_CHARS.search(para):
+            found.append(para[:80])
+    return found
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--strict", action="store_true", help="coi cảnh báo là lỗi")
+    args = parser.parse_args()
+
+    files = sorted(KNOWLEDGE_ROOT.rglob("*.md"))
+    main_readme = PYTHON_ROOT / "README.md"
+    if main_readme.exists():
+        files.insert(0, main_readme)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    hashes: dict[str, list[Path]] = {}
+    totals = {"links": 0, "mermaid": 0, "python": 0}
+
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(PYTHON_ROOT)
+        hashes.setdefault(hashlib.sha256(text.encode()).hexdigest(), []).append(rel)
+
+        if not text.strip():
+            errors.append(f"Empty file: {rel}")
+            continue
+        prose = strip_code(text)
+        for pattern in BANNED_PATTERNS:
+            if re.search(pattern, prose, flags=re.M | re.I):
+                errors.append(f"Interview-style structure in {rel}: /{pattern}/")
+        if PLACEHOLDER.search(prose):
+            errors.append(f"Placeholder marker in {rel}")
+
+        totals["links"] += check_links(path, text, errors, rel)
+        totals["mermaid"] += check_mermaid(text, errors, rel)
+        totals["python"] += check_python(text, errors, rel)
+
+        is_module_readme = path.name == "README.md" and path.parent.parent == KNOWLEDGE_ROOT
+        if is_module_readme and path.parent.name not in {"22-references"}:
+            missing = [s for s in README_SECTIONS if f"## {s}" not in text]
+            if missing:
+                errors.append(f"README {rel} missing: {', '.join(missing)}")
+        elif path.name != "README.md" and path != main_readme:
+            if "## Liên quan" not in text:
+                warnings.append(f"No 'Liên quan' section: {rel}")
+
+        for snippet in english_paragraphs(text):
+            warnings.append(f"Long English paragraph in {rel}: {snippet}...")
+
+    for path in sorted((KNOWLEDGE_ROOT / "11-system-design").glob("design-*.md")):
+        text = path.read_text(encoding="utf-8")
+        headings = "\n".join(re.findall(r"(?m)^##+ .*$", text))
+        missing = [s for s in DESIGN_SECTIONS if s not in headings]
+        if missing:
+            errors.append(f"System design {path.name} missing sections: {', '.join(missing)}")
+        if text.count("```mermaid") < 5:
+            errors.append(f"System design {path.name} has fewer than 5 diagrams")
+        if "sequenceDiagram" not in text:
+            errors.append(f"System design {path.name} has no sequence diagram")
+
+    for duplicates in hashes.values():
+        if len(duplicates) > 1:
+            errors.append("Duplicate files: " + ", ".join(map(str, duplicates)))
+
+    for warning in warnings:
+        print(f"WARN  {warning}")
+    for error in errors:
+        print(f"ERROR {error}")
+    print(
+        f"\nFiles: {len(files)} · local links: {totals['links']} · "
+        f"mermaid blocks: {totals['mermaid']} · python blocks: {totals['python']}"
+    )
+    print(f"Errors: {len(errors)} · Warnings: {len(warnings)}")
+    failed = bool(errors) or (args.strict and bool(warnings))
+    print("VALIDATION FAILED" if failed else "VALIDATION PASSED")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,216 +1,284 @@
-# Gc Reference Counting
+# Reference Counting và Garbage Collection
 
-> **Phạm vi phỏng vấn:** Python Core · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Python không yêu cầu lập trình viên giải phóng memory thủ công. CPython dùng **hai cơ chế** kết hợp để quyết định khi nào một object có thể bị hủy:
 
-CPython chủ yếu thu hồi bằng reference counting và dùng cyclic garbage collector để tìm reference cycle ở các generation.
+1. **Reference counting** — cơ chế chính. Mỗi object đếm số reference đang trỏ tới nó; khi số đếm về 0, object bị hủy **ngay lập tức**.
+2. **Cyclic garbage collector** — cơ chế bổ sung. Tìm và dọn các nhóm object tham chiếu vòng lẫn nhau mà không còn ai bên ngoài trỏ tới, trường hợp reference counting không xử lý được.
 
-## 2. Why does it matter?
+Hiểu hai cơ chế này giúp giải thích: vì sao file đôi khi tự đóng dù quên `close()`, vì sao một số object "sống mãi", vì sao service có latency spike định kỳ, và vì sao reference counting là lý do lịch sử chính của [GIL](../02-python-concurrency/gil.md).
 
-Senior Engineer cần hiểu **Gc Reference Counting** để giải thích hành vi runtime, tránh bug khó thấy và ra quyết định API/library có cơ sở. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+> **Ghi chú version:** Đây là hành vi của CPython. Ngôn ngữ Python không bắt buộc reference counting; PyPy dùng tracing GC và không hủy object ngay khi hết reference. Chi tiết generation và threshold của cyclic GC thay đổi giữa các version (đặc biệt 3.12, 3.14 và free-threaded build).
 
-## 3. How does it work?
+## 2. Mental Model
 
-`del` chỉ bỏ một reference; object được giải phóng khi refcount về 0. GC theo thế hệ quét container objects, còn external resource phải đóng deterministically bằng context manager.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `allocation rate, RSS, GC pause, latency và correctness` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Gc Reference Counting',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
-```
-
-Ví dụ biến quyết định về **Gc Reference Counting** thành invariant và tín hiệu vận hành có thể kiểm chứng.
-
-## 5. Production Use Case
-
-Worker tạo cycle chứa exception traceback giữ payload lớn; quan sát generation count, phá cycle và giới hạn task-per-child thay vì gọi `gc.collect()` trên mọi request.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Gc Reference Counting | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Gc Reference Counting, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Gc Reference Counting.
-- **B3.** Which guarantees does Gc Reference Counting provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Gc Reference Counting?
-- **B5.** What is the most common misconception about Gc Reference Counting?
-- **B6.** How would you test assumptions involving Gc Reference Counting?
-- **B7.** Which edge cases or failure modes matter most for Gc Reference Counting?
-- **B8.** How can Gc Reference Counting affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Gc Reference Counting?
-- **B10.** When is a different or simpler approach better than relying on Gc Reference Counting?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Gc Reference Counting triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Gc Reference Counting is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Gc Reference Counting. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Gc Reference Counting fails first?
-- **S5.** A canary changes the behavior of Gc Reference Counting; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Gc Reference Counting constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Gc Reference Counting meets concurrency or partial failure?
-- **L3.** What breaks first around Gc Reference Counting at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Gc Reference Counting?
-- **L5.** How would you benchmark or validate Gc Reference Counting without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Gc Reference Counting introduce?
-- **L7.** How would you change a poor decision around Gc Reference Counting with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Gc Reference Counting?
-- **L10.** How would you turn an incident involving Gc Reference Counting into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** CPython chủ yếu thu hồi bằng reference counting và dùng cyclic garbage collector để tìm reference cycle ở các generation. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Gc Reference Counting.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo allocation rate, RSS, GC pause, latency và correctness; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Gc Reference Counting như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Gc Reference Counting khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Gc Reference Counting**, không chỉ “dùng để làm gì”.
-- Định lượng bằng allocation rate, RSS, GC pause, latency và correctness và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Reference counting dọn object ngay khi không còn owner; cyclic GC là đội thu gom chuyên tìm các nhóm object chỉ còn trỏ lẫn nhau.
-
-## 14. Internals Deep Dive
-
-
-Refcount tăng khi reference mới được giữ bởi name/container/frame và giảm khi reference bị overwrite, container bỏ phần tử hoặc frame kết thúc. `del x` xóa binding `x`; nó không ra lệnh free object. Khi refcount về 0, CPython thường deallocate ngay và cascading decrement các child reference.
-
-Cycle `a → b → a` không bao giờ tự về 0, nên cyclic GC theo dõi container object. Object mới vào generation trẻ; object sống qua collection được promote. Exact generation policy/threshold thay đổi theo Python version—đặc biệt free-threaded builds—nên dùng `gc.get_stats()`/official docs thay vì thuộc con số implementation. External resource vẫn cần `with`/`finally` vì GC timing không phải contract.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+- **Reference counting** giống người giữ chìa khóa: mỗi nơi giữ reference là một chìa. Người cuối cùng trả chìa thì căn phòng được dọn ngay.
+- **Cyclic GC** là đội kiểm tra định kỳ, tìm những căn phòng mà người bên trong giữ chìa của nhau nhưng không ai từ bên ngoài còn vào được.
 
 ```mermaid
 flowchart TD
-    Create["Object created"] --> Gen0["Young generation"]
-    Gen0 -->|unreachable| Collect["Collect cycle"]
-    Gen0 -->|survives| Older["Older generation"]
-    Older -->|survives repeatedly| Oldest["Old generation"]
-    RefZero["Reference count becomes 0"] --> Immediate["Immediate deallocation in CPython"]
-    Cycle["Cycle keeps refcount above 0"] --> Gen0
+    Create["Object được tạo"] --> Track{"Là container?<br/>list, dict, instance..."}
+    Track -->|"không: int, str"| RC["Chỉ quản lý bằng refcount"]
+    Track -->|"có"| Gen0["Vào generation trẻ của cyclic GC"]
+    RC --> Zero["Refcount về 0"]
+    Gen0 --> Zero
+    Zero --> Free["Hủy ngay lập tức"]
+    Gen0 -->|"còn nằm trong cycle"| Scan["GC quét generation"]
+    Scan -->|"không reachable"| Collect["Phá cycle và hủy"]
+    Scan -->|"sống sót"| Older["Promote lên generation già hơn"]
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Giải thích:
 
-## 16. Failure Scenario
+1. Mọi object đều có refcount. Object không thể chứa reference khác (int, str, float) không bao giờ tạo được cycle nên chỉ cần refcount.
+2. Object dạng container được GC "track": chúng có thể nằm trong cycle.
+3. Trong đa số trường hợp, refcount về 0 và object bị hủy ngay, GC không cần làm gì.
+4. Khi cycle xuất hiện, refcount không bao giờ về 0. GC định kỳ quét, phát hiện nhóm không reachable và phá chúng.
+5. Object sống sót qua lần quét được chuyển sang generation già hơn, ít bị quét hơn.
 
-Failure thường xuất hiện dưới dạng aliasing sai, retained reference, unexpected lookup hoặc version-specific behavior. Reproduce với input nhỏ, quan sát identity/type/referrer và giảm global/cache lifetime trước khi đổi GC tuning.
+## 3. Vì sao cần cả hai cơ chế?
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+| Cơ chế | Ưu điểm | Hạn chế |
+|---|---|---|
+| Reference counting | Giải phóng ngay, dự đoán được, không cần pause dài | Chi phí mỗi lần gán/xóa reference; không xử lý được cycle; khó làm thread-safe hiệu quả |
+| Tracing GC (cyclic GC) | Xử lý được cycle | Cần duyệt object, gây pause; thời điểm chạy không dự đoán được |
 
-## 17. How I would debug this in production
+CPython chọn refcount làm cơ chế chính vì tính tất định: phần lớn object bị hủy đúng lúc hết dùng, memory được tái sử dụng ngay, C extension dễ viết. Cyclic GC chỉ là lưới an toàn cho trường hợp vòng.
 
-1. Reproduce với input/lifetime nhỏ nhất.
-2. Đo RSS và Python heap; so snapshot `tracemalloc`.
-3. Inspect type, identity, referrer/owner.
-4. Kiểm global, closure, cache và container retention.
-5. Xác nhận behavior theo Python/CPython version.
+## 4. Reference counting hoạt động thế nào?
 
-## 18. Common Misconceptions
+Refcount tăng khi một reference mới được tạo:
 
-**Sai:** syntax mô tả đầy đủ memory behavior. **Đúng:** binding, alias, object lifetime và CPython optimization quyết định behavior; implementation detail phải gắn version.
+- gán vào name: `x = obj`
+- đưa vào container: `lst.append(obj)`, `d[k] = obj`
+- truyền làm argument (frame của callee giữ reference)
+- closure cell giữ reference
+- attribute: `self.cache = obj`
 
-## 19. When NOT to use
+Refcount giảm khi reference biến mất:
 
-Không phụ thuộc CPython-specific behavior nếu library phải chạy nhiều implementation/version; ưu tiên language contract và benchmark thực tế.
+- name bị rebind hoặc `del`
+- container bỏ phần tử hoặc bị hủy
+- frame kết thúc (function return), local variable biến mất
+- object chứa reference bị hủy (giảm refcount của các con)
 
-## 20. What interviewer may ask next
+```python
+import sys
 
-1. **What guarantee does Gc Reference Counting provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+a = []
+sys.getrefcount(a)   # 2: name a + tham số tạm của chính getrefcount
+b = a
+sys.getrefcount(a)   # 3
+del b
+sys.getrefcount(a)   # 2
+```
 
-## 21. Check Your Understanding
+### `del` không hủy object
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Gc Reference Counting** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+`del x` chỉ xóa name `x` khỏi namespace và giảm refcount một đơn vị. Object chỉ bị hủy nếu đó là reference cuối cùng.
 
-<details>
-<summary>Answer</summary>
+### Hủy dây chuyền
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Khi một object bị hủy, nó giảm refcount của mọi object nó đang giữ. Nếu những object đó cũng về 0, chúng bị hủy tiếp. Hủy một dict lớn có thể kéo theo hủy hàng triệu object con trong một lần — tốn thời gian đáng kể ngay tại dòng code làm mất reference cuối cùng. CPython có cơ chế "trashcan" để giới hạn độ sâu đệ quy khi hủy cấu trúc lồng nhau sâu, tránh tràn C stack.
 
-</details>
+### Chi phí của refcount
 
-## 22. See also
+Mỗi lần gán, truyền tham số, lấy phần tử từ list đều là thao tác `Py_INCREF`/`Py_DECREF` — ghi vào memory của object. Điều này có ba hệ quả:
 
-- [GIL](../02-python-concurrency/gil.md)
-- [Python Profiling](../17-performance-reliability/profiling-python.md)
+1. **Tốn CPU** ở mọi thao tác, kể cả chỉ đọc.
+2. **Phá copy-on-write** sau `fork`: chỉ đọc object cũng ghi vào header của nó, làm page bị copy. Xem [Python Memory Model](python-memory-model.md).
+3. **Không thread-safe** nếu không có đồng bộ. Hai thread cùng tăng refcount của một object mà không có lock có thể làm sai số đếm, dẫn tới hủy object khi vẫn còn dùng (crash) hoặc không bao giờ hủy (leak). GIL giải quyết vấn đề này bằng cách chỉ cho một thread chạy bytecode tại một thời điểm. Free-threaded build giải quyết bằng biased reference counting.
+
+## 5. Vì sao reference counting không đủ: cycle
+
+```python
+class Node:
+    def __init__(self):
+        self.peer = None
+
+a = Node()
+b = Node()
+a.peer = b
+b.peer = a
+del a, b
+```
+
+Sau `del`, không name nào trỏ tới hai object, nhưng `a.peer` giữ `b` và `b.peer` giữ `a`. Refcount của mỗi object là 1, không bao giờ về 0. Nếu chỉ có refcount, hai object này leak vĩnh viễn.
+
+Cycle trong code thực tế xuất hiện nhiều hơn bạn nghĩ:
+
+- Cấu trúc parent ↔ child (cây DOM, ORM object có relationship hai chiều).
+- Object giữ bound method của chính nó (`self.callback = self.handle`): bound method giữ `self`.
+- Exception và traceback: traceback giữ frame, frame giữ local variable, local variable giữ exception.
+- Closure tham chiếu tới function chứa nó.
+- Class object: class ↔ `__dict__` ↔ function ↔ `__globals__` của module.
+
+## 6. Internals: cyclic GC tìm cycle thế nào?
+
+Cyclic GC không quét toàn bộ memory. Nó chỉ xét tập container được track và dựa trên một nhận xét: nếu trừ đi mọi reference **nội bộ** trong tập đang xét mà một object vẫn còn refcount dương, thì phải có reference từ **bên ngoài** tập — object đó reachable.
+
+```mermaid
+flowchart TD
+    S1["1. Copy refcount của mỗi object vào gc_refs"] --> S2["2. Duyệt reference nội bộ trong tập<br/>trừ gc_refs của object được trỏ tới"]
+    S2 --> S3{"gc_refs còn lớn hơn 0?"}
+    S3 -->|"có"| Root["Có reference từ bên ngoài<br/>đánh dấu là root reachable"]
+    S3 -->|"không"| Tent["Tạm coi là unreachable"]
+    Root --> S4["3. Mọi object reachable từ root<br/>được chuyển lại sang reachable"]
+    Tent --> S4
+    S4 --> S5["4. Phần còn lại thực sự unreachable"]
+    S5 --> S6["5. Gọi finalizer và weakref callback"]
+    S6 --> S7["6. tp_clear phá reference trong cycle<br/>refcount về 0, object bị hủy"]
+```
+
+Các bước:
+
+1. Với mỗi object trong generation đang được quét, GC sao chép refcount vào trường tạm `gc_refs`.
+2. GC gọi `tp_traverse` của mỗi object để liệt kê reference nó giữ. Với mỗi reference trỏ tới object **trong cùng tập**, giảm `gc_refs` của object bị trỏ.
+3. Sau bước 2, `gc_refs > 0` nghĩa là còn reference từ ngoài tập (từ generation khác, từ frame, từ global...). Object đó là root.
+4. Mọi thứ reachable từ root cũng được giữ lại.
+5. Những object còn lại không có đường nào từ bên ngoài đi tới: chúng là rác. GC gọi finalizer (`__del__`, theo PEP 442 từ Python 3.4 được gọi an toàn cho object trong cycle), xử lý weakref callback.
+6. GC gọi `tp_clear` để xóa reference bên trong cycle; refcount về 0 và object được hủy như bình thường.
+
+### Generation
+
+Nhận xét thực nghiệm: phần lớn object chết trẻ. Object sống qua vài lần quét thường sống lâu (config, cache, class, module). Vì vậy GC chia object thành các generation và quét generation trẻ thường xuyên hơn.
+
+Ở CPython trước 3.14, có ba generation với threshold mặc định `(700, 10, 10)`:
+
+- Generation 0 được quét khi số container được cấp phát trừ số bị hủy vượt 700.
+- Generation 1 được quét sau 10 lần quét generation 0.
+- Generation 2 (già nhất) được quét sau 10 lần quét generation 1, kèm điều kiện số object chờ promote đủ lớn so với tổng object già, để tránh việc quét full heap quá thường xuyên.
+
+> **Ghi chú version:**
+> - Từ 3.12, GC không chạy ngay tại thời điểm cấp phát mà được lên lịch và chạy ở điểm eval breaker kế tiếp.
+> - CPython 3.14 giới thiệu incremental GC với hai generation (young và old): mỗi lần chạy thu gom generation trẻ cộng một phần của generation già, giảm độ dài pause với heap lớn. Chi tiết có thể điều chỉnh qua các bản patch; kiểm tra tài liệu module `gc` của version đang chạy.
+> - Free-threaded build dùng GC stop-the-world với chiến lược khác build mặc định.
+
+Luôn dùng `gc.get_threshold()`, `gc.get_count()`, `gc.get_stats()` để xem cấu hình thực tế thay vì thuộc lòng con số.
+
+## 7. Ví dụ: cycle từ exception giữ frame
+
+```python
+errors = []
+
+def process(batch):
+    big_buffer = bytearray(50_000_000)   # 50 MB
+    try:
+        parse(batch)
+    except ValueError as exc:
+        errors.append(exc)               # giữ exception lại để báo cáo sau
+```
+
+`exc.__traceback__` → traceback → frame của `process` → local `big_buffer`. Chừng nào `errors` còn giữ `exc`, 50 MB của mỗi lần lỗi không được giải phóng. Đây không phải cycle mà là reference sống từ global list, nhưng cơ chế giống nhau: traceback kéo theo toàn bộ local variable của mọi frame trong stack.
+
+Cách xử lý: chỉ lưu thông tin cần thiết (`str(exc)`, loại lỗi, ID), hoặc `exc.with_traceback(None)`, hoặc dùng `traceback.format_exception` để lưu chuỗi.
+
+Bản thân Python cũng xóa `exc` khi thoát khối `except ... as exc`, chính là để phá cycle frame → exc → traceback → frame.
+
+## 8. Finalizer và weakref
+
+### `__del__`
+
+`__del__` được gọi khi object sắp bị hủy. Nó **không** phải destructor đáng tin cậy:
+
+- Thời điểm gọi phụ thuộc refcount và GC; với PyPy có thể rất trễ.
+- Exception trong `__del__` bị bỏ qua (chỉ in cảnh báo).
+- Tại lúc interpreter shutdown, module global có thể đã bị xóa, `__del__` có thể lỗi hoặc không được gọi.
+- `__del__` có thể "hồi sinh" object bằng cách lưu `self` ở đâu đó.
+
+Với tài nguyên bên ngoài (file, socket, connection, lock), dùng [context manager](context-manager.md) để giải phóng tất định. Nếu cần hook dọn dẹp dự phòng, dùng `weakref.finalize`, an toàn hơn `__del__`.
+
+### Weak reference
+
+`weakref.ref(obj)` trỏ tới object **mà không tăng refcount**. Khi object bị hủy, weakref trả về `None`. Dùng để:
+
+- Phá cycle tự nhiên: child giữ weakref tới parent.
+- Cache không giữ object sống: `weakref.WeakValueDictionary`.
+- Đăng ký listener mà không ngăn listener bị thu hồi: `weakref.WeakMethod`.
+
+## 9. Hành vi trong production
+
+**GC pause gây latency spike.** Service giữ hàng triệu container object sống lâu (cache lớn trong process, ORM identity map lớn, graph trong memory) có thể thấy p99 tăng định kỳ khi generation già bị quét. Pause tỷ lệ với số object được track trong generation đang quét.
+
+**Refcount trả memory đều đặn.** Với code không tạo cycle, memory được giải phóng liên tục và gần như không có pause. Đây là lợi thế của CPython so với runtime chỉ dùng tracing GC.
+
+**Pre-fork server.** Master process khởi tạo app rồi fork worker. Nếu gọi `gc.freeze()` ngay trước khi fork, mọi object hiện có được chuyển vào một vùng "permanent" mà GC bỏ qua, giảm việc GC ghi vào page được chia sẻ và giảm thời gian quét.
+
+**Tắt GC.** Một số hệ thống lớn tắt cyclic GC (`gc.disable()`) hoặc tăng threshold rất cao để loại bỏ pause, chấp nhận memory của cycle chỉ được thu hồi khi worker restart. Đây là quyết định chỉ hợp lý khi đã đo và có worker recycling.
+
+## 10. Failure Modes
+
+| Failure | Cơ chế | Dấu hiệu |
+|---|---|---|
+| Leak do reference sống | Global/cache/list giữ object, exception giữ traceback | `tracemalloc` tăng; `gc.get_referrers` chỉ ra nơi giữ |
+| Cycle tích lũy nhanh hơn GC dọn | Tạo nhiều cycle lớn mỗi request | Memory dao động răng cưa lớn; `gc.get_stats()` cho thấy nhiều object collected |
+| GC pause | Heap lớn nhiều container sống lâu | p99 spike định kỳ không tương quan với traffic |
+| Tài nguyên không được đóng | Dựa vào `__del__`/GC để đóng file/socket | "Too many open files", connection pool cạn |
+| Crash trong C extension | Refcount sai (thiếu INCREF hoặc thừa DECREF) | Segfault, use-after-free, không tái hiện ổn định |
+
+## 11. Trade-offs
+
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Để GC mặc định | An toàn, không cần suy nghĩ | Có thể có pause với heap lớn |
+| Tăng threshold / `gc.freeze()` | Ít pause hơn, bảo toàn copy-on-write | Cycle được dọn chậm hơn, memory cao hơn |
+| `gc.disable()` | Không còn pause của cyclic GC | Cycle leak đến khi restart; cần recycling và giám sát chặt |
+| Thiết kế tránh cycle (weakref) | Object được hủy tất định bằng refcount | Code phức tạp hơn, phải xử lý weakref chết |
+
+## 12. Sai lầm thường gặp
+
+- Cho rằng `del x` giải phóng memory ngay.
+- Gọi `gc.collect()` trong mỗi request để "giảm memory". Nó tốn CPU và không giải quyết leak do reference sống.
+- Dùng `__del__` để đóng connection hoặc release lock.
+- Lưu exception object vào list/log buffer lâu dài, giữ toàn bộ frame và local.
+- Nghĩ rằng Python "không có memory leak vì có GC". GC chỉ thu hồi object **không reachable**; object vẫn reachable qua cache toàn cục thì không bao giờ bị thu hồi.
+
+## 13. Cách debug trong production
+
+1. **Đo GC**: đăng ký callback để đo thời gian mỗi lần quét.
+   ```python
+   import gc, time
+
+   _start = {}
+
+   def gc_timer(phase, info):
+       if phase == "start":
+           _start["t"] = time.perf_counter()
+       else:
+           elapsed_ms = (time.perf_counter() - _start["t"]) * 1000
+           # gửi metric: generation=info["generation"], collected=info["collected"]
+           print(info["generation"], info["collected"], f"{elapsed_ms:.1f}ms")
+
+   gc.callbacks.append(gc_timer)
+   ```
+   Nếu pause của generation già trùng với p99 spike, GC là nghi phạm.
+2. **Đếm object được track**: `len(gc.get_objects())` theo thời gian.
+3. **Tìm cycle không thu hồi được**: `gc.set_debug(gc.DEBUG_SAVEALL)` trong môi trường test, sau `gc.collect()` xem `gc.garbage`.
+4. **Tìm nơi giữ reference**: `gc.get_referrers(obj)`, `objgraph.show_backrefs([obj], max_depth=5)`.
+5. **Theo dõi allocation**: `tracemalloc` snapshot diff, `memray` cho cả native.
+
+## 14. Best Practices
+
+- Quản lý tài nguyên bên ngoài bằng `with`/`try-finally`, không dựa vào GC.
+- Dùng `weakref` cho quan hệ ngược (child → parent), cache phụ, listener.
+- Không giữ exception object lâu dài; lưu thông tin đã format.
+- Giới hạn kích thước mọi cache trong process.
+- Chỉ tinh chỉnh GC (`set_threshold`, `freeze`, `disable`) sau khi đo được GC là nguyên nhân latency, và luôn đi kèm worker recycling cùng giám sát memory.
+
+## 15. Tóm tắt
+
+- CPython dùng reference counting làm cơ chế chính: object bị hủy ngay khi refcount về 0.
+- `del` chỉ xóa một reference, không ra lệnh giải phóng.
+- Cyclic GC bổ sung để dọn cycle, dựa trên việc trừ reference nội bộ để tìm object không reachable từ bên ngoài.
+- GC chia generation vì phần lớn object chết trẻ; chi tiết generation phụ thuộc version.
+- Refcount không thread-safe nếu không có đồng bộ — lý do lịch sử của GIL.
+- Tài nguyên bên ngoài phải được đóng tất định bằng context manager.
+
+## Liên quan
+
+- [Python Memory Model](python-memory-model.md)
+- [Python Object Model](object-model.md)
+- [Context Manager](context-manager.md)
+- [Global Interpreter Lock](../02-python-concurrency/gil.md)
+- [Memory Leak](../20-production-incidents/memory-leak.md)

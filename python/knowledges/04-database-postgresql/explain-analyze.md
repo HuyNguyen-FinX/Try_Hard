@@ -1,211 +1,266 @@
-# Explain Analyze
+# EXPLAIN ANALYZE: đọc execution plan
 
-> **Phạm vi phỏng vấn:** PostgreSQL · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
-
-`EXPLAIN ANALYZE` thực thi query và trả actual timing/rows cho từng plan node; `BUFFERS` cho biết cache/disk behavior.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **Explain Analyze** để database thường là stateful bottleneck và sai lầm có thể gây mất dữ liệu. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-So sánh estimated với actual rows để phát hiện stale statistics/skew; đọc từ node sâu nhất, loops, rows removed, sort spill và buffer read. DML phải thử trong transaction có rollback.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+`EXPLAIN` in ra **execution plan** mà planner đã chọn cho một câu query: cây các node (scan, join, sort, aggregate...), kèm chi phí ước tính và số row dự đoán. `EXPLAIN ANALYZE` **thực sự chạy** query và bổ sung số liệu thật: thời gian, số row, số lần lặp. Thêm `BUFFERS` để thấy query đọc bao nhiêu page từ cache và từ disk.
 
 ```sql
-EXPLAIN (ANALYZE, BUFFERS, WAL)
-SELECT id, status, created_at
-FROM warranty_claim
-WHERE vehicle_id = 4242 AND created_at >= now() - interval '90 days'
-ORDER BY created_at DESC
-LIMIT 50;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT ...;
 ```
 
-Với **Explain Analyze**, đọc `actual rows`, `loops`, buffer hit/read và sort spill; thử trên dữ liệu có distribution đại diện.
+Đây là công cụ quan trọng nhất để hiểu vì sao một query chậm. Kỹ năng không nằm ở việc thuộc tên các node, mà ở việc biết **nhìn vào đâu**: chỗ ước tính lệch xa thực tế, chỗ đọc quá nhiều dữ liệu so với kết quả, chỗ spill ra disk.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-Query chậm do Nested Loop ước lượng 10 nhưng thực tế 2M rows; tăng statistics, sửa predicate/index rồi kiểm chứng p95 trên representative data.
-
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
-
-## 6. Common Problems
-
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
-
-## 7. Trade-offs
-
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Explain Analyze | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
-
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is Explain Analyze, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Explain Analyze.
-- **B3.** Which guarantees does Explain Analyze provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Explain Analyze?
-- **B5.** What is the most common misconception about Explain Analyze?
-- **B6.** How would you test assumptions involving Explain Analyze?
-- **B7.** Which edge cases or failure modes matter most for Explain Analyze?
-- **B8.** How can Explain Analyze affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Explain Analyze?
-- **B10.** When is a different or simpler approach better than relying on Explain Analyze?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving Explain Analyze triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Explain Analyze is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Explain Analyze. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Explain Analyze fails first?
-- **S5.** A canary changes the behavior of Explain Analyze; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does Explain Analyze constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Explain Analyze meets concurrency or partial failure?
-- **L3.** What breaks first around Explain Analyze at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Explain Analyze?
-- **L5.** How would you benchmark or validate Explain Analyze without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Explain Analyze introduce?
-- **L7.** How would you change a poor decision around Explain Analyze with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Explain Analyze?
-- **L10.** How would you turn an incident involving Explain Analyze into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** `EXPLAIN ANALYZE` thực thi query và trả actual timing/rows cho từng plan node; `BUFFERS` cho biết cache/disk behavior. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Explain Analyze.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Explain Analyze như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Explain Analyze khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Explain Analyze**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query latency, rows scanned, buffer hit ratio, lock wait, WAL lag và IOPS và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Execution plan là cây operator; dữ liệu chảy từ node con lên node cha. `ANALYZE` thay dự đoán bằng số đo nhưng cũng thực thi query.
-
-## 14. Internals Deep Dive
-
-
-Đọc plan từ node sâu nhất nơi actual/estimate lệch mạnh hoặc time/buffer tăng, rồi đi lên. `actual time=a..b rows=n loops=m`: thời gian/rows thường per-loop; tổng work liên quan loops. `Rows Removed by Filter`, heap fetches, sort method/memory/disk, hash batches và temp blocks chỉ ra waste/spill.
-
-`BUFFERS` tách shared hit/read/dirtied/written và temp; hit không có nghĩa miễn phí vì vẫn tốn CPU. `EXPLAIN ANALYZE` thực thi query: với DML dùng transaction rồi rollback khi phù hợp và tránh production query nguy hiểm. Generic/prepared plan, cache warmth, concurrency và realistic data distribution có thể làm test đơn lẻ sai lệch.
-
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+> Plan là một cây; dữ liệu chảy **từ lá lên gốc**. Mỗi node nhận row từ node con, xử lý, và đưa lên node cha. Đọc plan từ node sâu nhất, tìm node đầu tiên mà "dự đoán" và "thực tế" bắt đầu khác nhau nhiều, hoặc nơi lượng dữ liệu đọc vượt xa lượng dữ liệu hữu ích.
 
 ```mermaid
 flowchart BT
-    Scan["Seq / Index / Bitmap scan"] --> Join["Nested Loop / Hash / Merge"]
+    Scan["Seq / Index / Bitmap scan"] --> Join["Nested Loop / Hash Join / Merge Join"]
     Join --> Sort["Sort / Aggregate"]
     Sort --> Limit["Limit / Result"]
-    Estimate["Estimated rows + cost"] -.compare.-> Actual["Actual rows + time + loops"]
-    Buffers["Buffers + temp + WAL"] --> Actual
+    Estimate["Estimated rows và cost"] -.->|"so sánh"| Actual["Actual rows, time, loops"]
+    Buffers["Buffers: hit, read, temp"] --> Actual
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Scan ở lá đọc dữ liệu từ bảng/index.
+2. Join ghép dữ liệu từ hai nhánh.
+3. Sort/Aggregate xử lý tập kết quả; Limit cắt bớt.
+4. Với mỗi node, so sánh ước tính (planner) với thực tế (executor), và xem buffer để biết chi phí I/O thật.
 
-Plan regression, lock wait, connection storm, bloat hoặc I/O saturation làm tail latency tăng. Mitigate bằng rollback/query kill có chọn lọc/admission control; thay đổi index/schema phải verify bằng representative plan và write cost.
+## 3. Vì sao cần?
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+- Biết query **thực sự** làm gì, không phải bạn nghĩ nó làm gì.
+- Phát hiện nguyên nhân gốc: thiếu index, thống kê sai, join sai thuật toán, spill ra disk.
+- Kiểm chứng tối ưu: so sánh plan trước và sau khi thêm index hoặc viết lại query.
 
-## 17. How I would debug this in production
+## 4. Các tùy chọn
 
-1. Kiểm DB CPU/IO/connections và application pool wait.
-2. Dùng `pg_stat_activity` xem wait/lock/transaction age.
-3. Dùng `pg_stat_statements` tìm total-time/calls/rows regression.
-4. Chạy `EXPLAIN (ANALYZE, BUFFERS)` an toàn trên dữ liệu đại diện.
-5. Kiểm estimate, scan/join, loops, spill, index/statistics/bloat.
-6. Mitigate rồi đo lại p99 và write/WAL cost.
+| Tùy chọn | Tác dụng |
+|---|---|
+| `ANALYZE` | Chạy query, đo thời gian và số row thật |
+| `BUFFERS` | Số page đọc từ cache (`hit`), từ OS/disk (`read`), bị làm bẩn, ghi, temp |
+| `VERBOSE` | Cột output của từng node, tên schema đầy đủ |
+| `SETTINGS` | Các tham số planner khác mặc định đang có hiệu lực |
+| `WAL` | Lượng WAL sinh ra (với câu lệnh ghi) |
+| `FORMAT JSON` | Output máy đọc được, dùng với công cụ trực quan hóa |
+| `SERIALIZE` (17+) | Đo chi phí chuyển kết quả thành dạng gửi cho client |
 
-## 18. Common Misconceptions
+> **Ghi chú version:** Từ PostgreSQL 18, `EXPLAIN ANALYZE` hiển thị `BUFFERS` mặc định. Với version cũ hơn, luôn thêm `BUFFERS` tường minh.
 
-**Sai:** có index thì PostgreSQL phải dùng index. **Đúng:** planner chọn plan theo cost/selectivity; sequential scan có thể rẻ hơn.
+**Cảnh báo**: `EXPLAIN ANALYZE` **thực thi** câu lệnh. Với `UPDATE`/`DELETE`/`INSERT`, bọc trong transaction và rollback:
 
-## 19. When NOT to use
+```sql
+BEGIN;
+EXPLAIN (ANALYZE, BUFFERS) UPDATE claims SET status = 'expired' WHERE ...;
+ROLLBACK;
+```
 
-Không thêm index/partition/replica trước khi access pattern và bottleneck được đo; mỗi component tăng write/operation cost.
+Ngay cả khi rollback, câu lệnh vẫn lấy lock và tạo WAL trong lúc chạy. Không chạy trên production với câu lệnh nặng nếu không cân nhắc.
 
-## 20. What interviewer may ask next
+## 5. Giải phẫu một dòng plan
 
-1. **What guarantee does Explain Analyze provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+```text
+Index Scan using idx_claims_vin on claims c  (cost=0.43..8.45 rows=3 width=64) (actual time=0.021..0.030 rows=4 loops=1)
+  Index Cond: (vin = 'WVW...'::text)
+  Buffers: shared hit=5
+```
 
-## 21. Check Your Understanding
+| Thành phần | Ý nghĩa |
+|---|---|
+| `cost=0.43..8.45` | Chi phí ước tính: **startup** (trước khi trả row đầu tiên) .. **total** (trả hết row). Đơn vị tương đối, không phải ms |
+| `rows=3` | Số row planner **dự đoán** node trả ra |
+| `width=64` | Kích thước trung bình mỗi row (byte) |
+| `actual time=0.021..0.030` | Thời gian thật (ms) tới row đầu tiên .. tới row cuối cùng, **tính trên mỗi loop** |
+| `rows=4` | Số row thật, **trung bình mỗi loop** |
+| `loops=1` | Node được chạy bao nhiêu lần |
+| `Index Cond` | Điều kiện dùng để tìm trong index |
+| `Filter` | Điều kiện áp dụng **sau** khi lấy row — row không thỏa bị loại |
+| `Rows Removed by Filter` | Số row đọc rồi bỏ — dấu hiệu lãng phí |
+| `Buffers: shared hit=5` | 5 page đọc từ `shared_buffers` |
+| `shared read=N` | N page phải đọc từ OS (page cache hoặc disk) |
+| `temp read/written` | Page tạm trên disk do sort/hash vượt `work_mem` |
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Explain Analyze** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Quy tắc về `loops`
 
-<details>
-<summary>Answer</summary>
+Với node bên trong Nested Loop, `actual time` và `rows` là **trung bình mỗi lần lặp**. Tổng thời gian ≈ `actual time (total) × loops`. Một node trông rẻ (`0.05 ms`) nhưng `loops=200000` thực tế tốn 10 giây.
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Với parallel query, `loops` bao gồm leader và các worker (ví dụ `loops=3` với 2 worker); `rows` là trung bình mỗi process.
 
-</details>
+## 6. Ví dụ thực chiến: danh sách claim đang chờ duyệt
 
-## 22. See also
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT c.id, c.status, c.created_at, d.name
+FROM claims c
+JOIN dealers d ON d.id = c.dealer_id
+WHERE c.status = 'pending'
+  AND c.created_at >= now() - interval '7 days'
+ORDER BY c.created_at DESC
+LIMIT 50;
+```
 
+### Plan trước khi tối ưu
+
+```text
+Limit  (cost=48210.55..48216.39 rows=50 width=48) (actual time=412.318..418.902 rows=50 loops=1)
+  Buffers: shared hit=1204 read=38811
+  ->  Gather Merge  (cost=48210.55..48489.12 rows=2388 width=48) (actual time=412.316..418.880 rows=50 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        ->  Sort  (cost=47210.53..47213.51 rows=1194 width=48) (actual time=405.110..405.118 rows=38 loops=3)
+              Sort Key: c.created_at DESC
+              Sort Method: top-N heapsort  Memory: 31kB
+              ->  Hash Join  (cost=38.50..47170.86 rows=1194 width=48) (actual time=3.2..403.7 rows=3610 loops=3)
+                    Hash Cond: (c.dealer_id = d.id)
+                    ->  Parallel Seq Scan on claims c  (cost=0.00..47120.00 rows=1194 width=24) (actual time=2.9..401.2 rows=3610 loops=3)
+                          Filter: ((status = 'pending') AND (created_at >= (now() - '7 days'::interval)))
+                          Rows Removed by Filter: 1662057
+                          Buffers: shared hit=1100 read=38811
+                    ->  Hash  (cost=26.00..26.00 rows=1000 width=28) (actual time=0.25..0.25 rows=1000 loops=3)
+                          Buckets: 1024  Batches: 1  Memory Usage: 68kB
+                          ->  Seq Scan on dealers d  (cost=0.00..26.00 rows=1000 width=28) (actual time=0.01..0.12 rows=1000 loops=3)
+Planning Time: 0.412 ms
+Execution Time: 419.055 ms
+```
+
+### Đọc từng bước, từ lá lên
+
+1. **`Seq Scan on dealers`**: đọc 1.000 dealer, rất rẻ. Được đưa vào `Hash` (68 kB, 1 batch — vừa memory). Không có vấn đề.
+2. **`Parallel Seq Scan on claims`** — đây là node quan trọng:
+   - Mỗi process (3 process: `loops=3`) trả trung bình 3.610 row → tổng khoảng 10.800 row hữu ích.
+   - `Rows Removed by Filter: 1662057` mỗi process → tổng khoảng **5 triệu row bị đọc rồi bỏ**.
+   - `Buffers: read=38811` → khoảng 38.811 × 8 KB ≈ **300 MB đọc từ ngoài shared_buffers**.
+   - Kết luận: để lấy 50 row, query đọc toàn bộ bảng.
+3. **Ước tính vs thực tế**: planner dự đoán 1.194 row/process, thực tế 3.610 — lệch 3 lần. Không đủ lớn để là nguyên nhân chính; vấn đề chính là **không có đường truy cập tốt hơn** seq scan.
+4. **`Hash Join`**: ghép 10.800 claim với dealer. Rẻ.
+5. **`Sort` top-N heapsort**: chỉ giữ 50 phần tử tốt nhất, 31 kB memory. Rẻ, nhưng phải chờ **toàn bộ** input — node blocking.
+6. **`Limit`**: lấy 50 row. Nhưng vì Sort là blocking, không có cách nào dừng sớm.
+7. **Tổng**: 419 ms, gần như toàn bộ nằm ở bước 2.
+
+### Tối ưu
+
+Query luôn lọc `status = 'pending'` (hằng số) và sắp theo `created_at DESC`. Một partial index khớp chính xác:
+
+```sql
+CREATE INDEX CONCURRENTLY idx_claims_pending_created
+ON claims (created_at DESC)
+WHERE status = 'pending';
+```
+
+### Plan sau khi tối ưu
+
+```text
+Limit  (cost=0.71..95.33 rows=50 width=48) (actual time=0.051..0.412 rows=50 loops=1)
+  Buffers: shared hit=156
+  ->  Nested Loop  (cost=0.71..20512.44 rows=10835 width=48) (actual time=0.050..0.405 rows=50 loops=1)
+        Buffers: shared hit=156
+        ->  Index Scan using idx_claims_pending_created on claims c  (cost=0.43..8250.10 rows=10835 width=24) (actual time=0.031..0.140 rows=50 loops=1)
+              Index Cond: (created_at >= (now() - '7 days'::interval))
+              Buffers: shared hit=53
+        ->  Index Scan using dealers_pkey on dealers d  (cost=0.28..1.13 rows=1 width=28) (actual time=0.004..0.004 rows=1 loops=50)
+              Index Cond: (id = c.dealer_id)
+              Buffers: shared hit=103
+Planning Time: 0.380 ms
+Execution Time: 0.451 ms
+```
+
+### Vì sao nhanh hơn gần 1.000 lần
+
+1. `Index Scan` trên partial index trả claim `pending` **đã theo thứ tự** `created_at DESC`. Không còn node Sort.
+2. Planner chọn `Nested Loop` thay vì Hash Join: với mỗi claim, tra dealer bằng primary key (`loops=50`, 0.004 ms mỗi lần).
+3. Không còn node blocking, nên `Limit` **dừng sau 50 row**: index scan chỉ đọc 50 entry (`rows=50`) dù planner biết có khoảng 10.835 row thỏa điều kiện.
+4. Chú ý `cost=0.71..95.33` của Limit: startup cost gần 0 — dấu hiệu plan streaming.
+5. `Buffers: shared hit=156`, không có `read`: 156 page, tất cả từ cache.
+
+## 7. Các dấu hiệu cần tìm
+
+| Dấu hiệu trong plan | Ý nghĩa | Hướng xử lý |
+|---|---|---|
+| `rows` estimate khác actual ≥ 10 lần | Thống kê sai hoặc cột tương quan | `ANALYZE`, tăng statistics target, `CREATE STATISTICS` |
+| `Rows Removed by Filter` rất lớn so với rows | Đọc nhiều bỏ nhiều | Index phù hợp, partial index |
+| `Seq Scan` trên bảng lớn trả ít row | Thiếu index hoặc điều kiện không sargable | Index, viết lại điều kiện |
+| Nested Loop với `loops` rất lớn | Ước tính outer quá thấp | Sửa thống kê; kiểm tra điều kiện join |
+| `Sort Method: external merge Disk` | Sort vượt `work_mem` | Index cho thứ tự, tăng `work_mem` cho query đó |
+| `Hash ... Batches: 16` | Hash join spill | Tăng `work_mem`, giảm cột trong hash, sửa ước tính |
+| `Heap Fetches` lớn trong Index Only Scan | Visibility map chưa cập nhật | VACUUM bảng |
+| `Heap Blocks: lossy=...` | Bitmap vượt `work_mem`, phải recheck cả page | Tăng `work_mem`, index chọn lọc hơn |
+| `shared read` lớn | Dữ liệu không nằm trong cache | Giảm dữ liệu đọc; cache nguội sau restart |
+| Planning Time lớn | Nhiều join, nhiều partition | Prepared statement, giảm partition phải xét |
+
+## 8. Plan trong production khác plan khi test
+
+`EXPLAIN ANALYZE` chạy một query đơn lẻ, thường với cache nóng. Trong production:
+
+- **Concurrency**: hàng trăm query cùng lúc tranh CPU, I/O, lock.
+- **Cache**: dữ liệu có thể không nằm trong cache.
+- **Lock wait**: `EXPLAIN ANALYZE` không phân biệt thời gian chờ lock với thời gian xử lý.
+- **Tham số khác**: prepared statement dùng generic plan; giá trị tham số lệch cho plan khác. Xem [Query Lifecycle](query-lifecycle.md#7-prepared-statement-và-plan-cache).
+- **Dữ liệu khác**: staging nhỏ hơn cho plan khác.
+
+Để thấy plan thật trong production, dùng `auto_explain`:
+
+```text
+shared_preload_libraries = 'auto_explain'
+auto_explain.log_min_duration = '500ms'
+auto_explain.log_analyze = on
+auto_explain.log_buffers = on
+auto_explain.sample_rate = 0.1
+```
+
+`log_analyze` tốn chi phí đo thời gian cho mọi query được lấy mẫu; dùng `sample_rate` để giới hạn.
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Thay đổi dữ liệu ngoài ý muốn | `EXPLAIN ANALYZE` câu lệnh ghi không rollback | Dữ liệu bị cập nhật khi "chỉ kiểm tra plan" |
+| Kết luận sai | Test trên dữ liệu nhỏ, cache nóng | Tối ưu không có tác dụng ở production |
+| Đọc sai thời gian | Quên nhân với `loops` | Bỏ qua node thật sự tốn thời gian |
+| Plan lệch production | Prepared statement dùng generic plan | Query chậm ở app nhưng nhanh khi chạy tay |
+
+## 10. Sai lầm thường gặp
+
+- Đọc `cost` như thời gian.
+- Chỉ nhìn tổng Execution Time mà không tìm node gây tốn.
+- Bỏ qua `BUFFERS`.
+- Chạy `EXPLAIN` không `ANALYZE` rồi kết luận về thời gian.
+- Thử query với giá trị literal trong khi app dùng tham số.
+
+## 11. Cách debug: quy trình
+
+1. Lấy query tốn nhiều nhất từ `pg_stat_statements` (theo `total_exec_time`, không chỉ `mean`).
+2. Lấy giá trị tham số thật (từ log, `auto_explain`).
+3. Chạy `EXPLAIN (ANALYZE, BUFFERS)` trên bản sao dữ liệu có kích thước thật, hoặc trên replica.
+4. Từ lá lên gốc: tìm node đầu tiên có ước tính lệch lớn, `Rows Removed` lớn, `read` lớn, spill.
+5. Đặt giả thuyết (thiếu index, thống kê sai, điều kiện không sargable), sửa **một** thứ.
+6. Chạy lại, so sánh plan và buffers.
+7. Theo dõi `pg_stat_statements` sau khi deploy.
+
+Công cụ trực quan hóa (PEV2, explain.depesz.com) giúp đọc plan lớn bằng cách tô màu node tốn thời gian — hữu ích, nhưng không thay được hiểu biết về từng node.
+
+## 12. Best Practices
+
+- Luôn dùng `EXPLAIN (ANALYZE, BUFFERS)`; thêm `SETTINGS` khi so sánh môi trường.
+- Bọc câu lệnh ghi trong `BEGIN ... ROLLBACK`.
+- Kiểm tra trên dữ liệu có kích thước và phân phối giống production.
+- Bật `auto_explain` có lấy mẫu để bắt plan chậm trong production.
+- Giữ lại plan trước và sau mỗi tối ưu như bằng chứng.
+
+## 13. Tóm tắt
+
+- `EXPLAIN` hiển thị plan và ước tính; `ANALYZE` chạy thật và đo; `BUFFERS` cho biết I/O.
+- Đọc từ lá lên gốc; tìm nơi ước tính lệch thực tế, nơi đọc nhiều bỏ nhiều, nơi spill.
+- `actual time` và `rows` là trung bình mỗi loop; nhân với `loops` để có tổng.
+- Node blocking (Sort, Hash) ngăn `Limit` dừng sớm; index cho thứ tự sẵn biến plan thành streaming.
+- Plan khi test có thể khác production; `auto_explain` và `pg_stat_statements` cho thấy thực tế.
+
+## Liên quan
+
+- [Query Lifecycle](query-lifecycle.md)
+- [Query Optimization](query-optimization.md)
 - [Index](index.md)
-- [MVCC](mvcc.md)
-- [Transactions](transaction.md)
-- [SQLAlchemy Session](../05-sqlalchemy/session-lifecycle.md)
+- [Database High CPU](../20-production-incidents/database-high-cpu.md)

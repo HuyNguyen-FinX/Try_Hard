@@ -1,210 +1,237 @@
-# N Plus One
+# N+1 Query
 
-> **Phạm vi phỏng vấn:** SQLAlchemy · **Ưu tiên:** P0/P1 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
-
-N+1 xảy ra khi tải N parent rồi lazy-load relationship bằng N query phụ, làm round-trip tăng theo result size.
-
-## 2. Why does it matter?
-
-Senior Engineer cần hiểu **N Plus One** để giữ transaction boundary đúng mà vẫn nhìn thấy chi phí SQL thực tế. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
-
-## 3. How does it work?
-
-Detect bằng query count/trace; `selectinload` thường tốt cho collection, `joinedload` có thể nhân row, explicit projection cho API. Disable/raise lazy load ở path nhạy cảm.
-
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `query count, pool wait, transaction age, fetched rows và p99 latency` và phân biệt symptom, bottleneck với root cause.
-
-## 4. Example
+N+1 query là khi code chạy **1 query** để lấy danh sách N object, rồi chạy thêm **N query** — mỗi object một query — để lấy dữ liệu liên quan của từng object.
 
 ```python
-from fastapi import Depends, FastAPI, HTTPException
-
-app = FastAPI()
-
-async def current_tenant() -> int:
-    return 42
-
-@app.get("/health/{component}")
-async def health(component: str, tenant_id: int = Depends(current_tenant)) -> dict[str, object]:
-    if component not in {"database", "cache", "queue"}:
-        raise HTTPException(status_code=404, detail="unknown component")
-    return {"component": component, "tenant_id": tenant_id, "healthy": True}
+claims = (await session.scalars(select(Claim).where(Claim.status == "pending").limit(200))).all()   # 1 query
+for claim in claims:
+    print(claim.dealer.name)          # mỗi lần: SELECT ... FROM dealers WHERE id = ?   → 200 query
 ```
 
-Ví dụ giữ I/O path non-blocking; production cần deadline, structured log và bounded pool cho **N Plus One**.
+Mỗi query riêng lẻ đều nhanh (1–2 ms). Nhưng 201 query tuần tự, mỗi cái một round trip mạng tới database, cộng lại thành hàng trăm ms và chiếm connection suốt thời gian đó. N+1 là nguyên nhân phổ biến nhất khiến endpoint "chỉ lấy một danh sách" lại chậm.
 
-## 5. Production Use Case
+## 2. Mental Model
 
-List 100 claims từng load vehicle: đổi sang `selectinload` hai query hoặc projection join, đo row bytes và p99 trước/sau.
+> Đi chợ mua 200 món, mỗi lần chỉ mua một món rồi về nhà, rồi lại đi. Mỗi chuyến nhanh, nhưng 200 chuyến thì chậm. Cách đúng là mang danh sách đi một lần.
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+Chi phí của N+1 không nằm ở database làm việc nặng, mà ở **số round trip** và **overhead cố định mỗi query** (gửi, parse, plan, trả kết quả, chuyển thành object).
 
-## 6. Common Problems
+## 3. Vì sao ORM làm N+1 dễ xảy ra?
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+Relationship của SQLAlchemy mặc định là **lazy loading**: attribute `claim.dealer` là một [descriptor](../01-python-core/descriptors.md#9-bên-trong-orm-descriptor-làm-gì-với-orderitems). Lần đầu truy cập, descriptor thấy dữ liệu chưa được tải và **phát sinh một query ngay tại dòng đọc attribute**. Code trông như đọc field bình thường; không có dấu hiệu nào của I/O.
 
-## 7. Trade-offs
+N+1 thường ẩn ở nơi xa code truy vấn:
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh N Plus One | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+- Pydantic serialize response đọc `claim.dealer.name` cho từng claim.
+- Template, serializer, hàm helper tính toán trên từng object.
+- Vòng lặp nghiệp vụ gọi method của domain object, method đó đọc relationship.
 
-## 8. Interview Questions
-
-### Basic / Mid-level (10)
-
-- **B1.** What is N Plus One, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind N Plus One.
-- **B3.** Which guarantees does N Plus One provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of N Plus One?
-- **B5.** What is the most common misconception about N Plus One?
-- **B6.** How would you test assumptions involving N Plus One?
-- **B7.** Which edge cases or failure modes matter most for N Plus One?
-- **B8.** How can N Plus One affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of N Plus One?
-- **B10.** When is a different or simpler approach better than relying on N Plus One?
-
-### Production Scenarios (5)
-
-- **S1.** A release involving N Plus One triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around N Plus One is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to N Plus One. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving N Plus One fails first?
-- **S5.** A canary changes the behavior of N Plus One; success rate is flat but saturation rises. Promote or roll back?
-
-## 9. Senior-level Questions
-
-- **L1.** How does N Plus One constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when N Plus One meets concurrency or partial failure?
-- **L3.** What breaks first around N Plus One at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using N Plus One?
-- **L5.** How would you benchmark or validate N Plus One without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can N Plus One introduce?
-- **L7.** How would you change a poor decision around N Plus One with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for N Plus One?
-- **L10.** How would you turn an incident involving N Plus One into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** N+1 xảy ra khi tải N parent rồi lazy-load relationship bằng N query phụ, làm round-trip tăng theo result size. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của N Plus One.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo query count, pool wait, transaction age, fetched rows và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng N Plus One như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh N Plus One khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của N Plus One**, không chỉ “dùng để làm gì”.
-- Định lượng bằng query count, pool wait, transaction age, fetched rows và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **N Plus One** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Luôn ánh xạ abstraction ORM về SQL, transaction và connection thật. Session là identity map/unit-of-work, không phải global cache; flush khác commit và loading strategy quyết định query/row amplification.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 4. Luồng xử lý: N+1 và cách sửa
 
 ```mermaid
-flowchart LR
-            Request --> Session["Session / unit of work"]
-            Session --> Topic["N Plus One"]
-            Topic --> SQL
-            SQL --> Pool --> PostgreSQL
+sequenceDiagram
+    participant App
+    participant DB as PostgreSQL
+    Note over App,DB: Lazy loading mặc định: 1 + N query
+    App->>DB: SELECT claims WHERE status = pending LIMIT 200
+    DB-->>App: 200 claims
+    loop Mỗi claim
+        App->>DB: SELECT dealers WHERE id = ?
+        DB-->>App: 1 dealer
+    end
+    Note over App,DB: selectinload: 2 query
+    App->>DB: SELECT claims WHERE status = pending LIMIT 200
+    DB-->>App: 200 claims
+    App->>DB: SELECT dealers WHERE id IN (danh sách dealer_id)
+    DB-->>App: các dealer liên quan
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Với lazy loading, số query tỷ lệ với số row: 200 claim → 201 query. Thêm một relationship nữa (`claim.lines`) → 401 query.
+2. Với `selectinload`, SQLAlchemy chạy query thứ hai lấy **mọi** dealer cần thiết bằng một `IN`, rồi gắn vào từng claim. Số query cố định: 2, bất kể 200 hay 2.000 claim.
 
-Session leak, long transaction, implicit lazy load hoặc pool exhaustion thường bị ORM che. Log query count/pool wait/transaction age, rollback đúng scope và inspect SQL thật.
+## 5. Chi phí thực tế
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+Giả sử mỗi round trip 1 ms (cùng datacenter), mỗi query đơn giản 0.3 ms thực thi:
 
-## 17. How I would debug this in production
+| Số claim | Query (lazy, 2 relationship) | Thời gian ước tính | Với eager loading |
+|---|---|---|---|
+| 20 | 41 | ~55 ms | 3 query, ~5 ms |
+| 200 | 401 | ~520 ms | 3 query, ~12 ms |
+| 2.000 | 4.001 | ~5 giây | 3 query, ~60 ms |
 
-1. Bật SQL timing/query count có sampling.
-2. Xem pool checked-out/wait/timeout.
-3. Kiểm session scope, autoflush và transaction age.
-4. Tìm lazy load/N+1 và row amplification.
-5. So generated SQL + plan trước/sau.
+Thêm vào đó: mỗi query là một lần qua event loop (với async), một lần tạo object, một span trong tracing. Và connection bị giữ trong toàn bộ thời gian — trực tiếp làm giảm throughput của pool. Xem [Connection Pooling](../04-database-postgresql/connection-pooling.md).
 
-## 18. Common Misconceptions
+## 6. Cách sửa: eager loading
 
-**Sai:** ORM loại bỏ nhu cầu hiểu SQL/transaction. **Đúng:** ORM chỉ sinh và hydrate SQL; database semantics vẫn quyết định correctness/performance.
+### `selectinload` — thường là lựa chọn mặc định tốt
 
-## 19. When NOT to use
+```python
+from sqlalchemy.orm import selectinload
 
-Không hydrate object graph cho bulk analytics/ETL; SQLAlchemy Core/raw parameterized SQL có thể rõ và rẻ hơn.
+stmt = (
+    select(Claim)
+    .where(Claim.status == "pending")
+    .options(selectinload(Claim.dealer), selectinload(Claim.lines))
+    .limit(200)
+)
+claims = (await session.scalars(stmt)).all()
+```
 
-## 20. What interviewer may ask next
+Query chính chạy trước; với mỗi relationship, một query `SELECT ... WHERE parent_id IN (...)` lấy dữ liệu liên quan (chia batch nếu danh sách dài). Phù hợp cho cả many-to-one và collection (one-to-many).
 
-1. **What guarantee does N Plus One provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+### `joinedload` — một query với JOIN
 
-## 21. Check Your Understanding
+```python
+stmt = select(Claim).options(joinedload(Claim.dealer)).where(...)
+```
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **N Plus One** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+Dùng `LEFT OUTER JOIN` trong cùng query. Tốt cho **many-to-one** (mỗi claim một dealer). Với **collection**, JOIN nhân bản row của bảng cha theo số phần tử con; hai collection cùng lúc tạo tích Descartes (100 claim × 10 lines × 5 attachments = 5.000 row). Với joined eager load collection, SQLAlchemy 2.0 yêu cầu gọi `.unique()` trên kết quả.
 
-<details>
-<summary>Answer</summary>
+### `contains_eager` — khi đã tự viết JOIN
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+```python
+stmt = (
+    select(Claim)
+    .join(Claim.dealer)
+    .where(Dealer.region == "north")
+    .options(contains_eager(Claim.dealer))
+)
+```
 
-</details>
+JOIN đã có sẵn để lọc; `contains_eager` bảo ORM dùng luôn dữ liệu từ JOIN đó để điền relationship.
 
-## 22. See also
+### Chỉ lấy cột cần thiết
 
-- [Session Lifecycle](session-lifecycle.md)
-- [Transactions](transaction.md)
-- [PostgreSQL Pooling](../04-database-postgresql/connection-pooling.md)
+Nếu endpoint chỉ cần vài field, không cần object ORM đầy đủ:
+
+```python
+stmt = (
+    select(Claim.id, Claim.status, Dealer.name.label("dealer_name"))
+    .join(Dealer, Dealer.id == Claim.dealer_id)
+    .where(Claim.status == "pending")
+    .limit(200)
+)
+rows = (await session.execute(stmt)).all()
+```
+
+Một query, không lazy load, không tạo object ORM — nhanh nhất cho endpoint đọc.
+
+## 7. Ngăn N+1 xuất hiện lại
+
+### `raiseload`
+
+```python
+class Claim(Base):
+    dealer: Mapped["Dealer"] = relationship(lazy="raise")
+    lines: Mapped[list["ClaimLine"]] = relationship(lazy="raise")
+```
+
+Hoặc theo query: `.options(raiseload("*"))`. Truy cập relationship chưa được eager load sẽ **raise exception** thay vì âm thầm query. N+1 trở thành lỗi rõ ràng trong test thay vì chậm dần trong production. Với async SQLAlchemy, lazy loading ngầm vốn đã không hoạt động (lỗi `MissingGreenlet`), nên `lazy="raise"` làm thông báo lỗi rõ hơn.
+
+### Test đếm số query
+
+```python
+from sqlalchemy import event
+
+class QueryCounter:
+    def __init__(self, engine):
+        self.count = 0
+        self.engine = engine
+
+    def __enter__(self):
+        event.listen(self.engine, "before_cursor_execute", self._inc)
+        return self
+
+    def __exit__(self, *exc):
+        event.remove(self.engine, "before_cursor_execute", self._inc)
+
+    def _inc(self, *args, **kwargs):
+        self.count += 1
+
+def test_list_claims_query_count(client, sync_engine):
+    with QueryCounter(sync_engine) as counter:
+        client.get("/claims?status=pending&limit=50")
+    assert counter.count <= 3
+```
+
+Test này phát hiện khi ai đó thêm một field vào response khiến lazy load xuất hiện.
+
+## 8. Bên trong hệ thống xảy ra gì khi N+1 xảy ra dưới tải?
+
+```mermaid
+flowchart TD
+    A["Endpoint list claims có N+1: 401 query mỗi request"] --> B["Mỗi request giữ connection khoảng 500ms"]
+    B --> C["Pool 10 connection mỗi worker chỉ phục vụ khoảng 20 request mỗi giây"]
+    C --> D["Traffic tăng lên 50 request mỗi giây"]
+    D --> E["Request xếp hàng chờ connection"]
+    E --> F["Latency mọi endpoint dùng DB tăng"]
+    A --> G["PostgreSQL nhận 20.000 query mỗi giây từ một endpoint"]
+    G --> H["CPU database tăng vì overhead parse và plan"]
+    H --> F
+```
+
+Diễn giải: N+1 không chỉ làm chậm một endpoint. Nó làm giảm throughput của pool (connection bị giữ lâu) và tăng tải CPU database (hàng chục nghìn query nhỏ), ảnh hưởng tới mọi endpoint khác. Xem [API Slow](../20-production-incidents/api-slow.md).
+
+## 9. Failure Modes
+
+| Failure | Nguyên nhân | Dấu hiệu |
+|---|---|---|
+| Endpoint list chậm | Lazy load trong vòng lặp hoặc serializer | Trace có hàng trăm span SQL giống nhau |
+| Tích Descartes | `joinedload` nhiều collection | Một query trả số row lớn bất thường, memory spike |
+| `MissingGreenlet` | Lazy load trong async | Exception khi truy cập relationship |
+| N+1 tái xuất | Thêm field vào response mà quên eager load | Số query mỗi request tăng sau deploy |
+| Query `IN` quá lớn | `selectinload` trên hàng chục nghìn object | Query chậm, tham số khổng lồ |
+
+## 10. Trade-offs
+
+| Chiến lược | Số query | Ưu điểm | Nhược điểm |
+|---|---|---|---|
+| Lazy (mặc định) | 1 + N | Chỉ tải khi cần | N+1 |
+| `selectinload` | 1 + số relationship | Ổn định, không nhân row | Thêm round trip; danh sách `IN` dài với N rất lớn |
+| `joinedload` | 1 | Một round trip | Nhân row với collection, tích Descartes |
+| Select cột + JOIN | 1 | Nhanh nhất, ít memory | Không có object ORM, không change tracking |
+| `raiseload` | — | Ngăn N+1 ngầm | Phải khai báo eager load tường minh ở mọi nơi |
+
+## 11. Sai lầm thường gặp
+
+- Tin rằng "database nhanh nên nhiều query nhỏ không sao".
+- Dùng `joinedload` cho nhiều collection cùng lúc.
+- Trả ORM object trực tiếp làm response và để serializer tự đọc relationship.
+- Sửa N+1 ở một endpoint bằng eager load nhưng không có test ngăn nó quay lại.
+- Eager load mọi relationship "cho chắc" — tải dữ liệu không cần.
+
+## 12. Cách debug
+
+- **Log SQL** trong dev (`echo=True`): nhìn thấy cùng một câu query lặp lại với tham số khác.
+- **Tracing** (OpenTelemetry SQLAlchemy instrumentation): một request có hàng trăm span `SELECT dealers` là dấu hiệu rõ nhất trong production.
+- **`pg_stat_statements`**: query rất nhanh nhưng `calls` cực lớn.
+- **Test đếm query** cho endpoint danh sách.
+- `sqlalchemy.inspect(obj).unloaded` để biết relationship nào chưa được tải.
+
+## 13. Best Practices
+
+- Với endpoint danh sách, luôn khai báo eager loading tường minh cho mọi relationship được dùng.
+- `selectinload` cho collection, `joinedload` cho many-to-one, select cột cho endpoint chỉ đọc.
+- Đặt `lazy="raise"` làm mặc định cho relationship trong codebase lớn, đặc biệt với async.
+- Viết test giới hạn số query cho endpoint quan trọng.
+- Tách model response (Pydantic) khỏi ORM model để kiểm soát dữ liệu được đọc.
+
+## 14. Tóm tắt
+
+- N+1: 1 query lấy danh sách, N query lấy dữ liệu liên quan cho từng phần tử.
+- ORM gây N+1 dễ dàng vì lazy loading qua descriptor biến việc đọc attribute thành query ẩn.
+- Chi phí đến từ số round trip và overhead mỗi query; dưới tải, nó làm cạn pool và tăng CPU database.
+- Sửa bằng `selectinload`, `joinedload`, `contains_eager`, hoặc select đúng cột cần thiết.
+- Ngăn tái diễn bằng `raiseload` và test đếm số query.
+
+## Liên quan
+
+- [Relationship Loading](relationship-loading.md)
+- [Descriptors](../01-python-core/descriptors.md)
+- [Async SQLAlchemy](async-sqlalchemy.md)
+- [Query Optimization](../04-database-postgresql/query-optimization.md)
+- [API Slow](../20-production-incidents/api-slow.md)

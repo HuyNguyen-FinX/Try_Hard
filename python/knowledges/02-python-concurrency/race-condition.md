@@ -1,213 +1,244 @@
 # Race Condition
 
-> **Phạm vi phỏng vấn:** Python Concurrency · **Ưu tiên:** P1/P2 · **Mindset:** Why → How → Trade-off → Production.
+## 1. Tổng quan
 
-## 1. What is it?
+Race condition xảy ra khi **tính đúng đắn của kết quả phụ thuộc vào thứ tự hoặc thời điểm** mà các tác vụ đồng thời truy cập cùng một trạng thái chung. Với cùng input, chương trình lúc cho kết quả đúng, lúc cho kết quả sai, tùy vào việc tác vụ nào "về trước".
 
-Race Condition là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python.
+Race condition không chỉ là vấn đề của thread. Nó xuất hiện ở mọi tầng:
 
-## 2. Why does it matter?
+| Tầng | Tác vụ đồng thời | Trạng thái chung |
+|---|---|---|
+| Trong process | Thread, coroutine | Biến global, cache in-memory, object dùng chung |
+| Giữa process / pod | Worker Gunicorn, pod Kubernetes, Celery worker | Database, Redis, file, object storage |
+| Giữa hệ thống | Service khác nhau, webhook, retry | Bản ghi nghiệp vụ, số dư, tồn kho |
 
-Senior Engineer cần hiểu **Race Condition** để chọn đúng execution model, bảo vệ shared state và giữ tail latency ổn định. Điểm phỏng vấn nằm ở khả năng nêu invariant, điều kiện áp dụng và failure behavior, không nằm ở việc thuộc định nghĩa.
+Race condition trong backend thường gây thiệt hại thật: bán vượt tồn kho, trừ tiền hai lần, áp dụng một mã giảm giá nhiều lần, cấp trùng số hóa đơn.
 
-## 3. How does it work?
+## 2. Mental Model
 
-Xác định execution unit (coroutine/thread/process), điểm yield/preemption, shared state và propagation của exception/cancellation; mọi fan-out phải có bound.
+> Hai người cùng nhìn vào một tờ giấy ghi "còn 1 vé", cùng quyết định "tôi lấy", cùng ghi "còn 0". Hai vé đã được bán từ một vé.
 
-Khi reasoning, đi theo chuỗi: **input → state transition → output → failure → recovery**. Quan sát `event-loop lag, queue depth, context switch, CPU saturation và p99 latency` và phân biệt symptom, bottleneck với root cause.
+Mọi race condition đều có cùng cấu trúc: **đọc trạng thái → quyết định dựa trên trạng thái đó → ghi**, trong khi giữa bước đọc và bước ghi, trạng thái có thể đã bị người khác thay đổi.
 
-## 4. Example
+## 3. Vì sao race condition khó?
+
+- **Không tái hiện ổn định**: chỉ xảy ra khi thời điểm trùng khớp, thường dưới tải cao.
+- **Test đơn vị không bắt được**: test chạy tuần tự.
+- **Hậu quả xuất hiện muộn**: dữ liệu sai được phát hiện khi đối soát cuối ngày.
+- **Hiểu lầm về GIL**: nhiều người tin rằng Python "không có race condition" vì có GIL.
+
+## 4. Data race và race condition
+
+- **Data race**: hai thread truy cập cùng một vùng memory, ít nhất một thao tác ghi, không có đồng bộ. Trong C/C++ đây là undefined behavior. Trong CPython có GIL, Python object được interpreter bảo vệ khỏi data race ở mức memory — bạn không làm hỏng cấu trúc bên trong của `dict`.
+- **Race condition**: lỗi ở mức **logic**. Mỗi thao tác đơn lẻ đều an toàn, nhưng chuỗi thao tác không nguyên tử. GIL **không** ngăn điều này.
+
+> **Ghi chú version:** Với free-threaded build (3.13+), built-in container vẫn được bảo vệ bằng per-object lock, nhưng race condition logic trở nên dễ xảy ra hơn vì thread chạy song song thật.
+
+## 5. Các dạng race condition kinh điển
+
+### Read-modify-write
 
 ```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Decision:
-    topic: str
-    invariant: str
-    metric: str
-
-decision = Decision(
-    topic='Race Condition',
-    invariant="Không làm mất hoặc lặp business effect",
-    metric="p99 latency và error rate",
-)
+counter += 1           # đọc, cộng, ghi — ba bước bytecode
+balance = balance - amount
 ```
 
-Ví dụ biến quyết định về **Race Condition** thành invariant và tín hiệu vận hành có thể kiểm chứng.
+Hai tác vụ cùng đọc giá trị cũ, cùng ghi giá trị mới — một lần cập nhật bị mất (**lost update**). Chi tiết bytecode ở [CPython Runtime](../01-python-core/cpython-runtime.md#vì-sao-x--1-không-nguyên-tử).
 
-## 5. Production Use Case
+### Check-then-act
 
-Service xử lý vehicle telemetry áp dụng Race Condition, đo loop lag/queue age/CPU rồi giới hạn concurrency theo capacity downstream.
+```python
+if not os.path.exists(path):      # kiểm tra
+    create_file(path)             # hành động — người khác có thể đã tạo giữa hai dòng
 
-Checklist triển khai: capacity budget, timeout, idempotency (nếu có side effect), telemetry, canary, rollback và reconciliation.
+if user.coupon_used is False:     # kiểm tra
+    apply_discount(order)         # hành động
+    user.coupon_used = True
+```
 
-## 6. Common Problems
+Điều kiện đúng lúc kiểm tra nhưng không còn đúng lúc hành động (TOCTOU — time of check to time of use).
 
-- Không định nghĩa invariant và source of truth trước khi chọn công nghệ.
-- Retry không backoff/jitter làm traffic amplification khi dependency lỗi.
-- Không có bound cho queue, connection, memory hoặc concurrency.
-- Chỉ theo dõi average; bỏ qua p95/p99, saturation và error semantics.
-- Rollout toàn bộ, thiếu feature flag/canary và đường rollback dữ liệu.
+### Race trong AsyncIO
 
-## 7. Trade-offs
+Coroutine không bị chen ngang giữa hai `await`, nhưng **bị chen ngang tại mỗi `await`**:
 
-| Lựa chọn | Lợi ích | Chi phí / rủi ro | Khi phù hợp |
-|---|---|---|---|
-| Tối ưu/thiết kế xoay quanh Race Condition | Kiểm soát rõ constraint chính | Tăng complexity và coupling | Metric chứng minh đây là bottleneck/risk |
-| Giữ baseline đơn giản | Ít dependency, dễ debug | Có thể chạm giới hạn sớm | Traffic vừa, invariant vẫn được giữ |
-| Managed service/library | Giảm vận hành hạ tầng | Cost, lock-in, giới hạn control | SLA và economics phù hợp |
-| Tự vận hành/customize | Kiểm soát sâu | Ownership và failure surface lớn | Có năng lực vận hành và nhu cầu thật |
+```python
+cache: dict[str, Profile] = {}
 
-## 8. Interview Questions
+async def get_profile(user_id: str) -> Profile:
+    if user_id not in cache:                     # kiểm tra
+        profile = await fetch_profile(user_id)   # nhường quyền ở đây
+        cache[user_id] = profile                 # hành động
+    return cache[user_id]
+```
 
-### Basic / Mid-level (10)
+100 request cùng lúc cho một user mới: cả 100 đều thấy cache trống trước khi request đầu tiên kịp ghi, và cùng gọi `fetch_profile`. Đây là dạng nhỏ của [cache stampede](../06-redis/cache-problems.md). Với số dư:
 
-- **B1.** What is Race Condition, and which concrete problem does it address?
-- **B2.** Explain the main internal mechanism behind Race Condition.
-- **B3.** Which guarantees does Race Condition provide, and which does it not provide?
-- **B4.** Which metrics or observations reveal the behavior of Race Condition?
-- **B5.** What is the most common misconception about Race Condition?
-- **B6.** How would you test assumptions involving Race Condition?
-- **B7.** Which edge cases or failure modes matter most for Race Condition?
-- **B8.** How can Race Condition affect latency, throughput, memory, or correctness?
-- **B9.** Which runtime conditions or configuration choices change the behavior of Race Condition?
-- **B10.** When is a different or simpler approach better than relying on Race Condition?
+```python
+async def withdraw(account_id, amount):
+    balance = await repo.get_balance(account_id)    # await → nhường quyền
+    if balance >= amount:
+        await repo.set_balance(account_id, balance - amount)
+```
 
-### Production Scenarios (5)
+Hai request rút tiền xen kẽ nhau tại `await` → số dư âm.
 
-- **S1.** A release involving Race Condition triples p99 while averages look normal. How do you investigate and mitigate?
-- **S2.** A critical dependency around Race Condition is unavailable for ten minutes. Define degraded behavior and recovery.
-- **S3.** Two concurrent operations expose a correctness gap related to Race Condition. Which invariant and atomic boundary fix it?
-- **S4.** Traffic grows from 1,000 to 20,000 RPS. Which measured limit involving Race Condition fails first?
-- **S5.** A canary changes the behavior of Race Condition; success rate is flat but saturation rises. Promote or roll back?
+### Race giữa nhiều instance
 
-## 9. Senior-level Questions
+Code không có race trong một process vẫn có race khi chạy 10 pod. Lock trong process (`threading.Lock`, `asyncio.Lock`) **không có tác dụng** giữa các pod. Trạng thái chung nằm trong database hoặc Redis, nên đồng bộ phải xảy ra ở đó.
 
-- **L1.** How does Race Condition constrain the surrounding architecture and operational model?
-- **L2.** Which subtle correctness issue appears when Race Condition meets concurrency or partial failure?
-- **L3.** What breaks first around Race Condition at 20,000 RPS or 100× data volume?
-- **L4.** Where should admission control or backpressure be placed when using Race Condition?
-- **L5.** How would you benchmark or validate Race Condition without a misleading microbenchmark?
-- **L6.** Which hidden coupling or migration cost can Race Condition introduce?
-- **L7.** How would you change a poor decision around Race Condition with no downtime?
-- **L8.** What production evidence would make you choose a different approach?
-- **L9.** How do correctness, latency, cost, and complexity trade off for Race Condition?
-- **L10.** How would you turn an incident involving Race Condition into a durable prevention mechanism?
-
-## 10. Short Answers
-
-**B1.** Race Condition là cơ chế thực thi đồng thời/song song, xác định scheduling, isolation và cách chia sẻ state trong Python. Trả lời tốt nối definition với constraint/invariant và một use case cụ thể.
-
-**B2.** Mô tả state, lifecycle, boundary và failure path; không dừng ở public API của Race Condition.
-
-**B3.** Nêu lúc tạo, lúc sử dụng, lúc release/commit và điều xảy ra khi timeout hoặc cancellation.
-
-**B4.** Đo event-loop lag, queue depth, context switch, CPU saturation và p99 latency; luôn tách average khỏi tail và success khỏi useful result.
-
-**B5.** Lỗi phổ biến là dùng Race Condition như mặc định mà không xác định ownership, limit và fallback.
-
-**B6.** Test invariant trước, sau đó integration test failure path, concurrency và representative load.
-
-**B7.** Xét timeout, duplicate, stale state, overload, dependency loss và recovery/reconciliation.
-
-**B8.** Đo critical path, contention, queueing và amplification; throughput cao không bù được p99 xấu.
-
-**B9.** Deadline, concurrency limit, retention/TTL, resource budget, telemetry và rollout policy phải explicit.
-
-**B10.** Tránh Race Condition khi bài toán đơn giản hơn giải được invariant với ít state và operational cost hơn.
-
-Cấu trúc câu trả lời: **Definition → Why → How → Trade-off → Production example**. Với câu scenario: **stabilize → observe → hypothesize → verify → mitigate → prevent**.
-
-## 11. Follow-up Questions
-
-- **F1.** What assumption in your answer is most risky?
-- **F2.** How would you prove that with metrics or an experiment?
-- **F3.** What changes if the operation is not idempotent?
-- **F4.** Where would you add timeout, retry, and backpressure?
-- **F5.** What is your rollback and data-reconciliation plan?
-
-## 12. Key Takeaways
-
-- Nói được **vai trò, constraint hoặc invariant của Race Condition**, không chỉ “dùng để làm gì”.
-- Định lượng bằng event-loop lag, queue depth, context switch, CPU saturation và p99 latency và có baseline trước tối ưu.
-- Thiết kế cho timeout, duplicate, overload, partial failure và recovery.
-- Mọi tối ưu đều có chi phí về correctness, complexity, latency hoặc money.
-- Production-ready nghĩa là có owner, alert, runbook, canary, rollback và reconciliation.
-
-
-## 13. Mental Model
-
-Hãy xem **Race Condition** như một boundary biến input/state thành output. Muốn hiểu sâu phải chỉ ra ai sở hữu state, lifecycle, điểm contention và behavior khi dependency chậm hoặc mất.
-
-## 14. Internals Deep Dive
-
-Xác định ai schedule work (OS hay event loop), unit nào có stack/heap riêng, điểm preemption/yield, memory nào được chia sẻ và exception/cancellation đi đâu. Bound concurrency trước khi tối ưu throughput.
-
-Implementation detail có thể đổi theo version; khi trả lời interview, nêu rõ CPython/PostgreSQL/Redis/framework version nếu kết luận dựa vào behavior nội bộ thay vì public contract.
-
-## 15. Request / Data Flow
+## 6. Luồng xử lý: lost update giữa hai request
 
 ```mermaid
-flowchart LR
-            Work["Race Condition workload"] --> Scheduler["OS / Python scheduler"]
-            Scheduler --> Running["Running execution unit"]
-            Running -->|wait / yield| Waiting
-            Waiting -->|ready| Scheduler
-            Running --> Shared["Shared state + synchronization"]
+sequenceDiagram
+    participant A as Request A (pod 1)
+    participant DB as PostgreSQL
+    participant B as Request B (pod 2)
+    A->>DB: SELECT stock FROM products WHERE id = 7
+    DB-->>A: stock = 1
+    B->>DB: SELECT stock FROM products WHERE id = 7
+    DB-->>B: stock = 1
+    A->>A: 1 >= 1, cho phép đặt hàng
+    B->>B: 1 >= 1, cho phép đặt hàng
+    A->>DB: UPDATE products SET stock = 0 WHERE id = 7
+    B->>DB: UPDATE products SET stock = 0 WHERE id = 7
+    Note over A,B: Hai đơn hàng được tạo, tồn kho chỉ có 1
 ```
 
-Đọc diagram từ input tới state transition và output. Tại mỗi mũi tên, hỏi: operation có block không, có retry không, state có durable không, identity nào dùng để dedupe và metric nào chứng minh bước đó khỏe.
+Diễn giải:
 
-## 16. Failure Scenario
+1. Hai request ở hai pod khác nhau đọc cùng giá trị `stock = 1`.
+2. Cả hai kiểm tra điều kiện trên giá trị đã đọc — cả hai đều hợp lệ.
+3. Cả hai ghi `stock = 0` (giá trị tính từ lần đọc). Không có lỗi nào xảy ra ở database; mỗi câu lệnh đều hợp lệ.
+4. Mặc định ở isolation level Read Committed của PostgreSQL, hai transaction này không xung đột nhau. Xem [Isolation Level](../04-database-postgresql/isolation-level.md).
 
-Dưới load, blocking call, unbounded fan-out, race hoặc lock contention làm queue/loop lag tăng. Áp deadline, semaphore/pool bound, structured cancellation và tách CPU work khỏi event loop.
+## 7. Các cách xử lý
 
-Phân tích theo chuỗi: **trigger → saturation/incorrect state → propagation → user impact → immediate mitigation → durable prevention**. Tránh gọi retry hoặc scale là giải pháp nếu chưa chỉ ra dependency budget.
+### Đưa thao tác về dạng nguyên tử tại nơi lưu trạng thái
 
-## 17. How I would debug this in production
+```sql
+UPDATE products
+SET stock = stock - 1
+WHERE id = 7 AND stock >= 1
+RETURNING stock;
+```
 
-1. Phân loại CPU-bound, blocking I/O hay async I/O.
-2. Xem per-core CPU, event-loop lag, thread/process/queue depth.
-3. Capture stack/profile của execution unit đang giữ CPU/lock.
-4. Kiểm semaphore, timeout, cancellation và shared-state invariant.
-5. Load test lại với bounded concurrency.
+Database kiểm tra và cập nhật trong **một câu lệnh**; row bị lock trong lúc cập nhật. Nếu không có row nào được trả về, hết hàng. Đây thường là giải pháp đơn giản và nhanh nhất.
 
-## 18. Common Misconceptions
+Tương tự với Redis: `INCR`, `DECRBY`, `SET key value NX`, hoặc Lua script cho logic nhiều bước.
 
-**Sai:** concurrency luôn là parallelism và thêm worker luôn tăng throughput. **Đúng:** queueing, GIL, locks và downstream capacity có thể làm p99 tệ hơn.
+### Constraint của database
 
-## 19. When NOT to use
+```sql
+CREATE UNIQUE INDEX uniq_coupon_use ON coupon_redemptions (coupon_id, user_id);
+```
 
-Không thêm concurrency khi workload nhỏ hoặc downstream đã saturated; model tuần tự đơn giản có thể đúng và dễ vận hành hơn.
+Để database là trọng tài cuối cùng: request thứ hai vi phạm unique constraint và thất bại, dù code ứng dụng có race. Constraint là tuyến phòng thủ không phụ thuộc vào việc mọi đoạn code đều viết đúng.
 
-## 20. What interviewer may ask next
+### Pessimistic locking
 
-1. **What guarantee does Race Condition provide, and what does it explicitly not guarantee?**
-2. **Which implementation detail changes across versions or runtimes?**
-3. **Where is the first queue or contention point under high load?**
-4. **What happens if the dependency times out after committing state?**
-5. **How would you observe, degrade, and recover this in production?**
-6. **Which simpler design would you choose at 100 RPS, and when would you evolve it?**
+```sql
+BEGIN;
+SELECT balance FROM accounts WHERE id = 42 FOR UPDATE;   -- khóa row
+-- tính toán trong ứng dụng
+UPDATE accounts SET balance = :new WHERE id = 42;
+COMMIT;
+```
 
-## 21. Check Your Understanding
+Transaction khác muốn `FOR UPDATE` cùng row phải chờ. Đơn giản để lý luận; cái giá là chờ đợi và rủi ro [deadlock](../04-database-postgresql/deadlock.md). Transaction phải ngắn. Xem [Locks](../04-database-postgresql/locks.md).
 
-1. Nếu throughput tăng 20× nhưng downstream capacity không đổi, **Race Condition** sẽ tạo queue/backpressure ở đâu?
-2. Timeout xảy ra ngay sau một state transition; caller có thể kết luận điều gì và không thể kết luận điều gì?
-3. Metric, trace span và log field tối thiểu nào giúp phân biệt application, dependency và network latency?
+### Optimistic locking (version)
 
-<details>
-<summary>Answer</summary>
+```sql
+UPDATE claims
+SET status = 'approved', version = version + 1
+WHERE id = 99 AND version = 5;
+```
 
-1. Queue xuất hiện tại bounded resource đầu tiên: worker/thread/semaphore/connection pool/broker hoặc dependency. Nếu không có bound, overload chuyển thành memory growth và timeout storm.
-2. Caller chỉ biết chưa nhận response trong deadline; operation có thể chưa chạy, đang chạy hoặc đã commit. Cần operation identity/idempotency và status/reconciliation.
-3. Dùng end-to-end latency + queue/service time, correlation/trace ID, dependency spans, error/retry classification và saturation của pool/queue/resource.
+Nếu 0 row được cập nhật, ai đó đã sửa trước; ứng dụng đọc lại và thử lại (hoặc báo xung đột cho người dùng). Phù hợp khi xung đột hiếm.
 
-</details>
+### Isolation level cao hơn
 
-## 22. See also
+`SERIALIZABLE` trong PostgreSQL phát hiện các bất thường và hủy một transaction với lỗi serialization; ứng dụng phải retry toàn bộ transaction. Mạnh nhưng tốn chi phí và cần code retry đúng.
 
-- [AsyncIO](asyncio.md)
-- [Event Loop](event-loop.md)
-- [FastAPI Sync vs Async](../03-fastapi/sync-vs-async-endpoint.md)
-- [CPU vs I/O](cpu-vs-io-bound.md)
+### Trong process: lock, queue, hoặc không chia sẻ
+
+- `threading.Lock` / `asyncio.Lock` bao quanh đoạn check-then-act **trong một process**.
+- Truyền việc qua `queue.Queue` cho một thread duy nhất sở hữu trạng thái (confinement).
+- Dùng dữ liệu immutable.
+- Với cache async: lưu **Future/Task** thay vì giá trị để các request đồng thời cùng chờ một lần tải (single-flight).
+
+### Idempotency cho thao tác lặp lại
+
+Nhiều race đến từ **cùng một yêu cầu được gửi hai lần** (client retry, message redelivery). [Idempotency key](../10-distributed-systems/idempotency.md) và unique constraint trên key đó biến lần thứ hai thành no-op.
+
+## 8. Hành vi trong production
+
+- Race condition thường ẩn ở tải thấp và bùng lên ở tải cao, khi khoảng thời gian giữa đọc và ghi (latency DB) tăng.
+- Thêm pod làm tăng số tác vụ đồng thời thực sự, làm race xảy ra thường xuyên hơn.
+- Retry của client, redelivery của queue và double-click của người dùng tạo ra request trùng — nguồn race phổ biến nhất trong thực tế.
+- Distributed lock (Redis) thường bị dùng như giải pháp, nhưng lock có thể hết hạn trong khi tác vụ vẫn đang chạy. Tầng lưu trữ phải có kiểm tra cuối cùng (constraint, version, fencing token). Xem [Distributed Lock](../10-distributed-systems/distributed-lock.md).
+
+## 9. Failure Modes
+
+| Failure | Cơ chế | Dấu hiệu |
+|---|---|---|
+| Oversell | Check-then-act trên tồn kho | Số đơn vượt tồn kho khi flash sale |
+| Double charge | Request trùng không có idempotency | Khách hàng khiếu nại, đối soát lệch |
+| Lost update | Hai request ghi đè giá trị tính từ lần đọc cũ | Thay đổi của một người dùng "biến mất" |
+| Duplicate record | Kiểm tra tồn tại rồi insert | Bản ghi trùng lặp khi không có unique constraint |
+| Cache stampede | Nhiều request cùng tải lại key hết hạn | Spike tải lên DB khi key hot hết hạn |
+
+## 10. Trade-offs
+
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Câu lệnh nguyên tử (`UPDATE ... WHERE`) | Nhanh, đơn giản, không giữ lock lâu | Chỉ áp dụng khi logic diễn đạt được trong một câu lệnh |
+| Unique constraint | Đảm bảo tuyệt đối, không phụ thuộc code | Phải xử lý lỗi vi phạm; chỉ cho tính duy nhất |
+| `SELECT FOR UPDATE` | Dễ lý luận, logic phức tạp trong ứng dụng | Chờ lock, deadlock, giảm throughput |
+| Optimistic version | Không giữ lock, tốt khi ít xung đột | Retry khi xung đột nhiều; cần xử lý ở UI |
+| Serializable | Bảo vệ toàn diện | Nhiều abort, phải retry cả transaction |
+| Distributed lock | Điều phối giữa hệ thống không có transaction chung | Không an toàn tuyệt đối; cần fencing |
+
+## 11. Sai lầm thường gặp
+
+- Tin rằng GIL loại bỏ race condition.
+- Tin rằng code async không có race vì chỉ có một thread.
+- Dùng `threading.Lock` để bảo vệ trạng thái trong database khi chạy nhiều pod.
+- Kiểm tra tồn tại rồi insert mà không có unique constraint.
+- Đọc giá trị, tính toán trong Python, ghi lại giá trị tuyệt đối thay vì cập nhật tương đối.
+- Dùng Redis lock làm cơ chế duy nhất cho thao tác tài chính.
+
+## 12. Cách debug
+
+- **Tăng khả năng xen kẽ trong test**: `sys.setswitchinterval(1e-6)` làm thread chuyển đổi liên tục; chạy test đồng thời với nhiều thread/coroutine và kiểm tra invariant.
+- **Test đồng thời thật**: bắn N request cùng lúc vào cùng một resource (ví dụ bằng `asyncio.gather` hoặc công cụ load test) rồi kiểm tra trạng thái cuối.
+- **Invariant check trong production**: job đối soát định kỳ (tổng tồn kho, tổng số dư, số bản ghi trùng); alert khi lệch.
+- **Log có correlation ID và thời gian chính xác** cho mọi thao tác ghi trạng thái quan trọng để dựng lại thứ tự sự kiện.
+- **Database**: log lỗi vi phạm constraint và lỗi serialization — chúng là dấu hiệu race đã được chặn, cho biết tần suất.
+
+## 13. Best Practices
+
+- Đặt đảm bảo đúng đắn ở nơi lưu trạng thái: câu lệnh nguyên tử, constraint, version, transaction.
+- Ưu tiên cập nhật tương đối (`stock = stock - 1`) có điều kiện thay vì đọc-tính-ghi.
+- Mọi thao tác có tác dụng phụ quan trọng đều có idempotency key.
+- Trong process, giảm trạng thái chia sẻ; nếu phải chia sẻ, bảo vệ bằng lock ngắn hoặc dùng queue với một chủ sở hữu.
+- Coi lock phân tán là tối ưu hóa để giảm tranh chấp, không phải đảm bảo đúng đắn duy nhất.
+
+## 14. Tóm tắt
+
+- Race condition: kết quả phụ thuộc thứ tự thực thi của các tác vụ đồng thời trên trạng thái chung.
+- Cấu trúc chung: đọc → quyết định → ghi, với khoảng hở giữa đọc và ghi.
+- GIL không ngăn race condition logic; AsyncIO có race tại mỗi `await`; nhiều pod có race qua database.
+- Giải pháp tốt nhất thường là làm thao tác nguyên tử tại nơi lưu trạng thái, hoặc để constraint làm trọng tài.
+- Request trùng lặp (retry, redelivery) là nguồn race phổ biến; idempotency là phòng thủ chính.
+
+## Liên quan
+
+- [Synchronization](synchronization.md)
+- [Deadlock](deadlock.md)
+- [Transaction](../04-database-postgresql/transaction.md)
+- [Isolation Level](../04-database-postgresql/isolation-level.md)
+- [Locks trong PostgreSQL](../04-database-postgresql/locks.md)
+- [Idempotency](../10-distributed-systems/idempotency.md)
+- [Distributed Lock](../10-distributed-systems/distributed-lock.md)
